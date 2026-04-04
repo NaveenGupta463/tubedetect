@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "TubeIntel",
+  "version": "1.0.0",
+  "description": "YouTube analytics overlay — channel stats, video analysis, and Pre-Publish Validator right inside YouTube.",
+  
+  
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "TubeIntel"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.youtube.com/*",
+        "https://studio.youtube.com/*"
+      ],
+      "js": ["content.js"],
+      "css": ["styles.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "permissions": [
+    "storage",
+    "activeTab"
+  ],
+  "host_permissions": [
+    "https://www.youtube.com/*",
+    "https://studio.youtube.com/*",
+    "https://www.googleapis.com/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["icons/*"],
+      "matches": ["https://www.youtube.com/*", "https://studio.youtube.com/*"]
+    }
+  ]
+}

@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TubeIntel</title>
+  <link rel="stylesheet" href="styles.css">
+  <style>
+    /* Popup-specific overrides */
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { width: 300px; background: #080808; }
+    a { color: inherit; }
+    button { font-family: inherit; cursor: pointer; }
+  </style>
+</head>
+<body class="ti-popup">
+
+  <!-- Header -->
+  <div class="ti-popup-header">
+    <div class="ti-popup-logo">
+      <svg width="20" height="20" viewBox="0 0 24 24" fill="none">
+        <rect x="2" y="4" width="20" height="16" rx="3" stroke="#ff0000" stroke-width="2"/>
+        <path d="M10 8l6 4-6 4V8z" fill="#ff0000"/>
+      </svg>
+      TubeIntel
+    </div>
+    <span id="popup-page-badge" style="display:none;" class="ti-badge">—</span>
+  </div>
+
+  <!-- Body -->
+  <div class="ti-popup-body" id="popup-body">
+    <div class="ti-loading" style="padding:32px 0;">
+      <div class="ti-spinner"></div>
+      <span>Detecting page…</span>
+    </div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>

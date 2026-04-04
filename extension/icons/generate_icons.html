@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<!--
+  Open this file in a browser, then right-click each canvas and "Save image as"
+  to save icon16.png, icon48.png, icon128.png into this folder.
+-->
+<html>
+<body style="background:#111;display:flex;gap:20px;padding:20px;align-items:flex-end;">
+<script>
+  [16, 48, 128].forEach(size => {
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = size;
+    canvas.title = `icon${size}.png`;
+    canvas.style.cursor = 'pointer';
+    canvas.style.imageRendering = 'pixelated';
+    canvas.style.border = '1px solid #333';
+
+    const ctx = canvas.getContext('2d');
+    const r = size * 0.12;
+
+    // Background
+    ctx.fillStyle = '#0d0d0d';
+    ctx.beginPath();
+    ctx.roundRect(0, 0, size, size, r);
+    ctx.fill();
+
+    // YouTube-style rectangle outline
+    ctx.strokeStyle = '#ff0000';
+    ctx.lineWidth = size * 0.1;
+    const pad = size * 0.12;
+    const rr = size * 0.08;
+    ctx.beginPath();
+    ctx.roundRect(pad, pad * 1.5, size - pad * 2, size - pad * 3, rr);
+    ctx.stroke();
+
+    // Play triangle
+    ctx.fillStyle = '#ff0000';
+    const cx = size / 2;
+    const cy = size / 2;
+    const ts = size * 0.22;
+    ctx.beginPath();
+    ctx.moveTo(cx - ts * 0.6, cy - ts);
+    ctx.lineTo(cx + ts,       cy);
+    ctx.lineTo(cx - ts * 0.6, cy + ts);
+    ctx.closePath();
+    ctx.fill();
+
+    const label = document.createElement('div');
+    label.style.color = '#666';
+    label.style.fontSize = '11px';
+    label.style.fontFamily = 'monospace';
+    label.style.textAlign = 'center';
+    label.style.marginTop = '4px';
+    label.textContent = `icon${size}.png`;
+
+    const wrap = document.createElement('div');
+    wrap.style.display = 'flex';
+    wrap.style.flexDirection = 'column';
+    wrap.style.alignItems = 'center';
+    wrap.appendChild(canvas);
+    wrap.appendChild(label);
+    document.body.appendChild(wrap);
+  });
+</script>
+</body>
+</html>
