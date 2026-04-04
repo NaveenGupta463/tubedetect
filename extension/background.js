@@ -1,6 +1,6 @@
 // ── TubeIntel Background Service Worker ──────────────────────────────────────
 
-const API_KEY  = 'AIzaSyBXdk4qIKKnSum1R1sc40DHDnqbrxe9m7A';
+const API_KEY = import.meta.env.VITE_YT_API_KEY';
 const YT_BASE  = 'https://www.googleapis.com/youtube/v3';
 const CACHE_MS = 10 * 60 * 1000; // 10 min
 
