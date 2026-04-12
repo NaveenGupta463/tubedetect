@@ -1,20 +1,63 @@
-const API_KEY = import.meta.env.VITE_YT_API_KEY;
-const BASE = 'https://www.googleapis.com/youtube/v3';
+const BASE = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'}/api/youtube`;
+
+// ─── Frontend cache (localStorage, 6-hour TTL) ───────────────────────────────
+const CACHE_TTL    = 30 * 60 * 1000; // 30 minutes
+const CACHE_PREFIX = 'tubeintel_yt2_'; // bumped to evict stale entries from old cache
+
+// Clear any entries from the old cache prefix
+try {
+  Object.keys(localStorage)
+    .filter(k => k.startsWith('tubeintel_yt_'))
+    .forEach(k => localStorage.removeItem(k));
+} catch {}
+
+function cacheGet(key) {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem(CACHE_PREFIX + key); return null; }
+    return data;
+  } catch { return null; }
+}
+
+function cacheSet(key, data) {
+  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
+// In-flight deduplication: avoid firing the same request twice simultaneously
+const inflight = new Map();
 
 async function apiFetch(endpoint, params) {
   const url = new URL(`${BASE}/${endpoint}`);
-  url.searchParams.set('key', API_KEY);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
+  const key = url.toString();
 
-  const res = await fetch(url.toString());
-  const data = await res.json();
+  // Return cached result if fresh
+  const cached = cacheGet(key);
+  if (cached) return cached;
 
-  if (!res.ok) {
-    const msg = data?.error?.message || `API Error ${res.status}`;
-    throw new Error(msg);
-  }
-  return data;
+  // Deduplicate in-flight requests
+  if (inflight.has(key)) return inflight.get(key);
+
+  const promise = (async () => {
+    try {
+      const res  = await fetch(key);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data?.error?.message || `API Error ${res.status}`);
+      // Don't cache empty item lists — channel not found by handle shouldn't poison the cache
+      if (!('items' in data) || data.items?.length > 0) cacheSet(key, data);
+      return data;
+    } finally {
+      inflight.delete(key);
+    }
+  })();
+
+  inflight.set(key, promise);
+  return promise;
 }
+
+// ─── Public helpers ───────────────────────────────────────────────────────────
 
 export function parseChannelInput(input) {
   input = (input || '').trim();
@@ -96,17 +139,24 @@ export async function searchChannels(query, maxResults = 8) {
     if (!items.length) return [];
 
     const ids = items.map(i => i.id.channelId).join(',');
-    const statsData = await apiFetch('channels', { part: 'statistics', id: ids });
-    const statsMap = {};
-    (statsData.items || []).forEach(c => { statsMap[c.id] = c.statistics; });
+    const chData = await apiFetch('channels', { part: 'snippet,statistics', id: ids });
+    const chMap = {};
+    (chData.items || []).forEach(c => { chMap[c.id] = c; });
 
-    return items.map(item => ({
-      id: item.id.channelId,
-      title: item.snippet.channelTitle,
-      description: item.snippet.description,
-      thumbnail: item.snippet.thumbnails?.default?.url || '',
-      statistics: statsMap[item.id.channelId] || {},
-    }));
+    return items.map(item => {
+      const ch    = chMap[item.id.channelId] || {};
+      const thumb = ch.snippet?.thumbnails?.default?.url
+                 || ch.snippet?.thumbnails?.medium?.url
+                 || item.snippet.thumbnails?.default?.url
+                 || '';
+      return {
+        id: item.id.channelId,
+        title: ch.snippet?.title || item.snippet.channelTitle,
+        description: item.snippet.description,
+        thumbnail: thumb.startsWith('//') ? 'https:' + thumb : thumb,
+        statistics: ch.statistics || {},
+      };
+    });
   } catch {
     return [];
   }
@@ -161,4 +211,27 @@ export async function searchVideos(query, maxResults = 8) {
   } catch {
     return [];
   }
+}
+
+export async function searchTrendingVideos(query, maxResults = 20) {
+  const publishedAfter = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+  const searchData = await apiFetch('search', {
+    part: 'snippet',
+    q: query,
+    type: 'video',
+    order: 'viewCount',
+    maxResults,
+    publishedAfter,
+  });
+
+  const items = searchData.items || [];
+  if (!items.length) return [];
+
+  const ids = items.map(i => i.id.videoId).join(',');
+  const statsData = await apiFetch('videos', {
+    part: 'statistics,snippet,contentDetails',
+    id: ids,
+  });
+
+  return statsData.items || [];
 }

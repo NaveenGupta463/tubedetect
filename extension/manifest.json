@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "TubeIntel",
-  "version": "1.0.0",
+  "version": "1.0.3",
   "description": "YouTube analytics overlay — channel stats, video analysis, and Pre-Publish Validator right inside YouTube.",
   
   
@@ -30,7 +30,7 @@
   "host_permissions": [
     "https://www.youtube.com/*",
     "https://studio.youtube.com/*",
-    "https://www.googleapis.com/*"
+    "http://localhost:3001/*"
   ],
   "web_accessible_resources": [
     {

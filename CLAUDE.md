@@ -1,63 +1,127 @@
-# CLAUDE.md
+# TubeIntel — Project Context for Claude Code
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+## What this app is
+TubeIntel is a YouTube analytics and content research web app. It lets users search YouTube channels and videos, analyze engagement metrics, decode viral patterns, and get AI-powered insights on why content performs well or poorly.
 
-## Project Overview
+## Tech stack
+- Framework: React (JSX) with Vite
+- Dev server: localhost:5173 (`npm run dev`)
+- YouTube data: YouTube Data API v3
+- AI analysis: Anthropic Claude API (claude-sonnet) via Vite proxy
+- Deployment: Vercel
+- OS: Windows
+- No test runner or linter configured
 
-**TubeIntel** — a YouTube analytics and AI-powered growth tool. It consists of two separate deployables:
-- **Web App**: React/Vite SPA at `src/`
-- **Chrome Extension**: MV3 extension at `extension/`
+## Environment variables (`.env`)
+- `VITE_YT_API_KEY` — YouTube Data API v3 key
+- `VITE_ANTHROPIC_KEY` — Claude API key
+- `VITE_GOOGLE_CLIENT_ID` — Google OAuth client ID
 
 ## Commands
-
 ```bash
-npm run dev       # Dev server at http://localhost:5173
+npm run dev       # Dev server → localhost:5173
 npm run build     # Production build → ./dist/
 npm run preview   # Preview production build
 ```
 
-No test runner or linter is configured.
+## Architecture overview
+- Entry: `src/main.jsx` → `src/App.jsx` (all routing + global state)
+- App state lives in App.jsx: `activeView`, `channel`, `videos`, `selectedVideo`, `competitors`
+- AI props bundle passed to every AI component: `{ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade }`
+- YouTube API responses cached in localStorage with 1-hour TTL
+- Chrome Extension is a separate codebase; not bundled by Vite
 
-## Architecture
+## View routing (activeView → component)
+| activeView  | Component               | Min tier |
+|-------------|-------------------------|----------|
+| search      | ChannelSearch           | free     |
+| channel     | ChannelOverview         | free     |
+| video       | VideoGrid/VideoAnalysis | free     |
+| timing      | BestTimeToPost          | free     |
+| cadence     | UploadCadenceTracker    | free     |
+| seo         | SeoTagAnalyzer          | free     |
+| workspaces  | SavedWorkspaces         | free     |
+| pricing     | PricingPage             | free     |
+| validator   | PrePublishValidator     | free     |
+| myanalytics | MyChannelAnalytics      | free (OAuth required) |
+| competitor  | CompetitorComparison    | starter  |
+| viral       | ViralFormulaDecoder     | starter  |
+| scorer      | TitleThumbnailScorer    | starter  |
+| sentiment   | CommentSentimentMiner   | starter  |
+| script      | ScriptOutlineGenerator  | starter  |
+| trends      | NicheTrendScanner       | starter  |
+| report      | WeeklyPdfReport         | starter  |
 
-### Web App (`src/`)
+## Tier system
+- Tiers (ascending): free → starter → pro → agency
+- Defined in `src/utils/tierConfig.js` — TIERS, TIER_LIMITS, VIEW_TIER, meetsRequirement()
+- AI call limits: free=5, starter=500, pro=2000, agency=unlimited
+- `ProGate.jsx` — paywall overlay for locked features
+- `src/hooks/useTier.js` — tier state + AI call counter, persisted in localStorage
 
-**Entry:** `main.jsx` → `App.jsx` (routing + global state)
+## File map
+**API**
+- `src/api/youtube.js` — YouTube Data API v3; fetchChannel, fetchChannelVideos, fetchVideoById; localStorage cache
+- `src/api/analyticsApi.js` — YouTube Analytics API v2; needs OAuth token
+- `src/api/claude.js` — Claude API calls via Vite proxy
+- `src/api/youtubeSearch.js` — YouTube search helpers
+- `src/api/auth.js` — auth helpers
 
-**API Layer (`src/api/`)**
-- `youtube.js` — YouTube Data API v3 (channels, videos, comments); responses cached in `localStorage` with 1-hour TTL
-- `analyticsApi.js` — YouTube Analytics API v2; requires OAuth access token
-- `claude.js` — Claude API calls routed through Vite proxy (see `vite.config.js`)
-- `youtubeSearch.js` — YouTube search helpers
+**Hooks / Utils**
+- `src/hooks/useTier.js` — tier + AI call counter
+- `src/hooks/useOAuth.js` — Google OAuth implicit grant; token in sessionStorage
+- `src/utils/tierConfig.js` — tier definitions and feature flags
+- `src/utils/pdfBuilder.js` — jsPDF report builder
+- `src/utils/analysis.js` — shared analytics helpers
 
-**State & Auth (`src/hooks/`)**
-- `useTier.js` — subscription tier (Free/Starter/Pro/Agency) + AI call limits; persisted in `localStorage`
-- `useOAuth.js` — Google OAuth implicit grant flow; token stored in `sessionStorage`
+**Components**
+- `Sidebar.jsx` — nav sidebar
+- `Header.jsx` — top header bar
+- `ProGate.jsx` — paywall overlay
+- `Tooltip.jsx` — shared tooltip
+- `VideoList.jsx` — list-style video display
+- `VideoGrid.jsx` — grid-style; exports saveLastChannel, loadLastChannel
+- `ChannelSearch.jsx` — search entry point
+- `ChannelOverview.jsx` — channel stats
+- `VideoAnalysis.jsx` — per-video deep analysis
+- `ViralFormulaDecoder.jsx` — AI: viral pattern decoder
+- `TitleThumbnailScorer.jsx` — AI: title/thumbnail scorer
+- `CommentSentimentMiner.jsx` — AI: comment sentiment
+- `ScriptOutlineGenerator.jsx` — AI: script outline
+- `NicheTrendScanner.jsx` — AI: niche trends
+- `PrePublishValidator.jsx` — AI: pre-publish checklist
+- `CompetitorComparison.jsx` — competitor benchmarking
+- `BestTimeToPost.jsx` — optimal upload timing
+- `UploadCadenceTracker.jsx` — upload frequency
+- `SeoTagAnalyzer.jsx` — tag/SEO analysis
+- `MyChannelAnalytics.jsx` — OAuth-gated personal analytics
+- `WeeklyPdfReport.jsx` — PDF report export
+- `SavedWorkspaces.jsx` — workspace save/load
+- `PricingPage.jsx` — tier upgrade UI
 
-**Feature Gating**
-- `src/utils/tierConfig.js` — tier definitions, per-tier limits, and feature flags
-- `ProGate.jsx` — renders paywall overlay for locked features
-- AI tools enforce call limits via `useTier`
-
-**AI Tools** (all call Claude via `src/api/claude.js`): `ViralFormulaDecoder`, `TitleThumbnailScorer`, `CommentSentimentMiner`, `ScriptOutlineGenerator`, `NicheTrendScanner`
-
-**OAuth-Gated Features**: `MyChannelAnalytics` (YouTube Analytics API), `PrePublishValidator`, `WeeklyPdfReport` (uses `src/utils/pdfBuilder.js` + jsPDF)
-
-### Chrome Extension (`extension/`)
-
-Separate codebase — not bundled with the web app.
-
-- `background.js` — MV3 service worker; handles YouTube API calls and caching
-- `content.js` — injected into YouTube pages; renders overlay panels
+**Chrome Extension** (`extension/`)
+- `background.js` — MV3 service worker; YouTube API + caching
+- `content.js` — injected into YouTube pages; overlay panels
 - `popup.html/js` — extension popup UI
+- Deep-links into web app via URL params: `?action=video&id=XXX` or `?action=channel&q=@handle`
 
-**Extension ↔ Web App integration**: uses `sessionStorage` for deep-linking (extension passes channel/video data to the web app).
+## Coding rules
+- Single-file JSX components unless told otherwise
+- Always use recharts for graphs/charts
+- Dark theme UI (black/dark gray backgrounds)
+- Keep all YouTube API calls using YT_BASE and YT_KEY constants
+- Never break existing features when adding new ones
 
-## Environment Variables
+## Common issue fixes
+- AI response shows raw JSON → fix JSON parsing in that component
+- YouTube data not loading → check API quota and endpoint params
+- UI looks broken → check recharts ResponsiveContainer wrapping
+- OAuth not working → check VITE_GOOGLE_CLIENT_ID and token in sessionStorage
 
-Requires a `.env` file with:
-- `VITE_YOUTUBE_API_KEY` — YouTube Data API v3 key
-- `VITE_ANTHROPIC_API_KEY` — Claude API key
-- `VITE_GOOGLE_CLIENT_ID` — Google OAuth client ID
-
-The Vite dev server proxies Claude API requests to avoid CORS (configured in `vite.config.js`).
+## Instructions for every task
+- Only touch the file/component mentioned — do not rewrite the whole app
+- Keep changes minimal and targeted
+- Do not add comments, docstrings, or type annotations to unchanged code
+- Do not add error handling for impossible/internal scenarios
+- Do not create new abstractions or utilities for one-off tasks
+- State exactly which file was changed and what changed

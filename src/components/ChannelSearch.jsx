@@ -62,7 +62,6 @@ export default function ChannelSearch({ onLoad }) {
   const [sugLoading, setSugLoading] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
   const [history, setHistory]       = useState(getHistory());
-  const [didYouMean, setDidYouMean] = useState(null);
   const [lastChannel, setLastChannel] = useState(null);
 
   const debounceRef  = useRef(null);
@@ -92,7 +91,7 @@ export default function ChannelSearch({ onLoad }) {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = input.trim();
-    if (q.length < 3) {
+    if (q.length < 4) {
       setSuggestions([]);
       setSugLoading(false);
       return;
@@ -103,14 +102,14 @@ export default function ChannelSearch({ onLoad }) {
       setSuggestions(results);
       setSugLoading(false);
       if (results.length > 0) setShowDropdown(true);
-    }, 400);
+    }, 800);
     return () => clearTimeout(debounceRef.current);
   }, [input]);
 
   const loadChannel = async (query) => {
     setLoading(true);
     setError('');
-    setDidYouMean(null);
+    
     setShowDropdown(false);
     setLoadingStep('Finding channel…');
     try {
@@ -121,14 +120,21 @@ export default function ChannelSearch({ onLoad }) {
       setHistory(getHistory());
       onLoad(channel, videos);
     } catch (err) {
-      // Fuzzy fallback: search for close match
-      const fuzzy = await searchChannels(query.replace(/^@/, '').replace(/[^a-zA-Z0-9 ]/g, ''), 3);
-      if (fuzzy.length > 0) {
-        setDidYouMean(fuzzy[0]);
-        setError(`Can't find "${query}". Did you mean "${fuzzy[0].title}"?`);
-      } else {
-        setError(`Can't find this channel. Try searching their exact YouTube handle starting with @`);
-      }
+      // Fuzzy fallback: search by name and auto-load the top result
+      try {
+        const fuzzy = await searchChannels(query.replace(/^@/, '').replace(/[^a-zA-Z0-9 ]/g, ' ').trim(), 3);
+        if (fuzzy.length > 0) {
+          // Auto-load the top match — no need to ask "did you mean"
+          setLoadingStep(`Loading ${fuzzy[0].title}…`);
+          const channel = await fetchChannel(fuzzy[0].id);
+          const videos  = await fetchChannelVideos(channel.id, 50);
+          saveToHistory(channel);
+          setHistory(getHistory());
+          onLoad(channel, videos);
+          return;
+        }
+      } catch {}
+      setError(`Can't find this channel. Try the exact @handle from their YouTube page.`);
     } finally {
       setLoading(false);
       setLoadingStep('');
@@ -162,7 +168,7 @@ export default function ChannelSearch({ onLoad }) {
   const clearInput = () => {
     setInput('');
     setError('');
-    setDidYouMean(null);
+    
     setSuggestions([]);
     setShowDropdown(false);
     inputRef.current?.focus();
@@ -204,7 +210,7 @@ export default function ChannelSearch({ onLoad }) {
                 className="search-input"
                 placeholder="@handle, channel name, or paste YouTube URL…"
                 value={input}
-                onChange={e => { setInput(e.target.value); setError(''); setDidYouMean(null); }}
+                onChange={e => { setInput(e.target.value); setError(''); }}
                 onFocus={handleFocus}
                 disabled={loading}
                 autoFocus
@@ -313,20 +319,6 @@ export default function ChannelSearch({ onLoad }) {
                 <line x1="12" y1="16" x2="12.01" y2="16" />
               </svg>
               <span>{error}</span>
-              {didYouMean && (
-                <button
-                  type="button"
-                  onClick={() => { setInput(didYouMean.title); loadChannel(didYouMean.id); }}
-                  style={{
-                    background: '#7c4dff22', border: '1px solid #7c4dff55',
-                    borderRadius: 6, padding: '3px 10px',
-                    color: '#7c4dff', fontWeight: 700, fontSize: 12,
-                    cursor: 'pointer', whiteSpace: 'nowrap',
-                  }}
-                >
-                  Load "{didYouMean.title}"
-                </button>
-              )}
             </div>
           )}
 
@@ -379,7 +371,7 @@ export default function ChannelSearch({ onLoad }) {
             <button
               key={t.handle}
               className="example-chip"
-              onClick={() => { setInput(t.handle); setError(''); setDidYouMean(null); loadChannel(t.handle); }}
+              onClick={() => { setInput(t.handle); setError(''); loadChannel(t.handle); }}
               disabled={loading}
             >
               {t.label}

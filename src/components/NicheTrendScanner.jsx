@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { searchTrendingVideos } from '../api/youtubeSearch';
+import { searchTrendingVideos } from '../api/youtube';
 import { analyzeTrends } from '../api/claude';
 import { formatNum, parseDuration } from '../utils/analysis';
 import ProGate from './ProGate';

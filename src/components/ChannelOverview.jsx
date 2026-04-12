@@ -1,20 +1,40 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import {
   ComposedChart, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip,
-  ResponsiveContainer, Cell, Line, ReferenceLine, AreaChart, Area,
+  ResponsiveContainer, Cell, Line, ReferenceLine,
 } from 'recharts';
 import { formatNum, calcEngagement, parseDuration } from '../utils/analysis';
+import { fetchChannel, fetchChannelVideos, searchChannels } from '../api/youtube';
 import VideoList from './VideoList';
+import TITooltip from './Tooltip';
+
+const STAT_TIPS = {
+  'Subscribers':      'Total number of people subscribed to this channel.',
+  'Total Views':      'Cumulative views across all videos ever uploaded.',
+  'Videos':           'Total number of public videos on this channel.',
+  'Avg Views/Video':  'Total views divided by number of videos — shows the typical reach per upload.',
+  'Avg Engagement':   'Average of (likes + comments) ÷ views across the top 5 videos, expressed as a percentage. Above 3% is strong.',
+  'Avg Like Rate':    'Average likes ÷ views across top videos. Shows how much the audience appreciates the content.',
+  'Upload Frequency': 'How often this channel posts, calculated from recent video publish dates.',
+  'Channel Age':      'How long this channel has been active since its first video.',
+};
 
 function StatCard({ label, value, sub, color }) {
-  return (
-    <div className="stat-card">
+  const tip = STAT_TIPS[label];
+  const card = (
+    <div className="stat-card" style={tip ? { cursor: 'default' } : {}}>
       <div className="stat-value" style={color ? { color } : {}}>
         {value}
       </div>
       <div className="stat-label">{label}</div>
       {sub && <div className="stat-sub">{sub}</div>}
     </div>
+  );
+  if (!tip) return card;
+  return (
+    <TITooltip title={label} desc={tip} placement="top">
+      {card}
+    </TITooltip>
   );
 }
 
@@ -37,8 +57,42 @@ const CustomTooltip = ({ active, payload, label }) => {
 
 function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cadenceLabel, onVideoSelect, competitors }) {
   const [range, setRange]               = useState('20');
-  const [showDuration, setShowDuration] = useState(false);
   const [showComp, setShowComp]         = useState(false);
+  const [compInput, setCompInput]       = useState('');
+  const [compLoading, setCompLoading]   = useState(false);
+  const [compError, setCompError]       = useState('');
+  const [localComp, setLocalComp]       = useState(null); // { channel, videos }
+  const [compSugs, setCompSugs]         = useState([]);
+  const [compSugLoading, setCompSugLoading] = useState(false);
+  const [showCompDrop, setShowCompDrop] = useState(false);
+  const compDebounce  = useRef(null);
+  const compContainer = useRef(null);
+
+  // Close dropdown on outside click
+  useEffect(() => {
+    function handleClick(e) {
+      if (compContainer.current && !compContainer.current.contains(e.target)) {
+        setShowCompDrop(false);
+      }
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, []);
+
+  // Debounced autocomplete
+  useEffect(() => {
+    if (compDebounce.current) clearTimeout(compDebounce.current);
+    const q = compInput.trim();
+    if (q.length < 4) { setCompSugs([]); setCompSugLoading(false); return; }
+    setCompSugLoading(true);
+    compDebounce.current = setTimeout(async () => {
+      const results = await searchChannels(q, 5);
+      setCompSugs(results);
+      setCompSugLoading(false);
+      if (results.length > 0) setShowCompDrop(true);
+    }, 800);
+    return () => clearTimeout(compDebounce.current);
+  }, [compInput]);
 
   const maxRange    = range === 'all' ? sortedByDate.length : parseInt(range);
   const sourceVids  = sortedByDate.slice(0, Math.min(maxRange, sortedByDate.length)).reverse();
@@ -53,16 +107,17 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
       name:        `#${i + 1}`,
       eng,
       views:       parseInt(v.statistics?.viewCount  || 0),
-      durationMin: parseFloat((parseDuration(v.contentDetails?.duration).total / 60).toFixed(1)),
+
       gap:         gapDays,
       aboveAvg:    eng >= avgEngagement,
       video:       v,
     };
   });
 
-  // Competitor overlay data (aligned by position)
-  const compVideos = competitors?.[0]?.videos;
-  const compTrend  = compVideos
+  // Use prop competitor first, fall back to locally added one
+  const activeComp   = competitors?.[0] || localComp;
+  const compVideos   = activeComp?.videos;
+  const compTrend    = compVideos
     ? [...compVideos]
         .sort((a, b) => new Date(a.snippet?.publishedAt || 0) - new Date(b.snippet?.publishedAt || 0))
         .slice(-maxRange)
@@ -73,6 +128,28 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
     compEng: compTrend[i] ?? null,
   }));
 
+  const loadCompetitor = async (query) => {
+    setCompLoading(true);
+    setCompError('');
+    setShowCompDrop(false);
+    try {
+      const ch   = await fetchChannel(query);
+      const vids = await fetchChannelVideos(ch.id, 30);
+      setLocalComp({ channel: ch, videos: vids });
+      setCompInput('');
+      setCompSugs([]);
+    } catch {
+      setCompError(`Can't find that channel. Try the exact @handle.`);
+    } finally {
+      setCompLoading(false);
+    }
+  };
+
+  const handleAddCompetitor = () => {
+    const q = compInput.trim();
+    if (q) loadCompetitor(q);
+  };
+
   // Annotations
   let maxIdx = 0, minIdx = 0;
   chartData.forEach((d, i) => {
@@ -80,7 +157,6 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
     if (d.eng < chartData[minIdx].eng) minIdx = i;
   });
   const gapPoints  = chartData.filter((d, i) => i > 0 && d.gap > 14);
-  const maxDurMin  = Math.max(...chartData.map(d => d.durationMin), 1);
 
   // Custom dot per point
   const renderDot = (props) => {
@@ -144,8 +220,11 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
     );
   };
 
-  const hasCompData = compTrend.length > 0;
-  const compName    = competitors?.[0]?.channel?.snippet?.title || 'Competitor';
+  const hasCompData  = compTrend.length > 0;
+  const compName     = activeComp?.channel?.snippet?.title || 'Competitor';
+  const compAvgEng   = hasCompData
+    ? parseFloat((compTrend.reduce((s, v) => s + v, 0) / compTrend.length).toFixed(2))
+    : null;
 
   return (
     <div style={{ marginTop: 16 }}>
@@ -161,32 +240,102 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
           }}>{lbl}</button>
         ))}
         <div style={{ marginLeft: 'auto', display: 'flex', gap: 6 }}>
-          <button onClick={() => setShowDuration(s => !s)} style={{
-            background: showDuration ? '#2196f322' : 'none',
-            border: `1px solid ${showDuration ? '#2196f3' : '#2a2a2a'}`,
-            borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 700,
-            color: showDuration ? '#2196f3' : '#555', cursor: 'pointer',
-          }}>
-            {showDuration ? '✓ ' : ''}Duration
-          </button>
+
           <button
             onClick={() => setShowComp(s => !s)}
-            title={!hasCompData ? 'Load a saved workspace with a competitor to enable' : ''}
             style={{
-              background: showComp && hasCompData ? '#2196f322' : 'none',
-              border: `1px solid ${showComp && hasCompData ? '#2196f3' : '#2a2a2a'}`,
+              background: showComp ? '#2196f322' : 'none',
+              border: `1px solid ${showComp ? '#2196f3' : '#2a2a2a'}`,
               borderRadius: 6, padding: '3px 9px', fontSize: 11, fontWeight: 700,
-              color: showComp && hasCompData ? '#2196f3' : '#555',
-              cursor: hasCompData ? 'pointer' : 'default', opacity: hasCompData ? 1 : 0.4,
+              color: showComp ? '#2196f3' : '#555', cursor: 'pointer',
             }}
           >
-            {showComp && hasCompData ? '✓ ' : ''}vs Competitor
+            {showComp ? '✓ ' : ''}vs Competitor {hasCompData ? `(${compName})` : ''}
           </button>
+          {showComp && hasCompData && (
+            <button
+              onClick={() => { setLocalComp(null); }}
+              style={{
+                background: 'none', border: '1px solid #2a2a2a',
+                borderRadius: 6, padding: '3px 9px', fontSize: 11,
+                color: '#555', cursor: 'pointer',
+              }}
+            >✕ Remove</button>
+          )}
         </div>
       </div>
 
+      {/* Competitor search panel */}
+      {showComp && !hasCompData && (
+        <div style={{ background: '#0d0d0d', border: '1px solid #2196f333', borderRadius: 8, padding: '12px 14px', marginBottom: 10 }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: '#2196f3', marginBottom: 8 }}>Add a competitor channel to compare engagement</div>
+          <div ref={compContainer} style={{ position: 'relative', display: 'flex', gap: 8 }}>
+            <div style={{ flex: 1, position: 'relative' }}>
+              <input
+                type="text"
+                value={compInput}
+                onChange={e => { setCompInput(e.target.value); setCompError(''); }}
+                onKeyDown={e => e.key === 'Enter' && handleAddCompetitor()}
+                onFocus={() => { if (compSugs.length > 0) setShowCompDrop(true); }}
+                placeholder="@handle or channel name…"
+                autoComplete="off"
+                style={{
+                  width: '100%', boxSizing: 'border-box',
+                  background: '#111', border: '1px solid #2a2a2a', borderRadius: 6,
+                  padding: '6px 10px', fontSize: 12, color: '#ddd', outline: 'none',
+                }}
+              />
+              {/* Autocomplete dropdown */}
+              {showCompDrop && (compSugLoading || compSugs.length > 0) && (
+                <div style={{
+                  position: 'absolute', top: '100%', left: 0, right: 0, zIndex: 999,
+                  background: '#161616', border: '1px solid #2a2a2a', borderRadius: 8,
+                  marginTop: 4, overflow: 'hidden', boxShadow: '0 8px 24px rgba(0,0,0,0.7)',
+                }}>
+                  {compSugLoading ? (
+                    <div style={{ padding: '10px 14px', fontSize: 12, color: '#555' }}>Searching…</div>
+                  ) : compSugs.map(sug => (
+                    <div
+                      key={sug.id}
+                      onMouseDown={e => { e.preventDefault(); setCompInput(sug.title); loadCompetitor(sug.id); }}
+                      style={{ display: 'flex', alignItems: 'center', gap: 10, padding: '8px 12px', cursor: 'pointer' }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#1e1e1e'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      {sug.thumbnail
+                        ? <img src={sug.thumbnail} alt="" style={{ width: 32, height: 32, borderRadius: '50%', objectFit: 'cover', flexShrink: 0 }} />
+                        : <div style={{ width: 32, height: 32, borderRadius: '50%', background: '#2a2a2a', flexShrink: 0 }} />
+                      }
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, color: '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sug.title}</div>
+                        <div style={{ fontSize: 11, color: '#555' }}>
+                          {sug.statistics?.subscriberCount ? formatNum(sug.statistics.subscriberCount) + ' subs' : ''}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={handleAddCompetitor}
+              disabled={compLoading || !compInput.trim()}
+              style={{
+                background: '#2196f3', border: 'none', borderRadius: 6,
+                padding: '6px 14px', fontSize: 12, fontWeight: 700,
+                color: '#fff', cursor: compLoading ? 'wait' : 'pointer',
+                opacity: !compInput.trim() ? 0.5 : 1, flexShrink: 0,
+              }}
+            >
+              {compLoading ? '…' : 'Add'}
+            </button>
+          </div>
+          {compError && <div style={{ fontSize: 11, color: '#ff1744', marginTop: 6 }}>{compError}</div>}
+        </div>
+      )}
+
       {/* Legend */}
-      <div style={{ display: 'flex', gap: 10, fontSize: 10, color: '#555', marginBottom: 8, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', gap: 10, fontSize: 11, color: '#555', marginBottom: 8, flexWrap: 'wrap' }}>
         <span>🔥 Highest eng.</span>
         <span>⚠️ Lowest eng.</span>
         <span style={{ color: '#00c853' }}>● Above avg</span>
@@ -213,38 +362,31 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
             </linearGradient>
           </defs>
 
-          <CartesianGrid strokeDasharray="3 3" stroke="#181818" />
-          <XAxis dataKey="name" tick={{ fill: '#444', fontSize: 10 }} />
+          <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+          <XAxis dataKey="name" tick={{ fill: '#666', fontSize: 12 }} />
 
           {/* Left axis: engagement */}
           <YAxis
             yAxisId="eng"
             tickFormatter={v => v + '%'}
-            tick={{ fill: '#555', fontSize: 10 }}
-            width={34}
-            label={{ value: 'Eng %', angle: -90, position: 'insideLeft', fill: '#444', fontSize: 9, dy: 20 }}
+            tick={{ fill: '#888', fontSize: 12 }}
+            width={42}
+            label={{ value: 'Eng %', angle: -90, position: 'insideLeft', fill: '#666', fontSize: 11, dy: 24 }}
           />
           {/* Right axis: views */}
           <YAxis
             yAxisId="views"
             orientation="right"
             tickFormatter={v => formatNum(v)}
-            tick={{ fill: '#555', fontSize: 10 }}
-            width={46}
-            label={{ value: 'Views', angle: 90, position: 'insideRight', fill: '#444', fontSize: 9, dy: -16 }}
+            tick={{ fill: '#888', fontSize: 12 }}
+            width={52}
+            label={{ value: 'Views', angle: 90, position: 'insideRight', fill: '#666', fontSize: 11, dy: -20 }}
           />
-          {/* Hidden axis for duration bars */}
-          {showDuration && (
-            <YAxis yAxisId="dur" hide domain={[0, maxDurMin * 5]} />
-          )}
+
 
           {/* Views bars (background) */}
           <Bar yAxisId="views" dataKey="views" fill="url(#viewsBg)" stroke="#7c4dff18" radius={[2, 2, 0, 0]} isAnimationActive={false} />
 
-          {/* Duration bars (optional overlay) */}
-          {showDuration && (
-            <Bar yAxisId="dur" dataKey="durationMin" fill="#2196f310" stroke="#2196f320" radius={[2, 2, 0, 0]} isAnimationActive={false} />
-          )}
 
           {/* Upload gap markers */}
           {gapPoints.map((d, i) => (
@@ -263,6 +405,18 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
             strokeWidth={1.5}
             label={{ value: `Avg ${avgEngagement.toFixed(2)}%`, position: 'right', fill: '#ff9100', fontSize: 9, dx: 4 }}
           />
+
+          {/* Competitor average line */}
+          {showComp && compAvgEng !== null && (
+            <ReferenceLine
+              yAxisId="eng"
+              y={compAvgEng}
+              stroke="#2196f3"
+              strokeDasharray="6 3"
+              strokeWidth={1.5}
+              label={{ value: `${compName.split(' ')[0]} avg ${compAvgEng}%`, position: 'right', fill: '#2196f3', fontSize: 9, dx: 4 }}
+            />
+          )}
 
           {/* Engagement line */}
           <Line
@@ -295,6 +449,27 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
         </ComposedChart>
       </ResponsiveContainer>
 
+      {/* Avg engagement comparison row */}
+      {showComp && compAvgEng !== null && (
+        <div style={{
+          marginTop: 10, background: '#0c0c0c', border: '1px solid #1a1a1a',
+          borderRadius: 8, padding: '10px 16px', display: 'flex', gap: 24, flexWrap: 'wrap', alignItems: 'center',
+        }}>
+          <span style={{ fontSize: 11, color: '#555', textTransform: 'uppercase', letterSpacing: 0.8 }}>⚡ Avg Engagement</span>
+          <span style={{ fontSize: 13, color: '#888' }}>
+            This channel: <strong style={{ color: '#ff9100', fontSize: 15 }}>{avgEngagement.toFixed(2)}%</strong>
+          </span>
+          <span style={{ fontSize: 13, color: '#888' }}>
+            {compName}: <strong style={{ color: '#2196f3', fontSize: 15 }}>{compAvgEng}%</strong>
+          </span>
+          <span style={{ fontSize: 12, color: compAvgEng > avgEngagement ? '#ff1744' : '#00c853', flex: 1 }}>
+            {compAvgEng > avgEngagement
+              ? `${compName.split(' ')[0]} has ${(compAvgEng - avgEngagement).toFixed(2)}% higher engagement`
+              : `You lead by ${(avgEngagement - compAvgEng).toFixed(2)}%`}
+          </span>
+        </div>
+      )}
+
       {/* Upload gap insight */}
       {avgDaysBetween > 0 && (
         <div style={{
@@ -324,6 +499,7 @@ function EngagementTrendChart({ sortedByDate, avgEngagement, avgDaysBetween, cad
 }
 
 export default function ChannelOverview({ channel, videos, onVideoSelect, competitors }) {
+  const [selectedPattern, setSelectedPattern] = useState(null);
   const stats = channel?.statistics || {};
   const snippet = channel?.snippet || {};
 
@@ -336,17 +512,39 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
     .sort((a, b) => parseInt(b.statistics?.viewCount || 0) - parseInt(a.statistics?.viewCount || 0))
     .slice(0, 10);
 
-  const viewsChartData = top10.map(v => ({
-    name: v.snippet?.title?.slice(0, 28) + (v.snippet?.title?.length > 28 ? '…' : ''),
+  const viewsChartData = top10.map((v, i) => ({
+    name: `#${i + 1}`,
+    title: v.snippet?.title || '',
     Views: parseInt(v.statistics?.viewCount || 0),
-    id: v.id,
+    video: v,
   }));
 
-  const engChartData = top10.map(v => ({
-    name: v.snippet?.title?.slice(0, 28) + (v.snippet?.title?.length > 28 ? '…' : ''),
+  const engChartData = top10.map((v, i) => ({
+    name: `#${i + 1}`,
+    title: v.snippet?.title || '',
     'Engagement %': parseFloat(calcEngagement(v.statistics).toFixed(3)),
-    id: v.id,
+    video: v,
   }));
+
+  // Custom label rendered inside each bar — rotated title text
+  const renderBarLabel = ({ x, y, width, height, value }) => {
+    if (!value || height < 24) return null;
+    const truncated = value.length > 40 ? value.slice(0, 38) + '…' : value;
+    const cx = x + width / 2;
+    const cy = y + height - 8;
+    return (
+      <text
+        x={cx} y={cy}
+        transform={`rotate(-90, ${cx}, ${cy})`}
+        textAnchor="start"
+        fontSize={9}
+        fill="rgba(255,255,255,0.55)"
+        style={{ pointerEvents: 'none' }}
+      >
+        {truncated}
+      </text>
+    );
+  };
 
   const engBarColors = engChartData.map(d =>
     d['Engagement %'] > 4 ? '#00c853' :
@@ -483,26 +681,63 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
         <p className="chart-subtitle">Based on last {recent10.length} vs previous {prev10.length} videos</p>
 
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12, margin: '14px 0' }}>
-          <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center', border: `1px solid ${momentumColor}33` }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: momentumColor }}>
-              {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%
+          {/* Views Trend card */}
+          <TITooltip
+            title="Views Trend"
+            desc={`Compares average views of your last ${recent10.length} videos (${formatNum(Math.round(recentAvg))}/video) vs the ${prev10.length} before that (${formatNum(Math.round(prevAvg))}/video). Positive = your recent videos are performing better.`}
+            placement="bottom"
+          >
+            <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center', border: `1px solid ${momentumColor}33`, cursor: 'default' }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: momentumColor }}>
+                {growthPct >= 0 ? '+' : ''}{growthPct.toFixed(1)}%
+              </div>
+              <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Views Trend</div>
+              <div style={{ display: 'flex', justifyContent: 'center', gap: 10, marginTop: 6 }}>
+                <span style={{ fontSize: 10, color: '#555' }}>Last {recent10.length}: <span style={{ color: '#bbb' }}>{formatNum(Math.round(recentAvg))}</span></span>
+                <span style={{ fontSize: 10, color: '#333' }}>|</span>
+                <span style={{ fontSize: 10, color: '#555' }}>Prev {prev10.length}: <span style={{ color: '#bbb' }}>{formatNum(Math.round(prevAvg))}</span></span>
+              </div>
             </div>
-            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Views Trend (last 10 vs prev 10)</div>
-          </div>
-          <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center' }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: '#fff' }}>{cadenceLabel}</div>
-            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Upload Cadence (~{Math.round(avgDaysBetween)}d avg)</div>
-          </div>
-          <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center' }}>
-            <div style={{ fontSize: 22, fontWeight: 900, color: '#ff9100' }}>{avgEngagement.toFixed(2)}%</div>
-            <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Avg Engagement Rate</div>
-          </div>
+          </TITooltip>
+
+          {/* Upload Cadence card */}
+          <TITooltip
+            title="Upload Cadence"
+            desc={`Daily+ = posting every 1–3 days. Weekly = every 4–8 days. Bi-weekly = every 9–17 days. Monthly = every 18–34 days. Infrequent = 35+ days between uploads. Consistent cadence signals the algorithm to recommend your content more.`}
+            placement="bottom"
+          >
+            <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center', cursor: 'default' }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: '#fff' }}>{cadenceLabel}</div>
+              <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Upload Cadence</div>
+              <div style={{ fontSize: 10, color: '#555', marginTop: 6 }}>~{Math.round(avgDaysBetween)}d avg between videos</div>
+            </div>
+          </TITooltip>
+
+          {/* Avg Engagement card */}
+          <TITooltip
+            title="Avg Engagement Rate"
+            desc="(Likes + Comments) ÷ Views × 100, averaged across all loaded videos. Above 3% is strong. Industry average is 1–2%."
+            placement="bottom"
+          >
+            <div style={{ background: '#111', borderRadius: 10, padding: 14, textAlign: 'center', cursor: 'default' }}>
+              <div style={{ fontSize: 22, fontWeight: 900, color: '#ff9100' }}>{avgEngagement.toFixed(2)}%</div>
+              <div style={{ fontSize: 11, color: '#666', marginTop: 4 }}>Avg Engagement Rate</div>
+              <div style={{ fontSize: 10, color: avgEngagement > 3 ? '#00c853' : avgEngagement > 1.5 ? '#ff9100' : '#ff1744', marginTop: 6 }}>
+                {avgEngagement > 3 ? 'Excellent' : avgEngagement > 1.5 ? 'Average' : 'Below average'}
+              </div>
+            </div>
+          </TITooltip>
         </div>
 
         <div className="two-col-grid" style={{ marginTop: 0 }}>
           {bestVideo && (
-            <div style={{ background: '#0a1a0a', border: '1px solid #00c85333', borderRadius: 10, padding: '12px 14px' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#00c853', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>🏆 Best Performer</div>
+            <div
+              onClick={() => onVideoSelect(bestVideo)}
+              style={{ background: '#0a1a0a', border: '1px solid #00c85333', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', transition: 'border-color 0.15s' }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = '#00c853aa'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = '#00c85333'}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#00c853', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>🏆 Best Performer — click to analyze</div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#fff', lineHeight: 1.4, marginBottom: 4 }}>
                 {bestVideo.snippet?.title?.slice(0, 60)}{bestVideo.snippet?.title?.length > 60 ? '…' : ''}
               </div>
@@ -510,8 +745,13 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
             </div>
           )}
           {worstVideo && worstVideo !== bestVideo && (
-            <div style={{ background: '#1a0a0a', border: '1px solid #ff174433', borderRadius: 10, padding: '12px 14px' }}>
-              <div style={{ fontSize: 11, fontWeight: 700, color: '#ff1744', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>📉 Needs Work</div>
+            <div
+              onClick={() => onVideoSelect(worstVideo)}
+              style={{ background: '#1a0a0a', border: '1px solid #ff174433', borderRadius: 10, padding: '12px 14px', cursor: 'pointer', transition: 'border-color 0.15s' }}
+              onMouseEnter={e => e.currentTarget.style.borderColor = '#ff1744aa'}
+              onMouseLeave={e => e.currentTarget.style.borderColor = '#ff174433'}
+            >
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#ff1744', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>📉 Needs Work — click to analyze</div>
               <div style={{ fontSize: 13, fontWeight: 600, color: '#fff', lineHeight: 1.4, marginBottom: 4 }}>
                 {worstVideo.snippet?.title?.slice(0, 60)}{worstVideo.snippet?.title?.length > 60 ? '…' : ''}
               </div>
@@ -521,9 +761,10 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
         </div>
 
         {sortedByDate.length > 3 && (
-          <div style={{ marginTop: 4 }}>
-            <div style={{ fontSize: 12, color: '#555', marginBottom: 2 }}>
-              Engagement trend — click any point to open video analysis
+          <div style={{ marginTop: 12 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: '#bbb', marginBottom: 6, display: 'flex', alignItems: 'center', gap: 8 }}>
+              📈 Engagement Trend
+              <span style={{ fontSize: 11, fontWeight: 400, color: '#555' }}>— click any point to open video analysis</span>
             </div>
             <EngagementTrendChart
               sortedByDate={sortedByDate}
@@ -541,24 +782,23 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
       <div className="charts-section">
         <div className="chart-card">
           <h3 className="chart-title">Top 10 Videos by Views</h3>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={viewsChartData} margin={{ top: 8, right: 16, left: 0, bottom: 60 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
-              <XAxis
-                dataKey="name"
-                tick={{ fill: '#888', fontSize: 11 }}
-                angle={-35}
-                textAnchor="end"
-                interval={0}
-              />
-              <YAxis
-                tickFormatter={v => formatNum(v)}
-                tick={{ fill: '#888', fontSize: 11 }}
-                width={55}
-              />
+          <p className="chart-subtitle">Click any bar to open video analysis</p>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              data={viewsChartData}
+              margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              style={{ cursor: 'pointer' }}
+              onClick={e => {
+                const v = e?.activePayload?.[0]?.payload?.video;
+                if (v && onVideoSelect) onVideoSelect(v);
+              }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+              <XAxis dataKey="name" tick={{ fill: '#888', fontSize: 13 }} />
+              <YAxis tickFormatter={v => formatNum(v)} tick={{ fill: '#888', fontSize: 12 }} width={55} />
               <Tooltip content={<CustomTooltip />} />
-              <Bar dataKey="Views" fill="#ff0000" radius={[4, 4, 0, 0]}>
-                {viewsChartData.map((entry, i) => (
+              <Bar dataKey="Views" radius={[4, 4, 0, 0]} label={{ content: props => renderBarLabel({ ...props, value: viewsChartData[props.index]?.title }) }}>
+                {viewsChartData.map((_, i) => (
                   <Cell key={i} fill={i === 0 ? '#ff0000' : '#cc3333'} />
                 ))}
               </Bar>
@@ -568,25 +808,23 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
 
         <div className="chart-card">
           <h3 className="chart-title">Engagement Rate — Top 10 Videos</h3>
-          <p className="chart-subtitle">Green &gt;4% · Orange 2–4% · Red &lt;2%</p>
-          <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={engChartData} margin={{ top: 8, right: 16, left: 0, bottom: 60 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" />
-              <XAxis
-                dataKey="name"
-                tick={{ fill: '#888', fontSize: 11 }}
-                angle={-35}
-                textAnchor="end"
-                interval={0}
-              />
-              <YAxis
-                tickFormatter={v => v + '%'}
-                tick={{ fill: '#888', fontSize: 11 }}
-                width={50}
-              />
+          <p className="chart-subtitle">Green &gt;4% · Orange 2–4% · Red &lt;2% · Click any bar to analyze</p>
+          <ResponsiveContainer width="100%" height={300}>
+            <BarChart
+              data={engChartData}
+              margin={{ top: 8, right: 16, left: 0, bottom: 8 }}
+              style={{ cursor: 'pointer' }}
+              onClick={e => {
+                const v = e?.activePayload?.[0]?.payload?.video;
+                if (v && onVideoSelect) onVideoSelect(v);
+              }}
+            >
+              <CartesianGrid strokeDasharray="3 3" stroke="#1e1e1e" />
+              <XAxis dataKey="name" tick={{ fill: '#888', fontSize: 13 }} />
+              <YAxis tickFormatter={v => v + '%'} tick={{ fill: '#888', fontSize: 12 }} width={50} />
               <Tooltip content={<CustomTooltip />} />
-              <Bar dataKey="Engagement %" radius={[4, 4, 0, 0]}>
-                {engChartData.map((entry, i) => (
+              <Bar dataKey="Engagement %" radius={[4, 4, 0, 0]} label={{ content: props => renderBarLabel({ ...props, value: engChartData[props.index]?.title }) }}>
+                {engChartData.map((_, i) => (
                   <Cell key={i} fill={engBarColors[i]} />
                 ))}
               </Bar>
@@ -598,8 +836,14 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
       {/* Title & Upload Pattern Tracker */}
       <div className="two-col-grid">
         <div className="chart-card">
-          <h3 className="chart-title">✍️ Title Pattern Performance</h3>
-          <p className="chart-subtitle">Avg views by title type across all loaded videos</p>
+          <TITooltip
+            title="Title Pattern Performance"
+            desc="Videos are grouped by their title style — Question (ends with ?), How-to (starts with How/Why/What), List (starts with a number), Shock (uses dramatic words), or Other. The bar shows the average views for each group, so you can see which title style performs best on this channel."
+            placement="top"
+          >
+            <h3 className="chart-title" style={{ cursor: 'default' }}>✍️ Title Pattern Performance</h3>
+          </TITooltip>
+          <p className="chart-subtitle">Avg views by title style — click a tab to browse its videos</p>
           <ResponsiveContainer width="100%" height={220}>
             <BarChart data={patternData} layout="vertical" margin={{ top: 4, right: 16, left: 55, bottom: 4 }}>
               <CartesianGrid strokeDasharray="3 3" stroke="#2a2a2a" horizontal={false} />
@@ -613,17 +857,71 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
               </Bar>
             </BarChart>
           </ResponsiveContainer>
+
+          {/* Clickable category tabs */}
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginTop: 8 }}>
-            {patternData.map(d => (
-              <span key={d.name} style={{
-                fontSize: 11, padding: '3px 8px', borderRadius: 4,
-                color: patternColors[d.name] || '#555',
-                background: (patternColors[d.name] || '#555') + '18',
-              }}>
-                {d.name} ({d.count} videos)
-              </span>
-            ))}
+            {patternData.map(d => {
+              const color = patternColors[d.name] || '#555';
+              const active = selectedPattern === d.name;
+              return (
+                <button
+                  key={d.name}
+                  onClick={() => setSelectedPattern(active ? null : d.name)}
+                  style={{
+                    fontSize: 11, padding: '3px 8px', borderRadius: 4, border: 'none',
+                    cursor: 'pointer', color: active ? '#fff' : color,
+                    background: active ? color : color + '22',
+                    fontWeight: active ? 700 : 400,
+                    transition: 'all 0.15s',
+                  }}
+                >
+                  {d.name} ({d.count} videos)
+                </button>
+              );
+            })}
           </div>
+
+          {/* Video list for selected pattern */}
+          {selectedPattern && (() => {
+            const filtered = videos.filter(v => categorizeTitle(v.snippet?.title) === selectedPattern);
+            const color = patternColors[selectedPattern] || '#555';
+            return (
+              <div style={{ marginTop: 12, border: `1px solid ${color}33`, borderRadius: 8, overflow: 'hidden' }}>
+                <div style={{ background: color + '18', padding: '6px 12px', fontSize: 11, fontWeight: 700, color, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <span>{selectedPattern} — {filtered.length} videos</span>
+                  <button onClick={() => setSelectedPattern(null)} style={{ background: 'none', border: 'none', color: '#555', cursor: 'pointer', fontSize: 14, lineHeight: 1 }}>✕</button>
+                </div>
+                <div style={{ maxHeight: 220, overflowY: 'auto' }}>
+                  {filtered.map(v => (
+                    <div
+                      key={v.id}
+                      onClick={() => onVideoSelect(v)}
+                      style={{
+                        display: 'flex', alignItems: 'center', gap: 10,
+                        padding: '8px 12px', cursor: 'pointer',
+                        borderBottom: '1px solid #1a1a1a',
+                        transition: 'background 0.12s',
+                      }}
+                      onMouseEnter={e => e.currentTarget.style.background = '#1a1a1a'}
+                      onMouseLeave={e => e.currentTarget.style.background = 'transparent'}
+                    >
+                      {v.snippet?.thumbnails?.default?.url && (
+                        <img src={v.snippet.thumbnails.default.url} alt="" style={{ width: 48, height: 36, borderRadius: 4, objectFit: 'cover', flexShrink: 0 }} />
+                      )}
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12, color: '#ddd', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {v.snippet?.title}
+                        </div>
+                        <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>
+                          {formatNum(v.statistics?.viewCount || 0)} views
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="chart-card">

@@ -1,0 +1,9 @@
+# Never include secrets or local data in the image
+.env
+db.json
+tubeintel.sqlite
+
+# Not needed at runtime
+node_modules
+*.md
+.dockerignore

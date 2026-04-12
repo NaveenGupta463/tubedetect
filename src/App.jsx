@@ -36,14 +36,18 @@ import SavedWorkspaces from './components/SavedWorkspaces';
 import WeeklyPdfReport from './components/WeeklyPdfReport';
 import PricingPage from './components/PricingPage';
 
+// Improve hub (Fix My Video + Viral Playbook standalone view)
+import ImproveHub from './components/ImproveHub';
+
 export default function App() {
   const { tier, setTier, canUseAI, consumeAICall, remainingCalls } = useTier();
   const { token, profile: oauthProfile, isConnected, connect, disconnect } = useOAuth();
 
-  const [activeView,    setActiveView]    = useState('search');
+  const [activeView,    setActiveView]    = useState('discover');
   const [channel,       setChannel]       = useState(null);
   const [videos,        setVideos]        = useState([]);
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [videoAiData,   setVideoAiData]   = useState(null);
   const [competitors,   setCompetitors]   = useState([]);
   // 'grid' sub-view for the video section: show grid or individual video
   const [videoSubView,  setVideoSubView]  = useState('grid'); // 'grid' | 'video'
@@ -114,37 +118,95 @@ export default function App() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const handleUpgrade = useCallback(() => setActiveView('pricing'), []);
+  // ── History API: push a state entry on every navigation ──────────────────
+  const pushNav = useCallback((state) => {
+    window.history.pushState(state, '');
+  }, []);
+
+  // Restore state when user hits back/forward
+  useEffect(() => {
+    // Stamp the initial entry so the very first back press has somewhere to land
+    window.history.replaceState({ view: 'search' }, '');
+
+    function onPop(e) {
+      const s = e.state;
+      if (!s) return;
+
+      if (s.view === 'video' && s.videoId) {
+        // Find video in current videos array by id
+        setVideos(prev => {
+          const vid = prev.find(v => v.id === s.videoId);
+          if (vid) {
+            setSelectedVideo(vid);
+            setVideoSubView('video');
+          } else {
+            setVideoSubView('grid');
+          }
+          return prev;
+        });
+        setActiveView('video');
+        if (s.scrollY != null) setTimeout(() => window.scrollTo(0, s.scrollY), 50);
+      } else if (s.view === 'grid') {
+        setVideoSubView('grid');
+        setActiveView('video');
+        if (s.scrollY != null) setTimeout(() => window.scrollTo(0, s.scrollY), 50);
+      } else {
+        setActiveView(s.view || 'search');
+      }
+    }
+
+    window.addEventListener('popstate', onPop);
+    return () => window.removeEventListener('popstate', onPop);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleUpgrade = useCallback(() => {
+    pushNav({ view: 'pricing' });
+    setActiveView('pricing');
+  }, [pushNav]);
 
   const handleChannelLoad = useCallback((ch, vids) => {
     setChannel(ch);
     setVideos(vids);
     saveLastChannel(ch, vids);
     setVideoSubView('grid');
-    setActiveView('channel');
-  }, []);
+    pushNav({ view: 'discover' });
+    setActiveView('discover');
+  }, [pushNav]);
 
   const handleVideoSelect = useCallback((video) => {
-    setSavedScrollY(window.scrollY);
+    const scrollY = window.scrollY;
+    setSavedScrollY(scrollY);
     setSelectedVideo(video);
+    try {
+      const cached = localStorage.getItem('tubeintel_deep_' + video.id);
+      setVideoAiData(cached ? JSON.parse(cached) : null);
+    } catch {
+      setVideoAiData(null);
+    }
     setVideoSubView('video');
+    pushNav({ view: 'video', videoId: video.id, scrollY });
     setActiveView('video');
     window.scrollTo(0, 0);
-  }, []);
+  }, [pushNav]);
 
   const handleBackToGrid = useCallback(() => {
-    setVideoSubView('grid');
-    setActiveView(channel ? 'video' : 'search');
-    setTimeout(() => window.scrollTo(0, savedScrollY), 50);
-  }, [channel, savedScrollY]);
+    // Use browser back — popstate will restore the grid state
+    window.history.back();
+  }, []);
 
   const handleNavigate = useCallback((view) => {
-    // When navigating to 'video', always start at grid
-    if (view === 'video') {
-      setVideoSubView('grid');
-    }
+    // 'analyze' from sidebar = browse grid; everywhere else, preserve videoSubView
+    if (view === 'analyze') setVideoSubView('grid');
+    pushNav({ view });
     setActiveView(view);
-  }, []);
+  }, [pushNav]);
+
+  // Navigate to the current video's analysis page without resetting to grid
+  const handleGoToCurrentVideo = useCallback(() => {
+    if (selectedVideo) setVideoSubView('video');
+    setActiveView('analyze');
+  }, [selectedVideo]);
 
   const handleLoadWorkspace = useCallback((ws) => {
     if (ws.primary) {
@@ -166,6 +228,101 @@ export default function App() {
 
   const renderView = () => {
     switch (activeView) {
+      // ── New primary nav views ──────────────────────────────────────────────
+      case 'discover':
+        if (!channel) return <ChannelSearch onLoad={handleChannelLoad} />;
+        return (
+          <>
+            <div style={{
+              background: 'linear-gradient(135deg, #08080f 0%, #0d0d0d 100%)',
+              border: '1px solid #1a1a2e', borderRadius: 14, padding: '18px 22px',
+              marginBottom: 20,
+            }}>
+              <div style={{ fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#333', marginBottom: 12 }}>
+                What do you want to do today?
+              </div>
+              <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+                <button
+                  onClick={() => handleNavigate('analyze')}
+                  style={{
+                    flex: 1, minWidth: 140, background: '#111', border: '1px solid #222',
+                    borderRadius: 10, padding: '12px 16px', cursor: 'pointer',
+                    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem' }}>🎬</span>
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#ccc' }}>Analyze a Video</span>
+                  <span style={{ fontSize: '0.72rem', color: '#444' }}>Deep performance breakdown</span>
+                </button>
+                <button
+                  onClick={() => handleNavigate('improve')}
+                  style={{
+                    flex: 1, minWidth: 140, position: 'relative', overflow: 'hidden',
+                    background: 'linear-gradient(135deg, #1a0e35 0%, #2d1065 100%)',
+                    border: '1px solid #7c3aed66', borderRadius: 10, padding: '12px 16px',
+                    cursor: 'pointer', display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                    boxShadow: '0 0 20px rgba(124,58,237,0.2)',
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem' }}>✨</span>
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#e9d5ff' }}>Fix My Video</span>
+                  <span style={{ fontSize: '0.72rem', color: '#7c5bb5' }}>AI rewrites, hooks &amp; CTAs</span>
+                  <span style={{
+                    position: 'absolute', top: 8, right: 8,
+                    fontSize: 8, fontWeight: 800, background: '#7c3aed', color: '#fff',
+                    borderRadius: 4, padding: '2px 6px', letterSpacing: 0.3,
+                  }}>MOST POWERFUL</span>
+                </button>
+                <button
+                  onClick={() => handleNavigate('trends')}
+                  style={{
+                    flex: 1, minWidth: 140, background: '#111', border: '1px solid #222',
+                    borderRadius: 10, padding: '12px 16px', cursor: 'pointer',
+                    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 4,
+                  }}
+                >
+                  <span style={{ fontSize: '1.1rem' }}>🔥</span>
+                  <span style={{ fontSize: '0.82rem', fontWeight: 700, color: '#ccc' }}>Research Niche</span>
+                  <span style={{ fontSize: '0.72rem', color: '#444' }}>Trend gaps &amp; video ideas</span>
+                </button>
+              </div>
+            </div>
+            <ChannelOverview channel={channel} videos={videos} onVideoSelect={handleVideoSelect} competitors={competitors} />
+          </>
+        );
+
+      case 'analyze':
+        if (videoSubView === 'video' && selectedVideo) {
+          return (
+            <VideoAnalysis
+              video={selectedVideo}
+              allVideos={videos}
+              channelStats={channel?.statistics}
+              onBack={handleBackToGrid}
+              onVideoSelect={handleVideoSelect}
+              onNavigate={handleNavigate}
+              aiData={videoAiData}
+              setAiData={setVideoAiData}
+              {...aiProps}
+            />
+          );
+        }
+        return channel
+          ? <VideoGrid channel={channel} videos={videos} onVideoSelect={handleVideoSelect} onSwitchChannel={() => handleNavigate('discover')} />
+          : <ChannelSearch onLoad={handleChannelLoad} />;
+
+      case 'improve':
+        return (
+          <ImproveHub
+            video={selectedVideo}
+            aiData={videoAiData}
+            onNavigate={handleNavigate}
+            onGoToVideo={handleGoToCurrentVideo}
+            {...aiProps}
+          />
+        );
+
+      // ── Legacy IDs kept for extension deep-links ───────────────────────────
       case 'search':
         return <ChannelSearch onLoad={handleChannelLoad} />;
 
@@ -184,6 +341,9 @@ export default function App() {
               channelStats={channel?.statistics}
               onBack={handleBackToGrid}
               onVideoSelect={handleVideoSelect}
+              onNavigate={handleNavigate}
+              aiData={videoAiData}
+              setAiData={setVideoAiData}
               {...aiProps}
             />
           );
@@ -292,7 +452,9 @@ export default function App() {
         return <PricingPage currentTier={tier} onSelectTier={handleSelectTier} />;
 
       default:
-        return <ChannelSearch onLoad={handleChannelLoad} />;
+        return channel
+          ? <ChannelOverview channel={channel} videos={videos} onVideoSelect={handleVideoSelect} competitors={competitors} />
+          : <ChannelSearch onLoad={handleChannelLoad} />;
     }
   };
 

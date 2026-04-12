@@ -2,3 +2,7 @@
 node_modules
 dist
 .claude/
+backend/.env
+backend/db.json
+backend/tubeintel.sqlite
+backend/cache.json

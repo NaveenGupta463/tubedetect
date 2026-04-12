@@ -1,14 +1,31 @@
 import { useState, useCallback, useEffect } from 'react';
+import { loginWithGoogle, clearJWT } from '../api/auth';
 
-const TOKEN_KEY   = 'tubeintel_oauth_token';
-const EXPIRY_KEY  = 'tubeintel_oauth_expiry';
-const PROFILE_KEY = 'tubeintel_oauth_profile';
+const TOKEN_KEY    = 'tubeintel_oauth_token';
+const EXPIRY_KEY   = 'tubeintel_oauth_expiry';
+const PROFILE_KEY  = 'tubeintel_oauth_profile';
+const VERIFIER_KEY = 'tubeintel_pkce_verifier';
 
 const SCOPES = [
   'https://www.googleapis.com/auth/youtube.readonly',
   'https://www.googleapis.com/auth/yt-analytics.readonly',
   'https://www.googleapis.com/auth/yt-analytics-monetary.readonly',
 ].join(' ');
+
+// ── PKCE helpers ──────────────────────────────────────────────────────────────
+function generateVerifier() {
+  const array = new Uint8Array(96);
+  crypto.getRandomValues(array);
+  return btoa(String.fromCharCode(...array))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
+
+async function generateChallenge(verifier) {
+  const encoded = new TextEncoder().encode(verifier);
+  const digest  = await crypto.subtle.digest('SHA-256', encoded);
+  return btoa(String.fromCharCode(...new Uint8Array(digest)))
+    .replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+}
 
 export function useOAuth() {
   const [token,   setToken]   = useState(() => {
@@ -22,49 +39,66 @@ export function useOAuth() {
     try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || 'null'); } catch { return null; }
   });
 
-  // Handle OAuth redirect (implicit flow: token in URL hash)
+  // ── Handle PKCE redirect: ?code=xxx ─────────────────────────────────────
   useEffect(() => {
-    const hash = window.location.hash;
-    if (!hash) return;
-    const params = new URLSearchParams(hash.replace('#', '?'));
-    const accessToken = params.get('access_token');
-    const expiresIn   = parseInt(params.get('expires_in') || '3600');
-    if (!accessToken) return;
-    console.log('[TubeIntel OAuth] Token received successfully. Current origin:', window.location.origin);
+    const params       = new URLSearchParams(window.location.search);
+    const code         = params.get('code');
+    const codeVerifier = sessionStorage.getItem(VERIFIER_KEY);
 
-    // Clean URL
-    window.history.replaceState(null, '', window.location.pathname + window.location.search);
+    if (!code || !codeVerifier) return;
 
-    const expiry = Date.now() + expiresIn * 1000;
-    localStorage.setItem(TOKEN_KEY,  accessToken);
-    localStorage.setItem(EXPIRY_KEY, String(expiry));
-    setToken(accessToken);
+    // Clean URL immediately so refresh doesn't re-trigger
+    window.history.replaceState(null, '', window.location.pathname);
+    sessionStorage.removeItem(VERIFIER_KEY);
 
-    // Fetch profile info
-    fetchProfile(accessToken).then(p => {
-      if (p) {
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
-        setProfile(p);
-      }
-    });
+    // Exchange code + verifier with backend → get access_token + JWT
+    loginWithGoogle({ code, codeVerifier, redirectUri: window.location.origin })
+      .then(({ accessToken, backendUser }) => {
+        if (accessToken) {
+          const expiry = Date.now() + 3600 * 1000; // 1 hour
+          localStorage.setItem(TOKEN_KEY,  accessToken);
+          localStorage.setItem(EXPIRY_KEY, String(expiry));
+          setToken(accessToken);
+        }
+        if (backendUser) {
+          localStorage.setItem('yta_tier', backendUser.tier);
+        }
+        if (accessToken) {
+          fetchProfile(accessToken).then(p => {
+            if (p) {
+              localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+              setProfile(p);
+            }
+          });
+        }
+      })
+      .catch(err => console.warn('[TubeIntel] PKCE exchange failed:', err.message));
   }, []);
 
-  const connect = useCallback(() => {
+  const connect = useCallback(async () => {
     const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
     if (!clientId) {
-      alert('Google OAuth is not configured. Please add VITE_GOOGLE_CLIENT_ID to your .env file.\n\nSee the Setup Guide in the My Analytics section for instructions.');
+      alert('Google OAuth is not configured. Please add VITE_GOOGLE_CLIENT_ID to your .env file.');
       return;
     }
+
+    const verifier   = generateVerifier();
+    const challenge  = await generateChallenge(verifier);
     const redirectUri = window.location.origin;
-    console.log('[TubeIntel OAuth] redirect_uri being sent to Google:', redirectUri);
+
+    // Store verifier in sessionStorage — survives the redirect, cleared after use
+    sessionStorage.setItem(VERIFIER_KEY, verifier);
+
     const url = new URL('https://accounts.google.com/o/oauth2/v2/auth');
-    url.searchParams.set('client_id',     clientId);
-    url.searchParams.set('redirect_uri',  redirectUri);
-    url.searchParams.set('response_type', 'token');
-    url.searchParams.set('scope',         SCOPES);
-    url.searchParams.set('access_type',   'online');
-    url.searchParams.set('prompt',        'select_account consent');
-    console.log('[TubeIntel OAuth] Full auth URL:', url.toString());
+    url.searchParams.set('client_id',             clientId);
+    url.searchParams.set('redirect_uri',          redirectUri);
+    url.searchParams.set('response_type',         'code');
+    url.searchParams.set('scope',                 SCOPES);
+    url.searchParams.set('access_type',           'offline');
+    url.searchParams.set('prompt',                'select_account consent');
+    url.searchParams.set('code_challenge',        challenge);
+    url.searchParams.set('code_challenge_method', 'S256');
+
     window.location.href = url.toString();
   }, []);
 
@@ -72,13 +106,13 @@ export function useOAuth() {
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(EXPIRY_KEY);
     localStorage.removeItem(PROFILE_KEY);
+    sessionStorage.removeItem(VERIFIER_KEY);
+    clearJWT();
     setToken(null);
     setProfile(null);
   }, []);
 
-  const isConnected = !!token;
-
-  return { token, profile, isConnected, connect, disconnect };
+  return { token, profile, isConnected: !!token, connect, disconnect };
 }
 
 async function fetchProfile(token) {

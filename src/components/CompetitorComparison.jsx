@@ -88,14 +88,14 @@ function CompetitorSlotInput({ onLoad }) {
   useEffect(() => {
     if (debounceRef.current) clearTimeout(debounceRef.current);
     const q = input.trim();
-    if (q.length < 2) { setSuggestions([]); setSugLoading(false); return; }
+    if (q.length < 4) { setSuggestions([]); setSugLoading(false); return; }
     setSugLoading(true);
     debounceRef.current = setTimeout(async () => {
       const results = await searchChannels(q, 5);
       setSuggestions(results);
       setSugLoading(false);
       if (results.length > 0) setShowDropdown(true);
-    }, 400);
+    }, 800);
     return () => clearTimeout(debounceRef.current);
   }, [input]);
 
@@ -259,8 +259,8 @@ export default function CompetitorComparison({ primaryChannel, primaryVideos, ti
     setNicheLoading(true);
     setNicheSuggestions([]);
 
-    // 3 parallel searches — one per top topic
-    const results = await Promise.all(topWords.map(w => searchChannels(w, 8)));
+    // Single search using the top keyword (saves 200 quota units vs 3 parallel)
+    const results = [await searchChannels(topWords[0], 8)];
 
     // Deduplicate
     const seen = new Set([primaryCh.id]);

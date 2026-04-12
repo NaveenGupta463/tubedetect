@@ -46,6 +46,123 @@
     return +((likes / views) * 100).toFixed(2);
   }
 
+  function viewsPerHour(stats, publishedAt) {
+    const views = parseInt(stats?.viewCount || 0);
+    if (!publishedAt || !views) return 0;
+    const ageHours = (Date.now() - new Date(publishedAt).getTime()) / 3600000;
+    if (ageHours < 0.5) return views;
+    return Math.round(views / ageHours);
+  }
+
+  function videoAgeLabel(publishedAt) {
+    if (!publishedAt) return '';
+    const ms   = Date.now() - new Date(publishedAt).getTime();
+    const mins = Math.floor(ms / 60000);
+    const hrs  = Math.floor(ms / 3600000);
+    const days = Math.floor(ms / 86400000);
+    const yrs  = Math.floor(days / 365);
+    if (yrs >= 1)  return yrs + 'y ago';
+    if (days >= 1) return days + 'd ago';
+    if (hrs >= 1)  return hrs + 'h ago';
+    return mins + 'm ago';
+  }
+
+  function velocityColor(vph) {
+    if (vph >= 100000) return '#00c853';
+    if (vph >= 10000)  return '#69f0ae';
+    if (vph >= 1000)   return '#ff9100';
+    if (vph >= 100)    return '#ff6d00';
+    return '#ff1744';
+  }
+
+  function velocityLabel(vph) {
+    if (vph >= 100000) return 'Viral';
+    if (vph >= 10000)  return 'Hot';
+    if (vph >= 1000)   return 'Active';
+    if (vph >= 100)    return 'Slow';
+    return 'Low';
+  }
+
+  // ── Decision Engine ───────────────────────────────────────────────────────────
+  function getViralSignal(eng, vph) {
+    if (eng >= 6 && vph >= 1000) return 'STRONG';
+    if (eng >= 3 || vph >= 500)  return 'MEDIUM';
+    return 'WEAK';
+  }
+
+  function getInsightText(signal, eng) {
+    if (signal === 'STRONG') return `High engagement (${eng}%) and strong velocity — this video is growing fast.`;
+    if (signal === 'MEDIUM') return `Moderate engagement (${eng}%) — performing around the channel norm.`;
+    return `Low engagement (${eng}%) and slow velocity — limited organic reach detected.`;
+  }
+
+  function getRedFlags(eng, commentRate, lr, vidScore) {
+    const flags = [];
+    if (commentRate < 0.05)            flags.push('Low comments vs views — weak community signal');
+    if (lr < 0.5)                      flags.push('Low like rate — shallow viewer interest');
+    if (eng < 1)                       flags.push('Poor engagement — content may lack emotional resonance');
+    if (vidScore >= 60 && eng < 2)     flags.push('High views but low engagement — shallow interest');
+    return flags.slice(0, 2);
+  }
+
+
+  // ── Speedometer dial SVG ──────────────────────────────────────────────────
+  function buildSpeedoDial(vph, col, label) {
+    const cx = 100, cy = 92, r = 70, sw = 11;
+
+    // Log scale: 0 vph = 0%, 100 000 vph = 100%
+    const pct = vph <= 0 ? 0 : Math.min(100, Math.log10(Math.max(1, vph)) / 5 * 100);
+
+    // Background arc path (top semicircle — sweep=1 = clockwise in SVG = goes OVER the top)
+    const bgPath = `M ${cx - r},${cy} A ${r},${r} 0 0,1 ${cx + r},${cy}`;
+
+    // Angle: 0% → 180° (left), 100% → 0° (right)
+    const angleRad = (1 - pct / 100) * Math.PI;
+    const ex = (cx + r * Math.cos(angleRad)).toFixed(1);
+    const ey = (cy - r * Math.sin(angleRad)).toFixed(1);
+    const valPath = pct < 0.5 ? null
+      : `M ${cx - r},${cy} A ${r},${r} 0 0,1 ${ex},${ey}`;
+
+    // Needle tip
+    const needleLen = r - 16;
+    const nx = (cx + needleLen * Math.cos(angleRad)).toFixed(1);
+    const ny = (cy - needleLen * Math.sin(angleRad)).toFixed(1);
+
+    // Tick marks at 0 / 25 / 50 / 75 / 100%
+    const ticks = [0, 25, 50, 75, 100].map(p => {
+      const a = (1 - p / 100) * Math.PI;
+      const x1 = (cx + (r + 7) * Math.cos(a)).toFixed(1);
+      const y1 = (cy - (r + 7) * Math.sin(a)).toFixed(1);
+      const x2 = (cx + (r + 1) * Math.cos(a)).toFixed(1);
+      const y2 = (cy - (r + 1) * Math.sin(a)).toFixed(1);
+      return `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#2a2a2a" stroke-width="2" stroke-linecap="round"/>`;
+    }).join('');
+
+    return `
+<div class="ti-speedo-wrap">
+  <svg viewBox="0 0 200 112" xmlns="http://www.w3.org/2000/svg" style="width:100%;display:block;">
+    <!-- Background arc -->
+    <path d="${bgPath}" fill="none" stroke="#1e1e1e" stroke-width="${sw}" stroke-linecap="round"/>
+    <!-- Value arc -->
+    ${valPath ? `<path d="${valPath}" fill="none" stroke="${col}" stroke-width="${sw}" stroke-linecap="round"/>` : ''}
+    <!-- Ticks -->
+    ${ticks}
+    <!-- Needle -->
+    <line x1="${cx}" y1="${cy}" x2="${nx}" y2="${ny}" stroke="${col}" stroke-width="2.5" stroke-linecap="round"/>
+    <!-- Pivot -->
+    <circle cx="${cx}" cy="${cy}" r="5" fill="#141414" stroke="${col}" stroke-width="1.5"/>
+    <!-- Value number -->
+    <text x="${cx}" y="${cy - 26}" font-size="21" font-weight="900" fill="${col}" text-anchor="middle" font-family="Inter,-apple-system,sans-serif">${fmtNum(vph)}</text>
+    <text x="${cx}" y="${cy - 11}" font-size="8.5" fill="#555" text-anchor="middle" font-family="Inter,-apple-system,sans-serif" letter-spacing="0.8">VIEWS / HR</text>
+    <!-- Velocity label -->
+    <text x="${cx}" y="${cy + 16}" font-size="11" font-weight="800" fill="${col}" text-anchor="middle" font-family="Inter,-apple-system,sans-serif" letter-spacing="1">${label.toUpperCase()}</text>
+    <!-- Range labels -->
+    <text x="${cx - r - 2}" y="${cy + 16}" font-size="8" fill="#2a2a2a" text-anchor="middle" font-family="Inter,sans-serif">0</text>
+    <text x="${cx + r + 2}" y="${cy + 16}" font-size="8" fill="#2a2a2a" text-anchor="middle" font-family="Inter,sans-serif">100K</text>
+  </svg>
+</div>`;
+  }
+
   function scoreVideo(stats, avgViews) {
     const views = parseInt(stats?.viewCount || 0);
     const eng   = calcEngagement(stats);
@@ -129,12 +246,24 @@
   }
 
   // ── Message to background ────────────────────────────────────────────────────
+  function isContextInvalidated(err) {
+    return err?.message?.includes('Extension context invalidated') ||
+           err?.message?.includes('context invalidated') ||
+           err?.message?.includes('Cannot read properties of undefined');
+  }
+
   function sendMsg(msg) {
     return new Promise((resolve, reject) => {
-      chrome.runtime.sendMessage(msg, (resp) => {
-        if (chrome.runtime.lastError) return reject(new Error(chrome.runtime.lastError.message));
-        resolve(resp);
-      });
+      try {
+        chrome.runtime.sendMessage(msg, (resp) => {
+          if (chrome.runtime.lastError) {
+            return reject(new Error(chrome.runtime.lastError.message));
+          }
+          resolve(resp);
+        });
+      } catch (err) {
+        reject(err);
+      }
     });
   }
 
@@ -163,7 +292,10 @@
           ${LOGO_SVG}
           TubeIntel
         </a>
-        <button class="ti-close" id="ti-close-btn" title="Close">✕</button>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="ti-refresh-btn" id="ti-refresh-btn" title="Refresh data">↻</button>
+          <button class="ti-close" id="ti-close-btn" title="Close">✕</button>
+        </div>
       </div>
       <div class="ti-body" id="ti-body">
         <div class="ti-loading"><div class="ti-spinner"></div>Loading…</div>
@@ -179,6 +311,11 @@
     });
     document.getElementById('ti-close-btn').addEventListener('click', () => {
       panel.classList.add('ti-hidden');
+    });
+
+    // Refresh button — force-bypasses all caches
+    document.getElementById('ti-refresh-btn').addEventListener('click', () => {
+      renderPanel(true);
     });
 
     // Open app button
@@ -251,7 +388,7 @@
   }
 
   // ── CHANNEL PAGE ──────────────────────────────────────────────────────────────
-  async function renderChannel(body) {
+  async function renderChannel(body, force = false) {
     const { channelId, handle } = getChannelIdentifier();
     if (!channelId && !handle) {
       body.innerHTML = `<div class="ti-error">Could not detect channel from URL.</div>`;
@@ -262,9 +399,18 @@
     try {
       const msgType = channelId ? 'GET_CHANNEL_BY_ID' : 'GET_CHANNEL_BY_HANDLE';
       const msgKey  = channelId ? 'channelId'         : 'handle';
-      resp = await sendMsg({ type: msgType, [msgKey]: channelId || handle });
+      resp = await sendMsg({ type: msgType, [msgKey]: channelId || handle, force });
     } catch (e) {
-      body.innerHTML = `<div class="ti-error">API error: ${e.message}</div>`;
+      if (isContextInvalidated(e)) {
+        body.innerHTML = `<div class="ti-error" style="text-align:center;padding:16px 12px;">
+          <div style="font-size:20px;margin-bottom:8px;">🔄</div>
+          <div style="font-weight:700;color:#ccc;margin-bottom:6px;">Extension reloaded</div>
+          <div style="font-size:11px;color:#666;margin-bottom:12px;">Refresh this page to reconnect TubeIntel.</div>
+          <button onclick="location.reload()" style="background:#7c4dff;border:none;border-radius:7px;padding:8px 16px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;">Refresh Page</button>
+        </div>`;
+      } else {
+        body.innerHTML = `<div class="ti-error">API error: ${e.message}</div>`;
+      }
       return;
     }
 
@@ -358,7 +504,7 @@
   }
 
   // ── VIDEO WATCH PAGE ──────────────────────────────────────────────────────────
-  async function renderVideo(body) {
+  async function renderVideo(body, force = false) {
     const videoId = getVideoId();
     if (!videoId) {
       body.innerHTML = `<div class="ti-error">No video ID found in URL.</div>`;
@@ -367,9 +513,18 @@
 
     let resp;
     try {
-      resp = await sendMsg({ type: 'GET_VIDEO', videoId });
+      resp = await sendMsg({ type: 'GET_VIDEO', videoId, force });
     } catch (e) {
-      body.innerHTML = `<div class="ti-error">API error: ${e.message}</div>`;
+      if (isContextInvalidated(e)) {
+        body.innerHTML = `<div class="ti-error" style="text-align:center;padding:16px 12px;">
+          <div style="font-size:20px;margin-bottom:8px;">🔄</div>
+          <div style="font-weight:700;color:#ccc;margin-bottom:6px;">Extension reloaded</div>
+          <div style="font-size:11px;color:#666;margin-bottom:12px;">Refresh this page to reconnect TubeIntel.</div>
+          <button onclick="location.reload()" style="background:#7c4dff;border:none;border-radius:7px;padding:8px 16px;font-size:12px;font-weight:700;color:#fff;cursor:pointer;">Refresh Page</button>
+        </div>`;
+      } else {
+        body.innerHTML = `<div class="ti-error">API error: ${e.message}</div>`;
+      }
       return;
     }
 
@@ -391,6 +546,11 @@
     const lr       = likeRate(stats);
     const engCol   = engColor(eng);
 
+    const vph      = viewsPerHour(stats, snip.publishedAt);
+    const vphCol   = velocityColor(vph);
+    const vphLabel = velocityLabel(vph);
+    const ageLabel = videoAgeLabel(snip.publishedAt);
+
     // Channel avg for score
     const chVideos = parseInt(chStat.videoCount || 1);
     const chViews  = parseInt(chStat.viewCount  || 0);
@@ -398,13 +558,29 @@
     const vidScore = scoreVideo(stats, chAvgV);
     const vidScoreCol = scoreColor(vidScore);
 
-    // Published date
-    const pub = snip.publishedAt ? new Date(snip.publishedAt).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '';
+    const commentRate = +((comments / (views || 1)) * 100).toFixed(3);
+
+    // Decision engine
+    const signal     = getViralSignal(eng, vph);
+    const insightTxt = getInsightText(signal, eng);
+    const redFlags   = getRedFlags(eng, commentRate, lr, vidScore);
+    const SC = {
+      STRONG: { color: '#22c55e', bg: '#0a1f0f', border: '#1a4a22' },
+      MEDIUM: { color: '#eab308', bg: '#1a1700', border: '#3a3200' },
+      WEAK:   { color: '#f97316', bg: '#1a0e00', border: '#3d2200' },
+    }[signal];
 
     const html = `
-      <div class="ti-video-title-main">${snip.title || 'Video'}</div>
-      ${pub ? `<div style="font-size:11px;color:#444;margin-bottom:10px;">📅 ${pub}</div>` : ''}
+      <div style="background:${SC.bg};border:1px solid ${SC.border};border-radius:10px;padding:12px 14px;margin-bottom:12px;">
+        <div style="font-size:9px;font-weight:700;letter-spacing:1.2px;text-transform:uppercase;color:${SC.color};margin-bottom:4px;">🔥 Viral Signal</div>
+        <div style="font-size:24px;font-weight:900;color:${SC.color};line-height:1;margin-bottom:6px;letter-spacing:1px;">${signal}</div>
+        <div style="font-size:11px;color:#888;line-height:1.5;">${insightTxt}</div>
+      </div>
 
+      <div class="ti-video-title-main">${snip.title || 'Video'}</div>
+      ${ageLabel ? `<div style="font-size:11px;color:#555;margin-bottom:10px;">📅 ${ageLabel}</div>` : ''}
+
+      <div class="ti-section-label">Core Metrics</div>
       ${statGrid([
         { label: 'Views',    value: fmtNum(views),    color: '#fff' },
         { label: 'Likes',    value: fmtNum(likes),    color: '#fff' },
@@ -412,19 +588,32 @@
         { label: 'Eng Rate', value: eng + '%',         color: engCol },
       ])}
 
-      <div class="ti-section-label">Performance Rates</div>
-      ${engBar('Like rate',    lr * 20,    lr + '%',    engCol)}
-      ${engBar('Comment rate', (comments / (views || 1)) * 100 * 50,
-               ((comments / (views || 1)) * 100).toFixed(3) + '%',
-               engColor((comments / (views || 1)) * 100))}
+      <div class="ti-section-label">Velocity</div>
+      ${buildSpeedoDial(vph, vphCol, vphLabel)}
+
+      <div class="ti-section-label">Engagement Breakdown</div>
+      ${engBar('Like rate',    Math.min(100, lr * 20),            lr + '%',            engCol)}
+      ${engBar('Comment rate', Math.min(100, commentRate * 500),  commentRate + '%',   engColor(commentRate * 20))}
+      ${engBar('Eng rate',     Math.min(100, eng * 10),           eng + '%',           engCol)}
+
+      ${redFlags.length ? `
+        <div class="ti-section-label" style="color:#f97316;margin-top:14px;">⚠️ Risks</div>
+        <div style="display:flex;flex-direction:column;gap:5px;margin-bottom:4px;">
+          ${redFlags.map(f => `
+            <div style="background:#160c00;border:1px solid #3d1a00;border-radius:7px;padding:7px 10px;font-size:11px;color:#fb923c;line-height:1.45;">
+              ⚠ ${f}
+            </div>
+          `).join('')}
+        </div>
+      ` : ''}
 
       <div class="ti-section-label">TubeIntel Score</div>
-      <div style="display:flex;align-items:center;gap:12px;margin-bottom:10px;">
-        <div style="font-size:36px;font-weight:900;color:${vidScoreCol};line-height:1;">${vidScore}</div>
-        <div>
-          <div style="font-size:11px;color:#555;margin-bottom:2px;">/ 100</div>
-          <div style="font-size:11px;color:${vidScoreCol};font-weight:700;">
-            ${vidScore >= 75 ? '🟢 Top performer' : vidScore >= 55 ? '🟡 Above average' : vidScore >= 40 ? '🟠 Average' : '🔴 Below average'}
+      <div class="ti-score-hero">
+        <div class="ti-score-big" style="color:${vidScoreCol}">${vidScore}</div>
+        <div class="ti-score-meta">
+          <div style="font-size:10px;color:#555;">/ 100</div>
+          <div class="ti-score-verdict" style="color:${vidScoreCol}">
+            ${vidScore >= 75 ? '● Top performer' : vidScore >= 55 ? '● Above avg' : vidScore >= 40 ? '● Average' : '● Below avg'}
           </div>
           ${ch ? `<div style="font-size:10px;color:#444;margin-top:2px;">vs ${ch.snippet?.title || 'channel'}</div>` : ''}
         </div>
@@ -433,21 +622,37 @@
       ${scoreBar('Engagement',   Math.min(100, Math.round(eng * 10)))}
       ${scoreBar('Like rate',    Math.min(100, Math.round(lr * 15)))}
 
+      <div class="ti-divider"></div>
+      <div style="background:linear-gradient(135deg,#0d0d1a,#120a1f);border:1px solid #7c4dff44;border-radius:10px;padding:14px;">
+        <div style="font-size:10px;font-weight:800;letter-spacing:1.2px;text-transform:uppercase;color:#7c4dff;margin-bottom:8px;">🔬 Unlock in TubeIntel</div>
+        ${[
+          '8-dimension AI score — Hook, SEO, Emotion, Algorithm & more',
+          'Hook strength analysis with retention phase breakdown',
+          '5 virality factor scores (Novelty, Shareability, Controversy…)',
+          'AI title rewrites with projected score improvements',
+          'Content DNA blueprint — replicate what made it viral',
+        ].map(item => `
+          <div style="display:flex;gap:8px;align-items:flex-start;margin-bottom:6px;">
+            <span style="color:#7c4dff;font-size:12px;flex-shrink:0;">✦</span>
+            <span style="font-size:11px;color:#888;line-height:1.5;">${item}</span>
+          </div>
+        `).join('')}
+      </div>
+
       ${ch ? `
         <div class="ti-divider"></div>
-        <div style="font-size:11px;color:#555;margin-bottom:6px;">Channel</div>
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-          ${ch.snippet?.thumbnails?.default?.url ? `<img style="width:28px;height:28px;border-radius:50%;object-fit:cover;border:1px solid #1e1e1e;" src="${ch.snippet.thumbnails.default.url}" alt="">` : ''}
+        <div class="ti-channel-mini">
+          ${ch.snippet?.thumbnails?.default?.url ? `<img class="ti-channel-mini-avatar" src="${ch.snippet.thumbnails.default.url}" alt="">` : ''}
           <div>
             <div style="font-size:12px;font-weight:700;color:#ccc;">${ch.snippet?.title || ''}</div>
-            <div style="font-size:10px;color:#555;">${fmtNum(chStat.subscriberCount)} subs</div>
+            <div style="font-size:10px;color:#555;">${fmtNum(chStat.subscriberCount)} subs · ${fmtNum(chStat.videoCount)} videos</div>
           </div>
         </div>
       ` : ''}
 
       <div class="ti-divider"></div>
-      <button class="ti-btn ti-btn-primary" id="ti-deep-analyze">
-        🧠 Deep Analyze This Video
+      <button class="ti-btn ti-btn-viral" id="ti-deep-analyze">
+        🚀 Get Full Viral Breakdown
       </button>
       <button class="ti-btn ti-btn-secondary" id="ti-open-channel-from-video">
         📺 Analyze Channel
@@ -566,9 +771,10 @@
   let currentUrl  = '';
   let currentPanel = null;
 
-  async function renderPanel() {
+  async function renderPanel(force = false) {
     const url = window.location.href;
-    if (url === currentUrl && currentPanel) return;
+    // Skip dedup check when force-refreshing
+    if (!force && url === currentUrl && currentPanel) return;
     currentUrl = url;
 
     if (!currentPanel) {
@@ -580,13 +786,30 @@
 
     const pageType = getPageType();
 
-    body.innerHTML = `<div class="ti-loading"><div class="ti-spinner"></div>Loading…</div>`;
+    // Auto-open panel whenever navigating to a video page
+    if (pageType === 'video') {
+      currentPanel.classList.remove('ti-hidden');
+    }
+
+    // Spin the refresh button while loading
+    const refreshBtn = document.getElementById('ti-refresh-btn');
+    if (refreshBtn) {
+      refreshBtn.style.animation = 'ti-spin 0.8s linear infinite';
+      refreshBtn.disabled = true;
+    }
+
+    body.innerHTML = `<div class="ti-loading"><div class="ti-spinner"></div>${force ? 'Refreshing…' : 'Loading…'}</div>`;
 
     switch (pageType) {
-      case 'channel': await renderChannel(body); break;
-      case 'video':   await renderVideo(body);   break;
-      case 'studio':  renderStudio(body);         break;
-      default:        renderOther(body);          break;
+      case 'channel': await renderChannel(body, force); break;
+      case 'video':   await renderVideo(body, force);   break;
+      case 'studio':  renderStudio(body);               break;
+      default:        renderOther(body);                break;
+    }
+
+    if (refreshBtn) {
+      refreshBtn.style.animation = '';
+      refreshBtn.disabled = false;
     }
   }
 
