@@ -39,14 +39,20 @@ import PricingPage from './components/PricingPage';
 // Improve hub (Fix My Video + Viral Playbook standalone view)
 import ImproveHub from './components/ImproveHub';
 
+// Dashboard
+import DashboardLanding from './components/DashboardLanding';
+import DashboardLayout from './layouts/DashboardLayout';
+import Analyze         from './screens/Analyze';
+
 export default function App() {
   const { tier, setTier, canUseAI, consumeAICall, remainingCalls } = useTier();
   const { token, profile: oauthProfile, isConnected, connect, disconnect } = useOAuth();
 
-  const [activeView,    setActiveView]    = useState('discover');
+  const [activeView,    setActiveView]    = useState('dashboard');
   const [channel,       setChannel]       = useState(null);
   const [videos,        setVideos]        = useState([]);
   const [selectedVideo, setSelectedVideo] = useState(null);
+  const [selectedNiche, setSelectedNiche] = useState(null);
   const [videoAiData,   setVideoAiData]   = useState(null);
   const [competitors,   setCompetitors]   = useState([]);
   // 'grid' sub-view for the video section: show grid or individual video
@@ -54,6 +60,8 @@ export default function App() {
   const [savedScrollY,  setSavedScrollY]  = useState(0);
   const [deepLinkLoading, setDeepLinkLoading] = useState(false);
   const [deepLinkError,   setDeepLinkError]   = useState('');
+  const [pendingVideoUrl,   setPendingVideoUrl]   = useState('');
+  const [navigationPayload, setNavigationPayload] = useState(null);
 
   // ── Deep-link via URL query params (from Chrome extension) ──────────────
   // Extension opens: http://localhost:5173?action=video&id=XXX
@@ -174,6 +182,17 @@ export default function App() {
     setActiveView('discover');
   }, [pushNav]);
 
+  const handleVideoLoad = useCallback((video, ch, vids) => {
+    if (ch)   { setChannel(ch); saveLastChannel(ch, vids || []); }
+    if (vids) setVideos(vids);
+    setSelectedVideo(video);
+    setVideoAiData(null);
+    setVideoSubView('video');
+    pushNav({ view: 'video', videoId: video.id });
+    setActiveView('video');
+    window.scrollTo(0, 0);
+  }, [pushNav]);
+
   const handleVideoSelect = useCallback((video) => {
     const scrollY = window.scrollY;
     setSavedScrollY(scrollY);
@@ -195,9 +214,20 @@ export default function App() {
     window.history.back();
   }, []);
 
-  const handleNavigate = useCallback((view) => {
-    // 'analyze' from sidebar = browse grid; everywhere else, preserve videoSubView
-    if (view === 'analyze') setVideoSubView('grid');
+  const handleNavigate = useCallback((view, data = null) => {
+    setNavigationPayload(data ?? null);
+    if (data?.niche) setSelectedNiche(data.niche);
+    if (data?.videoUrl) {
+      setVideoAiData(null);
+      setPendingVideoUrl(data.videoUrl);
+    }
+    if (data?.video) {
+      setSelectedVideo(data.video);
+      setVideoSubView('video');
+    } else if (view === 'analyze' && !data?.tab) {
+      // 'analyze' from sidebar = browse grid
+      setVideoSubView('grid');
+    }
     pushNav({ view });
     setActiveView(view);
   }, [pushNav]);
@@ -228,6 +258,37 @@ export default function App() {
 
   const renderView = () => {
     switch (activeView) {
+      // ── Dashboard (primary entry point) ───────────────────────────────────
+      case 'dashboard':
+        return (
+          <DashboardLanding
+            channel={channel}
+            onChannelLoad={handleChannelLoad}
+            onVideoLoad={handleVideoLoad}
+            onNavigate={handleNavigate}
+          />
+        );
+
+      case 'ai-analyze':
+        return (
+          <Analyze
+            defaultUrl={pendingVideoUrl}
+            onClearDefaultUrl={() => setPendingVideoUrl('')}
+            {...aiProps}
+          />
+        );
+
+      case 'whatToPost':
+        return (
+          <DashboardLayout
+            aiProps={aiProps}
+            channel={channel}
+            videos={videos}
+            activeTab="whatToPost"
+            onTabChange={handleNavigate}
+          />
+        );
+
       // ── New primary nav views ──────────────────────────────────────────────
       case 'discover':
         if (!channel) return <ChannelSearch onLoad={handleChannelLoad} />;
@@ -298,11 +359,15 @@ export default function App() {
               video={selectedVideo}
               allVideos={videos}
               channelStats={channel?.statistics}
+              niche={selectedNiche}
               onBack={handleBackToGrid}
               onVideoSelect={handleVideoSelect}
               onNavigate={handleNavigate}
               aiData={videoAiData}
               setAiData={setVideoAiData}
+              pendingTab={navigationPayload?.tab}
+              token={token}
+              oauthProfile={oauthProfile}
               {...aiProps}
             />
           );
@@ -318,6 +383,9 @@ export default function App() {
             aiData={videoAiData}
             onNavigate={handleNavigate}
             onGoToVideo={handleGoToCurrentVideo}
+            actionType={navigationPayload?.actionType}
+            insightMode={navigationPayload?.insightMode ?? videoAiData?.blueprint?.insightMode ?? null}
+            videoType={navigationPayload?.videoType   ?? videoAiData?.blueprint?.videoType   ?? null}
             {...aiProps}
           />
         );
@@ -339,11 +407,15 @@ export default function App() {
               video={selectedVideo}
               allVideos={videos}
               channelStats={channel?.statistics}
+              niche={selectedNiche}
               onBack={handleBackToGrid}
               onVideoSelect={handleVideoSelect}
               onNavigate={handleNavigate}
               aiData={videoAiData}
               setAiData={setVideoAiData}
+              pendingTab={navigationPayload?.tab}
+              token={token}
+              oauthProfile={oauthProfile}
               {...aiProps}
             />
           );
@@ -381,6 +453,8 @@ export default function App() {
           <PrePublishValidator
             channel={channel}
             videos={videos}
+            navigationPayload={navigationPayload}
+            onNavigate={handleNavigate}
             {...aiProps}
           />
         );
@@ -405,12 +479,13 @@ export default function App() {
           <ViralFormulaDecoder
             videos={videos}
             channel={channel}
+            onNavigate={handleNavigate}
             {...aiProps}
           />
         );
 
       case 'scorer':
-        return <TitleThumbnailScorer {...aiProps} />;
+        return <TitleThumbnailScorer onNavigate={handleNavigate} {...aiProps} />;
 
       case 'sentiment':
         return (
@@ -422,10 +497,10 @@ export default function App() {
         );
 
       case 'script':
-        return <ScriptOutlineGenerator {...aiProps} />;
+        return <ScriptOutlineGenerator onNavigate={handleNavigate} {...aiProps} />;
 
       case 'trends':
-        return <NicheTrendScanner {...aiProps} />;
+        return <NicheTrendScanner onNavigate={handleNavigate} {...aiProps} />;
 
       case 'workspaces':
         return (
@@ -452,9 +527,7 @@ export default function App() {
         return <PricingPage currentTier={tier} onSelectTier={handleSelectTier} />;
 
       default:
-        return channel
-          ? <ChannelOverview channel={channel} videos={videos} onVideoSelect={handleVideoSelect} competitors={competitors} />
-          : <ChannelSearch onLoad={handleChannelLoad} />;
+        return <DashboardLayout aiProps={aiProps} channel={channel} videos={videos} activeTab="analyze" onTabChange={handleNavigate} />;
     }
   };
 

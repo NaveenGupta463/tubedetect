@@ -7,9 +7,52 @@ const PHASE_COLORS = {
   Escalation: '#ff9100', Climax: '#00c853', Resolution: '#2196f3', CTA: '#7c4dff',
 };
 
-export default function VideoAnalysisHookTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade }) {
+export default function VideoAnalysisHookTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade, videoType }) {
   if (!aiData) return <AiRunPrompt onRun={handleDeepAnalysis} loading={aiLoading} noAI={!canUseAI?.()} onUpgrade={onUpgrade} tabLabel="Hook & Structure" />;
   if (aiLoading) return <><SkeletonCard lines={4} /><SkeletonCard lines={5} /><SkeletonCard lines={3} /></>;
+
+  if (videoType === 'LEGACY_VIRAL' && aiData.intelligence) {
+    const vbf = aiData.intelligence.viewerBehaviorFlow || {};
+    return (
+      <>
+        <div className="chart-card" style={{ borderTop: '3px solid #7c3aed' }}>
+          {vbf.entryTriggerType && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <span style={{ background: '#7c3aed22', border: '1px solid #7c3aed44', borderRadius: 6, padding: '3px 10px', fontSize: 12, color: '#c084fc', fontWeight: 700 }}>
+                Entry Trigger: {vbf.entryTriggerType}
+              </span>
+            </div>
+          )}
+          <h3 className="chart-title" style={{ marginBottom: 14 }}>Viewer Entry Analysis</h3>
+          {vbf.firstImpressionAnalysis && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>First 30 Seconds</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{vbf.firstImpressionAnalysis}</div>
+            </div>
+          )}
+          {vbf.behavioralFlow && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#a855f7', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Emotional Journey</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{vbf.behavioralFlow}</div>
+            </div>
+          )}
+          {vbf.viralEntryMechanism && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Viral Share Trigger</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{vbf.viralEntryMechanism}</div>
+            </div>
+          )}
+          {vbf.culturalTrigger && (
+            <div style={{ padding: '12px 14px', background: '#0a0a1a', border: '1px solid #2a1060', borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Cultural Dynamic</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{vbf.culturalTrigger}</div>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   const hs = aiData.hookStructure || {};
   return (
     <>
@@ -21,7 +64,7 @@ export default function VideoAnalysisHookTab({ aiData, aiLoading, handleDeepAnal
       }}>
         <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>ℹ️</span>
         <div style={{ fontSize: 12, color: '#7a9a6a', lineHeight: 1.6 }}>
-          <strong style={{ color: '#9aba8a' }}>How this works:</strong> Claude analyses the video <strong style={{ color: '#9aba8a' }}>title, stats, tags, and top comments</strong> — it cannot watch the video. The structure timeline is a <strong style={{ color: '#9aba8a' }}>recommended framework</strong> for this type of content, and retention numbers are <strong style={{ color: '#9aba8a' }}>predictions</strong> based on engagement signals — not real YouTube Analytics data.
+          <strong style={{ color: '#9aba8a' }}>How this works:</strong> Claude analyses the video <strong style={{ color: '#9aba8a' }}>title, stats, tags, and top comments</strong> — it cannot watch the video. Retention numbers are <strong style={{ color: '#9aba8a' }}>predictions</strong> based on engagement signals — not real YouTube Analytics data.
         </div>
       </div>
 
@@ -50,36 +93,6 @@ export default function VideoAnalysisHookTab({ aiData, aiLoading, handleDeepAnal
         )}
         {hs.hookAnalysis && <div className="ai-text-block" style={{ marginTop: 0 }}>{hs.hookAnalysis}</div>}
       </div>
-
-      {/* Structure Timeline */}
-      {hs.timeline?.length > 0 && (
-        <div className="chart-card">
-          <TITooltip title="Recommended Video Structure" desc={HOOK_TIPS.timeline} placement="top">
-            <h3 className="chart-title" style={{ cursor: 'default' }}>Recommended Video Structure</h3>
-          </TITooltip>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 10, marginTop: 14 }}>
-            {hs.timeline.map((phase, i) => {
-              const phaseColor = PHASE_COLORS[phase.phase] || '#7c4dff';
-              const str = phase.strength ?? 0;
-              return (
-                <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
-                  <div style={{ flexShrink: 0, width: 90 }}>
-                    <div style={{ fontSize: 12, fontWeight: 700, color: phaseColor }}>{phase.phase}</div>
-                    <div style={{ fontSize: 10, color: '#444' }}>{phase.time}</div>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ height: 6, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden', marginBottom: 6 }}>
-                      <div style={{ height: '100%', width: `${str}%`, background: phaseColor, borderRadius: 3 }} />
-                    </div>
-                    <div style={{ fontSize: 12, color: '#888', lineHeight: 1.5 }}>{phase.desc}</div>
-                  </div>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: phaseColor, flexShrink: 0 }}>{str}</div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Retention Prediction */}
       {hs.retention?.length > 0 && (

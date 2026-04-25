@@ -333,8 +333,119 @@ IMPORTANT: Respond with ONLY the JSON object above. No markdown, no backticks, n
   throw new Error('AI returned an unexpected format. Please try again.');
 }
 
+async function analyzeVideoIntelligence(videoData, commentsText) {
+  const system = `You are a cultural pattern analyst specializing in viral media. Your role is to decode WHY content reaches massive scale — the psychological, cultural, and algorithmic forces that drove millions of views. You analyze legacy viral videos as historical artifacts: what made them resonate at a deep human level. You never give optimization advice. You extract patterns that creators can study and apply to future content. Always return valid JSON only.`;
+  const user = `Decode the viral pattern of this legacy YouTube video (${Math.round((Date.now() - new Date(videoData.publishedAt).getTime()) / 86400000 / 365 * 10) / 10} years old, ${(videoData.views / 1_000_000).toFixed(1)}M views):
+
+Title: "${videoData.title}"
+Views: ${videoData.views} | Likes: ${videoData.likes} | Comments: ${videoData.commentCount}
+Published: ${videoData.publishedAt} | Duration: ${videoData.duration}
+Tags: ${videoData.tags}
+
+Top comments:
+${commentsText}
+
+Return ONLY this JSON (no markdown, start with {, end with }):
+{
+  "intelligence": {
+    "patternStrengths": {
+      "overallStrength": "Extreme",
+      "titleStrength": "Very High",
+      "hookStrength": "High",
+      "emotionalResonance": "Extreme",
+      "shareability": "Very High",
+      "longevity": "High",
+      "summary": "2 sentences explaining what made this video achieve extreme-scale virality"
+    },
+    "titleIntelligence": {
+      "formulaType": "One label: e.g. Curiosity Gap / Controversy / Authority / How-To / Emotion",
+      "psychologicalHook": "2 sentences on the specific psychological mechanism that made this title irresistible at scale",
+      "whyItWorked": "2 sentences on why this exact phrasing triggered mass click behaviour",
+      "culturalContext": "1 sentence on what cultural moment or collective anxiety this title tapped into",
+      "replicableFormula": "The extractable title formula a creator could reuse: [Structure] + [Element] = [Result]"
+    },
+    "viewerBehaviorFlow": {
+      "entryTriggerType": "One label: e.g. Shock / Curiosity / FOMO / Identity / Nostalgia / Controversy",
+      "firstImpressionAnalysis": "2 sentences on what viewers experienced in the first 30 seconds that locked them in",
+      "behavioralFlow": "3 sentences describing the emotional journey viewers went through from start to finish",
+      "viralEntryMechanism": "2 sentences on what specifically triggered viewers to share — the precise emotional or social moment",
+      "culturalTrigger": "2 sentences on the broader cultural or social dynamic that made this content spread beyond its initial audience"
+    },
+    "psychologicalDrivers": {
+      "primaryDriver": "One label: e.g. Identity Validation / Shared Outrage / Collective Wonder / Social Currency / Escapism",
+      "secondaryDriver": "One label",
+      "driverAnalysis": "3 sentences explaining how the primary and secondary drivers worked together to generate sustained engagement",
+      "commentBehavior": "2 sentences on what the comment patterns reveal about the psychological state viewers were in",
+      "emotionalSignature": "The core emotion this video reliably triggered — in 5 words or fewer"
+    },
+    "distributionMechanics": {
+      "primaryDistributionVector": "One label: e.g. Algorithm Push / Social Share / Search Discovery / External Platform / Word of Mouth",
+      "velocityPattern": "2 sentences on how this video likely spread — slow burn vs spike, who shared it first",
+      "algorithmSignals": "2 sentences on which YouTube algorithm signals this video likely maximised (CTR, retention, shares, comments)",
+      "audienceExpansion": "2 sentences on how this video crossed its initial niche to reach a general audience",
+      "sustainedReachReason": "1 sentence on why this video continues to surface years after publication"
+    },
+    "reusablePatterns": [
+      {
+        "pattern": "Pattern name (3-5 words)",
+        "description": "2 sentences describing the specific reusable element from this video",
+        "howToApply": "1 concrete sentence on how a creator can use this pattern in new content"
+      },
+      {
+        "pattern": "Pattern name",
+        "description": "2 sentences",
+        "howToApply": "1 concrete sentence"
+      },
+      {
+        "pattern": "Pattern name",
+        "description": "2 sentences",
+        "howToApply": "1 concrete sentence"
+      },
+      {
+        "pattern": "Pattern name",
+        "description": "2 sentences",
+        "howToApply": "1 concrete sentence"
+      },
+      {
+        "pattern": "Pattern name",
+        "description": "2 sentences",
+        "howToApply": "1 concrete sentence"
+      }
+    ]
+  }
+}`;
+  const text = await callClaude(system, user, 4000);
+  console.log('[analyzeVideoIntelligence] raw response (first 300 chars):', text?.slice(0, 300));
+  const parsed = safeJSON(text);
+  if (parsed) return parsed;
+  console.warn('[analyzeVideoIntelligence] JSON parse failed. Full response:', text);
+  return null;
+}
+
 export async function analyzeVideoDeep(videoData, commentsText) {
-  const system = `You are TubeIntel's elite YouTube content analyst. You deliver deep, specific, actionable analysis across 5 key dimensions. You receive the video title, statistics, tags, and top viewer comments — you do NOT have access to the video content itself. For the structure timeline and retention curve, you must clearly frame your output as RECOMMENDATIONS and PREDICTIONS based on the title/niche/engagement data, not as descriptions of what actually happens in the video. Every insight must be specific to the video data — no generic platitudes. Always return valid JSON only.`;
+  if (videoData.videoType === 'LEGACY_VIRAL') {
+    return analyzeVideoIntelligence(videoData, commentsText);
+  }
+
+  const lowDataNote = videoData.sampleLevel === 'very_low'
+    ? '\n\nLOW DATA WARNING: This video has fewer than 500 views. All signal interpretation must be heavily hedged. Avoid definitive claims. Label all conclusions as preliminary. Do not generate strong pattern assertions.'
+    : videoData.sampleLevel === 'low'
+    ? '\n\nLOW SAMPLE NOTE: This video has limited views (under 2,000). Engagement signals have reduced reliability. Use moderately hedged language and avoid strong causal claims.'
+    : videoData.lowVolume
+    ? '\n\nLOW INTERACTION NOTE: This video has limited likes or comments. Engagement ratio signals may not be fully reliable — note this where relevant.'
+    : '';
+
+  const qualityNote = videoData.engagementQuality === 'LOW'
+    ? '\n\nENGAGEMENT QUALITY WARNING: Engagement signals on this video may not reflect real audience behavior. Use hedged language for all engagement-based conclusions.'
+    : '';
+
+  const mismatchNote = videoData.mismatch === 'UNDER_DISTRIBUTED'
+    ? '\n\nDISTRIBUTION PATTERN: Strong engagement relative to reach. Treat this as a distribution problem — the content is working, reach is the gap.'
+    : videoData.mismatch === 'WEAK_CONTENT'
+    ? '\n\nCONTENT PATTERN: High reach but weak engagement. This indicates a content or hook failure, not a distribution problem. Focus analysis on why viewers are not connecting.'
+    : '';
+
+  const system = `You are TubeIntel's elite YouTube content analyst. You deliver deep, specific, actionable analysis across 5 key dimensions. You receive the video title, statistics, tags, and top viewer comments — you do NOT have access to the video content itself. For the structure timeline and retention curve, you must clearly frame your output as RECOMMENDATIONS and PREDICTIONS based on the title/niche/engagement data, not as descriptions of what actually happens in the video. Every insight must be specific to the video data — no generic platitudes. Always return valid JSON only.${lowDataNote}${qualityNote}${mismatchNote}`;
   const user = `Analyze this YouTube video across 5 dimensions:
 
 Title: "${videoData.title}"
@@ -449,7 +560,7 @@ Return ONLY this JSON (no markdown, start with {, end with }):
   return null;
 }
 
-export async function validateVideo(formData) {
+export async function validateVideo(formData, thumbnailBase64 = null) {
 
   const system = `You are a senior YouTube growth strategist who has analyzed 10,000+ viral videos. You run a structured 4-layer decision engine before producing any output.
 
@@ -1261,27 +1372,15 @@ Respond ONLY with this JSON (no markdown, start with {, end with }):
   }
 }`;
 
-  const res = await fetch(`${BACKEND}/api/claude`, {
-    method:  'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body:    JSON.stringify({
-      model:      MODEL,
-      max_tokens: 9000,
-      system,
-      messages:   [{ role: 'user', content: user }],
-    }),
-  });
-
-  if (res.status === 401) throw new Error('AI service authentication error. Please restart the backend.');
-  if (res.status === 429) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error || 'AI call limit reached. Upgrade your plan to continue.');
+  let text;
+  if (thumbnailBase64 && formData.thumbInputType === 'image') {
+    const comma = thumbnailBase64.indexOf(',');
+    const b64data = comma !== -1 ? thumbnailBase64.slice(comma + 1) : thumbnailBase64;
+    const mediaType = thumbnailBase64.startsWith('data:image/png') ? 'image/png' : 'image/jpeg';
+    text = await callClaudeVision(system, { type: 'base64', data: b64data, mediaType }, user, 9000);
+  } else {
+    text = await callClaude(system, user, 9000);
   }
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({}));
-    throw new Error(err?.error?.message || err?.error || `TubeIntel error ${res.status}`);
-  }
-  const text = (await res.json()).content[0].text;
   const parsed = safeJSON(text);
   if (parsed) return parsed;
   throw new Error('Analysis returned an unexpected format. Please try again.');
@@ -1358,10 +1457,49 @@ Respond ONLY with this JSON (no markdown, start with {, end with }):
   return safeJSON(text) || null;
 }
 
-export async function generateVideoImprovements(videoData, analysisData) {
-  const system = `You are an elite YouTube growth strategist AI. Your job is to generate EXTREMELY ACCURATE, CONTEXT-AWARE video improvements. This is NOT generic content generation — this is precision optimization. Every single output must feel like it was written specifically for this exact video and no other. Generic outputs are failures.`;
+const DIMENSION_WEIGHTS = {
+  packaging:  0.40,
+  engagement: 0.30,
+  seo:        0.15,
+  velocity:   0.15,
+};
 
-  const ts  = analysisData.titleScores || {};
+const SPREAD_MAP = {
+  packaging: [
+    { dim: 'seo', factor: 0.15 },
+  ],
+};
+
+function computeWeightedOverall(dims) {
+  return Object.entries(DIMENSION_WEIGHTS).reduce((sum, [k, w]) => sum + (dims[k] ?? 0) * w, 0);
+}
+
+function applyImpactSpread(baseDims, projDims) {
+  const result     = { ...baseDims, ...projDims };
+  const sourceDims = { ...result };
+
+  for (const [srcDim, targets] of Object.entries(SPREAD_MAP)) {
+    const delta = (sourceDims[srcDim] ?? 0) - (baseDims[srcDim] ?? 0);
+    if (delta <= 0) continue;
+    for (const { dim, factor } of targets) {
+      const current    = result[dim] ?? baseDims[dim] ?? 0;
+      const spreadGain = Math.min(delta * factor, 0.5 * (100 - current));
+      result[dim]      = Math.min(100, current + spreadGain);
+    }
+  }
+  return result;
+}
+
+export async function generateVideoImprovements(videoData, analysisData) {
+  const system = `You are a brutally honest YouTube growth auditor. Your job is to identify exactly why a video is underperforming and produce the sharpest possible fixes. You do not soften feedback. You do not say "no major issues." Every video has specific, diagnosable failure points — your job is to name them precisely and fix them decisively.
+
+TONE RULES (non-negotiable):
+- Never use hedging language: no "might", "could", "may", "possibly", "perhaps", "consider"
+- Never say "no major weaknesses", "performing well", or "minor issues"
+- Every diagnosis is a declarative statement: "The hook fails to..." not "The hook might benefit from..."
+- Every fix is described as a certainty: "This title will..." not "This title could..."
+- Be specific to THIS video — no generic advice that applies to any video`;
+
   const dim = analysisData.dimensionScores || {};
   const thumbConcepts = analysisData.thumbnailConcepts || [];
 
@@ -1378,24 +1516,17 @@ Content DNA: ${analysisData.contentDNA}
 What's working: ${analysisData.strengths}
 What needs improvement: ${analysisData.weaknesses}
 
-8 DIMENSION SCORES (all /100):
-- Title & Thumbnail:   ${dim.titleThumbnail ?? '?'}
-- Hook & Retention:    ${dim.hookRetention ?? '?'}
-- Content Structure:   ${dim.contentStructure ?? '?'}
-- Engagement:          ${dim.engagement ?? '?'}
-- Algorithm:           ${dim.algorithm ?? '?'}
-- SEO & Discoverability: ${dim.seoDiscoverability ?? '?'}
-- Emotional Impact:    ${dim.emotionalImpact ?? '?'}
-- Value Delivery:      ${dim.valueDelivery ?? '?'}
-
-TITLE SUB-SCORES (all /100):
-Curiosity: ${ts.curiosity ?? '?'} | Emotional: ${ts.emotional ?? '?'} | Clarity: ${ts.clarity ?? '?'} | Scroll-Stopping: ${ts.scrollStopping ?? '?'}
-
-HOOK:
-Strength: ${analysisData.hookStrength ?? '?'}/100 | Type: ${analysisData.hookType} | Analysis: ${analysisData.hookAnalysis}
+4 DIMENSION SCORES (all /100):
+- Packaging (title + thumbnail):  ${dim.packaging  ?? '?'}
+- Engagement (likes + comments):  ${dim.engagement ?? '?'}
+- SEO & Discoverability:          ${dim.seo        ?? '?'}
+- Velocity (view momentum):       ${dim.velocity   ?? '?'}
 
 EXISTING THUMBNAIL CONCEPTS (from prior analysis — score each, do NOT rewrite them):
 ${thumbConcepts.map((c, i) => `${i + 1}. ${c}`).join('\n')}
+${analysisData.actionType === 'TITLE_REWRITE' ? `
+PRIORITY DIRECTIVE: The primary failure in this video is PACKAGING. Your title outputs are the most critical fixes. Generate three genuinely distinct title angles — each must clearly outperform the original.` : ''}${analysisData.actionType === 'BALANCE_TITLE' ? `
+PRIORITY DIRECTIVE: The primary failure in this video is TITLE IMBALANCE (high curiosity, low clarity). Your title outputs must fix this directly — pull back on clickbait framing while preserving curiosity. Specificity and proof of value are the priority.` : ''}
 
 ---
 
@@ -1406,33 +1537,32 @@ STEP 1 — BUILD CONTENT DNA (mandatory internal reasoning, do NOT output):
 4. emotional_trigger — curiosity / fear / truth / drama / inspiration / etc.
 5. content_type — story / opinion / educational / reaction / news / how-to
 
-STEP 2 — PERFORMANCE REASONING (internal only, do NOT output):
-Using all dimension scores above, reason about:
-- Which dimension is the single biggest growth limiter?
-- Which lever (CTR / retention / shareability) has most upside?
-- For each fix, estimate realistic improvements (typically 5–18 pts). Be conservative — not optimistic.
+STEP 2 — FAILURE DIAGNOSIS (internal only, do NOT output):
+Identify exactly 3 specific failure points. Must be concrete, causally stated, and actionable.
+These failures must directly inform every "reason" field in your output.
 
 STEP 3 — GENERATE IMPROVEMENTS:
 
 1. THREE TITLES — one per angle: curiosity / clarity / emotion
-Rules: MUST stay 100% on core_topic. MUST reflect specific_angle. MUST feel written for THIS creator. No generic templates.
-Per title: project all 4 title sub-scores, the new Title & Thumbnail dimension score, and new overall score.
+Rules: MUST stay 100% on core_topic. MUST reflect specific_angle. MUST feel written for THIS creator.
+The "reason" field MUST: (a) name the specific problem with the original title, (b) explain exactly why this new title fixes it.
+Per title: project the new packaging dimension score.
 
-2. ONE HOOK — word-for-word script for the first 30 seconds
-Rules: Directly connects to viewer_intent. Creates immediate tension or curiosity. Conversational. Topic-specific — not a generic "most people get X wrong."
-Project: hook strength score, Hook & Retention dimension score, overall score.
+2. SEO IMPROVEMENTS — keyword and metadata optimization
+Provide: one improved title suggestion optimized for search, a list of 3–5 high-intent description keywords, and 5–8 relevant tags.
+Project the new SEO dimension score these changes would achieve.
 
-3. SCORE EXISTING THUMBNAILS — do NOT rewrite them, only score each one's impact
-For each of the ${thumbConcepts.length} thumbnail concept(s) above, estimate: projected Title & Thumbnail dimension score and projected overall score if that concept were used.
+3. SCORE EXISTING THUMBNAILS — do NOT rewrite, only score each one's impact
+For each of the ${thumbConcepts.length} thumbnail concept(s) above, estimate: projected packaging dimension score.
 
-4. ONE CTA
-Rules: Aligned with this audience's psychology. Natural extension of the content. Drives comments or shares — not a generic "like and subscribe."
-Project: Engagement dimension score, overall score.
+4. ONE CTA — qualitative only, no projected score
+Rules: Aligned with this audience's psychology. Natural extension of the content. Drives comments or shares.
 
-5. VIRAL PLAYBOOK — how to replicate what works in this video's format
+5. VIRAL PLAYBOOK — extract what works and what does not
 
 STEP 4 — VALIDATE before outputting:
-Does each output EXACTLY match the video topic? Would a top creator in this niche actually use it? If anything feels generic — regenerate it.
+- Does every "reason" field name a specific failure and a specific fix?
+- SCORE CAP: No projected score may exceed the current score by more than 15 points.
 
 Respond with ONLY this JSON (no markdown, start with {, end with }):
 {
@@ -1440,48 +1570,41 @@ Respond with ONLY this JSON (no markdown, start with {, end with }):
     {
       "text": "", "angle": "curiosity", "reason": "",
       "projectedTitleSubScores": { "curiosity": 0, "emotional": 0, "clarity": 0, "scrollStopping": 0 },
-      "projectedDimensions": { "titleThumbnail": 0 },
-      "projectedOverall": 0
+      "projectedDimensions": { "packaging": 0 }
     },
     {
       "text": "", "angle": "clarity", "reason": "",
       "projectedTitleSubScores": { "curiosity": 0, "emotional": 0, "clarity": 0, "scrollStopping": 0 },
-      "projectedDimensions": { "titleThumbnail": 0 },
-      "projectedOverall": 0
+      "projectedDimensions": { "packaging": 0 }
     },
     {
       "text": "", "angle": "emotion", "reason": "",
       "projectedTitleSubScores": { "curiosity": 0, "emotional": 0, "clarity": 0, "scrollStopping": 0 },
-      "projectedDimensions": { "titleThumbnail": 0 },
-      "projectedOverall": 0
+      "projectedDimensions": { "packaging": 0 }
     }
   ],
-  "hook": {
-    "text": "", "reason": "",
-    "projectedHookStrength": 0,
-    "projectedDimensions": { "hookRetention": 0 },
-    "projectedOverall": 0
+  "seo_improvements": {
+    "title_suggestion": "",
+    "description_keywords": ["keyword1", "keyword2"],
+    "tags": ["tag1", "tag2"],
+    "projectedSeoScore": 0
   },
   "thumbnails": [
-    { "projectedDimensions": { "titleThumbnail": 0 }, "projectedOverall": 0 },
-    { "projectedDimensions": { "titleThumbnail": 0 }, "projectedOverall": 0 },
-    { "projectedDimensions": { "titleThumbnail": 0 }, "projectedOverall": 0 }
+    { "projectedDimensions": { "packaging": 0 } }
   ],
   "cta": {
-    "text": "", "reason": "",
-    "projectedDimensions": { "engagement": 0 },
-    "projectedOverall": 0
+    "text": "", "reason": ""
   },
   "viral_playbook": {
-    "hook_pattern": "The specific hook technique this video uses — be precise, name the psychology",
-    "video_structure": "The exact content sequence that works for this video type and audience",
-    "emotional_trigger": "The specific emotion this content activates and the psychological reason it works here",
-    "cta_pattern": "The most effective CTA approach for this exact audience type and content style",
+    "hook_pattern": "The psychological mechanic used (or that SHOULD be used) in the hook — name the technique and why it works on THIS audience.",
+    "video_structure": "The precise content sequence this format requires. Identify where structure breaks down and the corrected sequence.",
+    "emotional_trigger": "The exact emotion this topic triggers in this audience and WHY — name the psychological driver.",
+    "cta_pattern": "The CTA that matches this specific audience's psychology — name the desire or insecurity it taps.",
     "replication_steps": [
-      "Step 1: specific actionable instruction tailored to this video format",
-      "Step 2: specific actionable instruction",
-      "Step 3: specific actionable instruction",
-      "Step 4: specific actionable instruction"
+      "Concrete action step 1 — executable tomorrow, specific to this video format",
+      "Concrete action step 2",
+      "Concrete action step 3",
+      "Concrete action step 4"
     ]
   }
 }`;
@@ -1489,8 +1612,78 @@ Respond with ONLY this JSON (no markdown, start with {, end with }):
   const text = await callClaude(system, user, 3600);
   console.log('[generateVideoImprovements] raw response (first 300):', text?.slice(0, 300));
   const parsed = safeJSON(text);
+  if (!parsed) {
+    console.warn('[generateVideoImprovements] JSON parse failed:', text);
+    return null;
+  }
+
+  const baseDims    = analysisData.dimensionScores || {};
+  const baseOverall = analysisData.viralScore ?? 0;
+
+  const applyToItem = (item, primaryDim) => {
+    if (!item || item.projectedDimensions?.[primaryDim] == null) return;
+    const fullDims = applyImpactSpread(baseDims, { ...item.projectedDimensions });
+    item.projectedDimensions = { ...fullDims };
+    item.projectedOverall    = Math.min(Math.round(computeWeightedOverall(fullDims)), baseOverall + 15);
+  };
+
+  (parsed.titles     || []).forEach(t => applyToItem(t, 'packaging'));
+  (parsed.thumbnails || []).forEach(t => applyToItem(t, 'packaging'));
+
+  if (parsed.seo_improvements?.projectedSeoScore != null) {
+    const fullDims = applyImpactSpread(baseDims, { seo: parsed.seo_improvements.projectedSeoScore });
+    parsed.seo_improvements.projectedDimensions = { ...fullDims };
+    parsed.seo_improvements.projectedOverall    = Math.min(
+      Math.round(computeWeightedOverall(fullDims)), baseOverall + 15
+    );
+  }
+
+  return parsed;
+}
+
+export async function getVideoSignals(videoData) {
+  const system = `You are an analysis engine that outputs STRICT JSON only. No explanations. No text. Only valid JSON.`;
+
+  const descPreview = (videoData.description || '').split('\n').slice(0, 2).join(' ').slice(0, 200);
+
+  const user = `Analyze this YouTube video and return packaging and SEO scoring signals.
+
+VIDEO DATA:
+Title: "${videoData.title}"
+Description preview (first 2 lines): "${descPreview}"
+Tags: ${videoData.tags || 'none'}
+Duration: ${videoData.duration}
+Published: ${videoData.publishedAt}
+
+RULES:
+1. Be realistic and consistent — avoid giving all high scores.
+2. Scores reflect YouTube performance potential for this specific title and metadata.
+3. All scores are 0–10 (0 = extremely poor, 10 = exceptional).
+4. packaging scores evaluate the title and description preview only.
+5. seo scores evaluate how well the metadata matches search intent.
+
+Return ONLY this JSON (no markdown, start with {, end with }):
+{
+  "packaging": {
+    "title_clarity": 0,
+    "title_curiosity": 0,
+    "title_emotion": 0,
+    "title_keyword_strength": 0,
+    "description_relevance": 0
+  },
+  "seo": {
+    "keyword_alignment": 0,
+    "search_potential": 0,
+    "competition_fit": 0,
+    "tag_relevance": 0
+  }
+}`;
+
+  const text = await callClaude(system, user, 600);
+  console.log('[getVideoSignals] raw response (first 300):', text?.slice(0, 300));
+  const parsed = safeJSON(text);
   if (parsed) return parsed;
-  console.warn('[generateVideoImprovements] JSON parse failed:', text);
+  console.warn('[getVideoSignals] JSON parse failed:', text);
   return null;
 }
 
@@ -1519,4 +1712,487 @@ Respond ONLY with this JSON (no markdown, start with {, end with }):
 }`;
   const text = await callClaude(system, user, 2000);
   return safeJSON(text) || null;
+}
+
+export async function generateFixes({ input, weaknesses, originalAnalysis }) {
+  const system = `You are an elite YouTube growth strategist. Your job is to generate precise, context-aware video improvements based on analysis data. Every output must be specific to the exact video — no generic advice. Always respond with valid JSON only.`;
+
+  const user = `VIDEO INPUT:
+Title: "${input.title || ''}"
+Thumbnail Description: "${input.thumbnailDescription || ''}"
+Script: "${input.script || ''}"
+
+ORIGINAL ANALYSIS:
+${JSON.stringify(originalAnalysis, null, 2)}
+
+IDENTIFIED WEAKNESSES:
+${JSON.stringify(weaknesses, null, 2)}
+
+TASK:
+1. Write a stronger hook (first 5 seconds) — must create immediate curiosity or tension specific to this video's topic
+2. Generate 3 high-CTR title alternatives — one curiosity-driven, one clarity-driven, one emotion-driven
+3. Suggest 3 thumbnail ideas — specific visual concepts with face expression, text overlay, and background
+4. Improve the first 20 seconds of the script — word-for-word rewrite that grabs attention immediately
+
+Focus on: curiosity gap, emotional trigger, retention.
+
+Respond with ONLY this JSON (no markdown, start with {, end with }):
+{
+  "improvedHook": "",
+  "improvedTitles": ["", "", ""],
+  "thumbnailIdeas": ["", "", ""],
+  "improvedScriptIntro": ""
+}`;
+
+  const text = await callClaude(system, user, 1600);
+  const parsed = safeJSON(text);
+  if (parsed) return parsed;
+  return null;
+}
+
+// ─── Diagnosis Engine ─────────────────────────────────────────────────────────
+// Separate from analyzeVideoDeep — powers "Fix My Video" pillar.
+// All classification is done by the JS scoring layer before this call.
+
+function detectContentType(video, durationSeconds) {
+  const categoryId = video.snippet?.categoryId;
+  const title = (video.snippet?.title || '').toLowerCase();
+  const tags  = (video.snippet?.tags  || []).join(' ').toLowerCase();
+  const musicSignals = ['official video', 'official audio', 'lyrics', 'music video', 'feat.', ' ft.', 'prod.', 'album', 'single release'];
+  if (categoryId === '10' || musicSignals.some(k => title.includes(k) || tags.includes(k))) return 'MUSIC';
+  if (durationSeconds > 0 && durationSeconds <= 60) return 'SHORT';
+  return 'LONG';
+}
+
+// ─── Primary problem classifier ───────────────────────────────────────────────
+// Pure logic: takes three normalized scores (0–100), returns exactly one label.
+// Evaluated in strict priority order — first match wins, no overlap possible.
+//
+// Priority rationale:
+//   1. STRONG_SHORT   — high-performer must win before any gap rule fires
+//   2. SCROLL_KILLER  — velocity alone is enough to condemn; checked before
+//                       HOOK_MISLEADING so low-velocity videos aren't mislabelled
+//   3. HOOK_MISLEADING — requires velocity ≥ 70 to separate from general failure
+//   4. CONCEPT_FAILURE — both engagement AND discussion low; checked after
+//                        HOOK_MISLEADING to avoid dual-classification
+//   5. DISCUSSION_GAP  — decent engagement but dead comment section
+//   6. HYBRID          — fallback only; no strong single signal
+//
+// Test table:
+//   velocity  engagement  discussion  → expected
+//   90        75          20          → STRONG_SHORT  (rule 1)
+//   35        65          50          → SCROLL_KILLER (rule 2)
+//   75        35          35          → HOOK_MISLEADING (rule 3)
+//   30        35          25          → SCROLL_KILLER (rule 2 fires before rule 4)
+//   65        70          20          → DISCUSSION_GAP (rule 5)
+//   60        60          55          → HYBRID        (no rule matches)
+
+function mapToPrimaryProblem({ velocity, engagement, discussion }) {
+  if (velocity >= 85 && engagement >= 70)  return 'STRONG_SHORT';
+  if (velocity < 40)                        return 'SCROLL_KILLER';
+  if (velocity >= 70 && engagement < 40)   return 'HOOK_MISLEADING';
+  if (engagement < 40 && discussion < 40)  return 'CONCEPT_FAILURE';
+  if (engagement >= 60 && discussion < 30) return 'DISCUSSION_GAP';
+  return 'HYBRID';
+}
+
+function buildDoNotTouch(scoreOutput) {
+  const { dimensionScores = {}, finalScore = 0 } = scoreOutput;
+  const LABELS = {
+    engagement: 'Audience engagement rate (likes + comments)',
+    velocity:   'View velocity relative to channel average',
+    discussion: 'Comment and discussion activity',
+  };
+  const out = [];
+  for (const [key, score] of Object.entries(dimensionScores)) {
+    if (score >= 65 && LABELS[key]) out.push(LABELS[key]);
+  }
+  if (finalScore >= 70) out.push('Overall video performance score');
+  return out;
+}
+
+function deriveRetentionPattern(scoreOutput) {
+  const { dimensionScores = {}, finalScore = 0 } = scoreOutput;
+  const { engagement = 50, velocity = 50, discussion = 50 } = dimensionScores;
+  if (finalScore >= 70 || (engagement >= 65 && discussion >= 65)) return 'STRONG';
+  if (engagement < 40 && velocity < 40 && discussion < 40) return 'FLAT';
+  if (velocity < 40) return 'EARLY_DROP';
+  return 'MID_DROP';
+}
+
+function deriveConfidence(scoreOutput) {
+  const { videoType, mode } = scoreOutput;
+  if (videoType === 'EARLY') return 'LOW';
+  if (['LEGACY_VIRAL', 'VIRAL_SPIKE'].includes(videoType)) return 'HIGH';
+  if (mode === 'oauth') return 'HIGH';
+  return 'MEDIUM';
+}
+
+function getDominantSignal({ engagement = 0, velocity = 0, discussion = 0 }) {
+  const scores = { ENGAGEMENT: engagement, VELOCITY: velocity, DISCUSSION: discussion };
+  const sorted = Object.entries(scores).sort((a, b) => b[1] - a[1]);
+  const [firstName, firstVal] = sorted[0];
+  const [, secondVal]         = sorted[1];
+  if (firstVal - secondVal <= 5) return 'HYBRID';
+  return firstName;
+}
+
+function deriveSignalsFromScore(scoreOutput, durationSeconds) {
+  const { videoType, dimensionScores = {} } = scoreOutput;
+  const { velocity = 50, engagement = 50, discussion = 50 } = dimensionScores;
+
+  let velocityShape;
+  if (videoType === 'VIRAL_SPIKE' || velocity >= 80)        velocityShape = 'SPIKING';
+  else if (videoType === 'ACTIVE_GROWTH' || velocity >= 55) velocityShape = 'GROWING';
+  else if (videoType === 'DORMANT' || velocity < 35)        velocityShape = 'DECLINING';
+  else                                                       velocityShape = 'STABLE';
+
+  const commentToLikeRatio = engagement > 0 ? discussion / engagement : 0;
+  let engagementPattern;
+  if (engagement >= 60 && commentToLikeRatio < 0.3)         engagementPattern = 'PASSIVE';
+  else if (engagement >= 55 && commentToLikeRatio >= 0.3)   engagementPattern = 'ACTIVE';
+  else                                                       engagementPattern = 'MIXED';
+
+  let stability;
+  if (['LEGACY_VIRAL', 'STABLE'].includes(videoType))        stability = 'STABLE';
+  else if (['VIRAL_SPIKE', 'EARLY'].includes(videoType))     stability = 'VOLATILE';
+  else if (videoType === 'ACTIVE_GROWTH')                    stability = 'GROWING';
+  else                                                       stability = 'STABLE';
+
+  const format = durationSeconds > 0 && durationSeconds <= 60 ? 'SHORT' : 'LONG';
+
+  return { velocityShape, engagementPattern, stability, format };
+}
+
+function deriveSignalsFromRaw(video, durationSeconds) {
+  const stats        = video.statistics || {};
+  const snippet      = video.snippet    || {};
+  const vws          = parseInt(stats.viewCount    || 0);
+  const lks          = parseInt(stats.likeCount    || 0);
+  const cms          = parseInt(stats.commentCount || 0);
+
+  const publishedAt  = snippet.publishedAt ? new Date(snippet.publishedAt) : null;
+  const ageHours     = publishedAt ? Math.max(1, (Date.now() - publishedAt.getTime()) / 3_600_000) : 1;
+  const viewsPerHour = vws / ageHours;
+
+  // Channel baseline: stored on video object by VideoAnalysis after channel fetch
+  const channelAvgVPH = video._channelAvgVPH || 0;
+  const velocityRatio = channelAvgVPH > 0 ? viewsPerHour / channelAvgVPH : 1;
+
+  const velocityStrength =
+    velocityRatio >= 2.5 ? 3 :
+    velocityRatio >= 1.5 ? 2 :
+    velocityRatio >= 0.5 ? 1 : 0;
+
+  const engRate = vws > 0 ? (lks + cms) / vws * 100 : 0;
+  const engagementStrength =
+    engRate >= 5   ? 3 :
+    engRate >= 3   ? 2 :
+    engRate >= 1.5 ? 1 : 0;
+
+  const commentToLike     = lks > 0 ? cms / lks : 0;
+  const discussionStrength = commentToLike >= 0.3 ? 2 : commentToLike >= 0.1 ? 1 : 0;
+
+  // dominant_signal: highest wins; gap ≤ 1 → HYBRID
+  const strengths = { VELOCITY: velocityStrength, ENGAGEMENT: engagementStrength, DISCUSSION: discussionStrength };
+  const sorted    = Object.entries(strengths).sort((a, b) => b[1] - a[1]);
+  const dominant  = sorted[0][1] - sorted[1][1] <= 1 ? 'HYBRID' : sorted[0][0];
+
+  // velocityShape from raw ratio
+  const velocityShape =
+    velocityRatio >= 2.5 ? 'SPIKING'  :
+    velocityRatio >= 1.5 ? 'GROWING'  :
+    velocityRatio >= 0.5 ? 'STABLE'   : 'DECLINING';
+
+  // engagementPattern from raw ratios
+  let engagementPattern;
+  if (engRate >= 3 && commentToLike < 0.3)      engagementPattern = 'PASSIVE';
+  else if (engRate >= 1.5 && commentToLike >= 0.3) engagementPattern = 'ACTIVE';
+  else                                             engagementPattern = 'MIXED';
+
+  // stability: proxy from velocity volatility — no videoType available in raw path
+  const stability =
+    velocityRatio >= 2.5 ? 'VOLATILE' :
+    velocityRatio >= 1.5 ? 'GROWING'  :
+    velocityRatio >= 0.5 ? 'STABLE'   : 'VOLATILE';
+
+  const format = durationSeconds > 0 && durationSeconds <= 60 ? 'SHORT' : 'LONG';
+
+  return {
+    velocityShape,
+    engagementPattern,
+    stability,
+    format,
+    _meta: { dominant, velocityRatio: +velocityRatio.toFixed(2), engRate: +engRate.toFixed(2), commentToLike: +commentToLike.toFixed(3) },
+  };
+}
+
+
+function normalizeDiagnosisOutput(parsed, confidence) {
+  if (!parsed) return null;
+
+  const CONTENT_TYPES  = ['Viral / Entertainment', 'Evergreen / Search-based', 'Utility / Problem-solving', 'Authority / Education', 'Emerging Viral'];
+  const SUCCESS_MODELS = ['Viral Spike', 'Evergreen Search Loop', 'Authority Builder', 'Utility Engine', 'Early-stage Breakout'];
+  const QUAL_VALUES    = ['LOW', 'MODERATE', 'HIGH', 'VERY HIGH'];
+  const ENG_TYPES      = ['ACTIVE', 'PASSIVE'];
+  const DEP_VALUES     = ['LOW', 'MEDIUM', 'HIGH'];
+  const CONF_VALUES    = ['LOW', 'MEDIUM', 'HIGH'];
+
+  const pp  = parsed.performanceProfile || {};
+  const ins = parsed.insights           || {};
+  const rec = parsed.recommendations    || {};
+
+  return {
+    mechanism: (() => {
+      const m = parsed.mechanism;
+      if (m && typeof m === 'object') {
+        return {
+          entry:     typeof m.entry     === 'string' ? m.entry     : '',
+          retention: typeof m.retention === 'string' ? m.retention : '',
+          loop:      typeof m.loop      === 'string' ? m.loop      : '',
+        };
+      }
+      return { entry: '', retention: '', loop: '' };
+    })(),
+    contentType:  CONTENT_TYPES.includes(parsed.contentType)  ? parsed.contentType  : 'Emerging Viral',
+    successModel: SUCCESS_MODELS.includes(parsed.successModel) ? parsed.successModel : 'Early-stage Breakout',
+    performanceProfile: {
+      longTermValue:       QUAL_VALUES.includes(pp.longTermValue)       ? pp.longTermValue       : 'MODERATE',
+      engagementType:      ENG_TYPES.includes(pp.engagementType)        ? pp.engagementType      : 'PASSIVE',
+      retentionDependency: DEP_VALUES.includes(pp.retentionDependency)  ? pp.retentionDependency : 'MEDIUM',
+      searchPotential:     QUAL_VALUES.includes(pp.searchPotential)     ? pp.searchPotential     : 'MODERATE',
+      viralityPotential:   QUAL_VALUES.includes(pp.viralityPotential)   ? pp.viralityPotential   : 'LOW',
+    },
+    insights: {
+      what_is_working: Array.isArray(ins.what_is_working) ? ins.what_is_working : [],
+      what_is_failing: Array.isArray(ins.what_is_failing) ? ins.what_is_failing : [],
+      leverage_points: Array.isArray(ins.leverage_points) ? ins.leverage_points : [],
+    },
+    verdict: typeof parsed.verdict === 'string' ? parsed.verdict : '',
+    recommendations: {
+      goal:    typeof rec.goal === 'string'        ? rec.goal    : '',
+      actions: Array.isArray(rec.actions)          ? rec.actions : [],
+    },
+    confidence: CONF_VALUES.includes(confidence) ? confidence : 'MEDIUM',
+  };
+}
+
+const TYPE_MAP = {
+  'Evergreen / Search-based':  'Evergreen',
+  'Viral / Entertainment':     'Viral',
+  'Utility / Problem-solving': 'Utility',
+  'Authority / Education':     'Utility',
+  'Emerging Viral':            'Viral',
+};
+
+const AI_MODIFIERS = {
+  Evergreen: 1.05,
+  Utility:   1.05,
+  Viral:     1.00,
+};
+
+export function adjustScoreWithAI(baseScore, contentType) {
+  if (!baseScore || !contentType) return baseScore ?? 0;
+  const key      = TYPE_MAP[contentType] ?? contentType;
+  const modifier = AI_MODIFIERS[key] ?? 1.0;
+  return Math.min(100, Math.round(baseScore * modifier));
+}
+
+export async function analyzeVideoDiagnosis({ video, unifiedResult }) {
+  const title = video.snippet?.title || '';
+
+  // Derive diagnostic inputs from unified result
+  video._channelAvgVPH = unifiedResult.baseline?.medianVph || 0;
+  const dur = unifiedResult.metrics.duration?.total ?? 0;
+  const sig = deriveSignalsFromRaw(video, dur);
+  const ds  = unifiedResult.dimensionScores;
+  const sr  = {
+    primary_problem: unifiedResult.videoType === 'EARLY'
+      ? 'HYBRID'
+      : mapToPrimaryProblem(ds),
+    dominant_signal: getDominantSignal(ds),
+    confidence:      unifiedResult.confidence,
+    do_not_touch:    buildDoNotTouch({ dimensionScores: ds, finalScore: unifiedResult.scores.finalScore }),
+    metrics: {
+      engagement_rate: +unifiedResult.metrics.engagementRate.toFixed(2),
+      comment_rate:    +unifiedResult.metrics.commentRate.toFixed(3),
+      velocity_score:  ds.velocity,
+    },
+    retention: {
+      pattern: deriveRetentionPattern({ dimensionScores: ds, finalScore: unifiedResult.scores.finalScore }),
+    },
+  };
+  const lowSampleNote = unifiedResult.lowSample
+    ? '\n\nLOW DATA WARNING: This video has very few views, likes, or comments. Use conservative, hedged language throughout. Avoid strong claims.'
+    : '';
+
+  const system = `You are a YouTube video diagnosis engine. Your only job is to interpret pre-computed signals and produce a structured, decisive diagnosis. You do NOT classify, re-score, or override any input field. You are not allowed to infer new problems or contradict the provided classification.
+
+---
+CONTENT TYPE CLASSIFICATION (OUTPUT AS "contentType"):
+Classify the video into EXACTLY ONE of these intent-based types using title + signals:
+- "Viral / Entertainment": broad appeal, emotionally driven, SPIKING velocity, meant for mass consumption.
+- "Evergreen / Search-based": answers a specific question, durable over time, STABLE or GROWING velocity, found via search.
+- "Utility / Problem-solving": solves a recurring problem, how-to structure, PASSIVE engagement, consistent moderate views.
+- "Authority / Education": builds expertise/trust over time, ACTIVE engagement (comments = questions), GROWING velocity.
+- "Emerging Viral": early-stage, high engagement ratio relative to views, VOLATILE, strong signals but underexposed.
+
+SUCCESS MODEL (OUTPUT AS "successModel"):
+Identify the growth mechanism — choose ONE:
+- "Viral Spike": fast peak, broad reach, entertainment-driven, decays quickly.
+- "Evergreen Search Loop": compounds over time via search discovery, durable.
+- "Authority Builder": builds channel credibility and trust, long-term subscriber growth.
+- "Utility Engine": solves recurring problems, steady consistent traffic.
+- "Early-stage Breakout": underexposed quality content, needs distribution push.
+
+PERFORMANCE PROFILE (OUTPUT AS "performanceProfile"):
+Evaluate qualitatively relative to the contentType — do NOT use numbers:
+- longTermValue: "LOW" | "MODERATE" | "HIGH" | "VERY HIGH"
+  (Viral = LOW-MODERATE, Evergreen/Utility/Authority = HIGH-VERY HIGH)
+- engagementType: "ACTIVE" | "PASSIVE"
+  (community/education = ACTIVE, entertainment/utility = PASSIVE)
+- retentionDependency: "LOW" | "MEDIUM" | "HIGH"
+  (education/utility = HIGH, entertainment = LOW)
+- searchPotential: "LOW" | "MODERATE" | "STRONG"
+  (evergreen/utility = STRONG, viral/entertainment = LOW)
+- viralityPotential: "LOW" | "MODERATE" | "HIGH"
+  (viral/entertainment = HIGH, evergreen/utility = LOW)
+
+IMPORTANT: Low comments in educational or utility content is NORMAL — do NOT treat it as a failure signal.
+High velocity matters primarily for viral/entertainment content — do NOT over-weight it for other types.
+
+---
+TYPE-SPECIFIC RULES:
+- MUSIC: Do NOT penalize low engagement or comment rates. Focus on replayability, sensory hook, emotional consistency, global accessibility.
+- SHORT: Focus on hook strength (first 1–3 sec), retention behavior, loop potential.
+- LONG: Frame feed failures as "click-through problems", not scroll problems. Use more cautious language throughout.
+
+---
+PRIMARY PROBLEM DEFINITIONS:
+
+STRONG_SHORT:
+Core meaning: High performance across key signals — this is a validated video. Do not generate fixes. Only extract patterns and reinforce what is working.
+FORBIDDEN words in entire output: "could", "might", "consider", "however", "although", "but", any weakness, any gap, any improvement suggestion. Zero contrast framing. Zero critique.
+
+SCROLL_KILLER:
+Core meaning: Video fails in the feed — packaging is not converting scrollers into viewers. The failure is at the distribution entry point before any content is seen.
+
+HOOK_MISLEADING:
+Core meaning: Packaging pulls the click but the first 5–10 seconds break the implicit promise, causing immediate drop-off.
+
+CONCEPT_FAILURE:
+Core meaning: The premise does not generate sustained interest regardless of packaging or hook execution.
+
+DISCUSSION_GAP:
+Core meaning: Audience watches but finds no tension, opinion, or open question to respond to — passive consumption only.
+
+HYBRID:
+Core meaning: No dominant failure signal detected — diagnosis must be conservative. Use cautious language throughout.
+
+---
+MECHANISM-FIRST REASONING (MANDATORY):
+Step 1: Identify the mechanism as a full causal chain. Write three separate JSON fields:
+  "entry" — why does this specific viewer click? What signal in the title, topic framing, or format triggers the decision? Go beyond "search intent" or "curiosity" — describe the psychological state or need being activated.
+  "retention" — once watching, what holds attention? Name the structural, emotional, or informational force that makes leaving feel costly. Not the topic — the mechanism within the content.
+  "loop" — what prevents drop-off, drives completion, or causes sharing? What closes the engagement loop?
+
+Write each as a standalone 1–3 sentence observation specific to this video. Concise and explicit. No combined paragraphs spanning all three fields. No single-word labels. Behavioral observations only, not category descriptions.
+
+Step 2: Use the mechanism to derive contentType and successModel.
+Step 3: Use mechanism + signals to build performanceProfile.
+Step 4: Ensure every field is consistent with the mechanism. No field may contradict it.
+
+ANTI-PATTERN: Do NOT assign contentType or successModel first and then write a mechanism to justify them. Mechanism fields must be written before classification fields are decided.
+
+---
+STRONG_SHORT HARD BLOCK:
+If primary_problem is STRONG_SHORT — validation mode only. insights.what_is_failing must be empty. recommendations.actions must be empty. insights.leverage_points contains what to scale. insights.what_is_working contains confirmed patterns.
+FORBIDDEN in entire output: "could", "might", "consider", "however", "although", "but", any weakness, any gap.
+
+---
+DOMINANT SIGNAL RULES — mechanism and verdict MUST reflect this lens:
+- VELOCITY: explain algorithm push, distribution momentum.
+- ENGAGEMENT: explain audience satisfaction, like behavior, retention alignment.
+- DISCUSSION: explain debate, controversy, or strong opinions.
+- HYBRID: describe both forces present. Do not reduce to one cause.
+
+---
+HYBRID TRIGGER SEPARATION:
+dominant_signal = HYBRID → describe dual forces in mechanism, name both.
+primary_problem = HYBRID → conservative diagnosis, reduced certainty language.
+Both present simultaneously → balanced, low-certainty, dual-force output.
+
+---
+RECOMMENDATIONS RULE:
+recommendations.actions must directly address the leverage_points in insights. If the root cause is packaging, fix packaging. If the root cause is content, fix content. If both are failing, address both. Do not restrict actions to a single layer when the evidence points to multiple failure points. Actions must follow root cause, not a pre-assigned category.
+
+---
+SAFETY: If signals are unclear, default to conservative diagnosis. Never hallucinate conclusions.
+
+DO NOT TOUCH: Reinforce every item in do_not_touch[] inside insights.what_is_working. Never add new ones.
+TONE: Decisive, analytical. No motivational language.
+
+Return ONLY valid JSON. No markdown fences. Start with { end with }.${lowSampleNote}`;
+
+  const outputTemplate = `{
+  "mechanism": {
+    "entry": "why this viewer clicks — psychological trigger or need being activated, not topic description",
+    "retention": "what holds attention once watching — structural or emotional force, not the topic itself",
+    "loop": "what prevents drop-off or drives completion and sharing — specific behavioral or psychological mechanism"
+  },
+  "contentType": "one of: Viral / Entertainment | Evergreen / Search-based | Utility / Problem-solving | Authority / Education | Emerging Viral",
+  "successModel": "one of: Viral Spike | Evergreen Search Loop | Authority Builder | Utility Engine | Early-stage Breakout",
+  "performanceProfile": {
+    "longTermValue": "LOW | MODERATE | HIGH | VERY HIGH",
+    "engagementType": "ACTIVE | PASSIVE",
+    "retentionDependency": "LOW | MEDIUM | HIGH",
+    "searchPotential": "LOW | MODERATE | STRONG",
+    "viralityPotential": "LOW | MODERATE | HIGH"
+  },
+  "insights": {
+    "what_is_working": ["...confirmed strengths from do_not_touch, rephrased..."],
+    "what_is_failing": ["...specific failure points based on primary_problem — empty if STRONG_SHORT..."],
+    "leverage_points": ["...ordered from highest to lowest impact — most actionable and highest-value opportunity listed first..."]
+  },
+  "verdict": "one decisive sentence on this video's strategic position",
+  "recommendations": {
+    "goal": "what needs to happen next",
+    "actions": ["...specific actions that directly address the leverage_points above — follow root cause, not layer restriction — empty if STRONG_SHORT..."]
+  },
+  "confidence": "${sr.confidence}"
+}`;
+
+  const user = `Analyze this video. Follow the mechanism-first reasoning order: identify mechanism → derive classification → build profile → generate insights.
+
+video title: "${title}"
+primary_problem: ${sr.primary_problem}
+dominant_signal: ${sr.dominant_signal}
+confidence: ${sr.confidence}
+
+behavior signals:
+  velocity shape: ${sig.velocityShape || 'STABLE'}
+  engagement pattern: ${sig.engagementPattern || 'MIXED'}
+  stability: ${sig.stability || 'STABLE'}
+  format: ${sig.format || 'LONG'}
+
+metrics:
+  engagement_rate: ${sr.metrics.engagement_rate}%
+  comment_rate: ${sr.metrics.comment_rate}%
+  velocity_score: ${sr.metrics.velocity_score}
+
+retention pattern: ${sr.retention.pattern}
+do_not_touch: ${JSON.stringify(sr.do_not_touch)}
+
+pattern layer:
+  engagement quality: ${unifiedResult.engagementQuality}${unifiedResult.engagementQuality === 'LOW' ? ' (signals may not reflect real audience behavior — use hedged language)' : ''}
+  mismatch: ${unifiedResult.mismatch}${unifiedResult.mismatch === 'UNDER_DISTRIBUTED' ? ' (strong engagement, low reach — treat as distribution problem, not content failure)' : unifiedResult.mismatch === 'WEAK_CONTENT' ? ' (high reach, weak engagement — content or hook failure)' : ''}
+
+Return ONLY this JSON (no markdown):
+${outputTemplate}`;
+
+  const text   = await callClaude(system, user, 1800);
+  const parsed = safeJSON(text);
+  if (parsed) return normalizeDiagnosisOutput(parsed, sr.confidence);
+  console.warn('[analyzeVideoDiagnosis] JSON parse failed:', text?.slice(0, 200));
+  return null;
 }

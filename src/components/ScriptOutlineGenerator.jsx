@@ -81,7 +81,7 @@ function buildFullScriptText(script) {
   return lines.join('\n');
 }
 
-export default function ScriptOutlineGenerator({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade }) {
+export default function ScriptOutlineGenerator({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade, onNavigate }) {
   const [topic, setTopic]     = useState('');
   const [niche, setNiche]     = useState('');
   const [length, setLength]   = useState('10');
@@ -273,6 +273,16 @@ export default function ScriptOutlineGenerator({ tier, canUseAI, consumeAICall, 
               </div>
             )}
           </>
+        )}
+        {script && onNavigate && (
+          <div style={{ marginTop: 8, textAlign: 'center' }}>
+            <button
+              onClick={() => onNavigate('validator', { title: script.titleOptions?.[0] || topic, niche, hook: script.hookScript || '' })}
+              style={{ background: 'linear-gradient(135deg,#7c4dff,#5b2be8)', border: 'none', borderRadius: 8, padding: '12px 28px', fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer' }}
+            >
+              🚀 Validate Before Publishing →
+            </button>
+          </div>
         )}
       </div>
     </ProGate>

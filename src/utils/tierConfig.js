@@ -19,6 +19,7 @@ export const VIEW_TIER = {
   seo:        null,
   workspaces: null,
   pricing:    null,
+  validator:  null,
   competitor: 'starter',
   viral:      'starter',
   scorer:     'starter',

@@ -417,6 +417,62 @@ export async function fetchRevenueSeries(token, channelId, days = 28) {
   }
 }
 
+// ── Per-video OAuth metrics (impressions, CTR, avgViewDuration) ───────────────
+// Only works for videos belonging to the authenticated user's channel.
+// Date range: lifetime if video age < 30 days, else last 30 days.
+export async function fetchPerVideoOAuthMetrics(token, videoId, publishedAt) {
+  const videoAgeMs  = publishedAt ? Date.now() - new Date(publishedAt).getTime() : Infinity;
+  const useLifetime = videoAgeMs < 30 * 24 * 3600 * 1000;
+
+  let startDate, endDate;
+  const fmt = d => d.toISOString().slice(0, 10);
+  if (useLifetime) {
+    startDate = fmt(new Date(publishedAt));
+    endDate   = fmt(new Date());
+  } else {
+    const { startDate: s, endDate: e } = dateRange(30);
+    startDate = s;
+    endDate   = e;
+  }
+
+  try {
+    const data = await analyticsQuery(token, {
+      ids:        'channel==MINE',
+      startDate,
+      endDate,
+      metrics:    'impressions,impressionClickThroughRate,averageViewDuration',
+      dimensions: 'video',
+      filters:    `video==${videoId}`,
+    });
+    const cols = (data.columnHeaders || []).map(h => h.name);
+    const row  = (data.rows || []).find(r => r[cols.indexOf('video')] === videoId);
+    if (!row) return null;
+    const get = name => row[cols.indexOf(name)] ?? null;
+    return {
+      impressions:      get('impressions'),
+      ctr:              +(( get('impressionClickThroughRate') || 0) * 100).toFixed(2),
+      avgViewDuration:  get('averageViewDuration'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Channel impressions baseline for velocity normalization ───────────────────
+// Returns avgImpressionsPerHour and channelAvgCtr based on last 30 days.
+export async function fetchChannelImpressionsBaseline(token, channelId) {
+  try {
+    const { rows, totImpressions, avgCtr } = await fetchImpressionsAndCTR(token, channelId, 30);
+    if (!rows.length) return { avgImpressionsPerHour: 0, channelAvgCtr: avgCtr };
+    return {
+      avgImpressionsPerHour: totImpressions / (30 * 24),
+      channelAvgCtr:         avgCtr,
+    };
+  } catch {
+    return { avgImpressionsPerHour: 0, channelAvgCtr: 0 };
+  }
+}
+
 export function clearAnalyticsCache() {
   try {
     Object.keys(localStorage)

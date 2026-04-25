@@ -8,63 +8,66 @@ const TIER_LABELS = { free: 'Free', starter: 'Starter', pro: 'Pro', agency: 'Age
 // ── Navigation structure ───────────────────────────────────────────────────────
 const NAV_GROUPS = [
   {
-    label: 'Core',
+    label: null,
     items: [
       {
-        id: 'discover', icon: '🔍', label: 'Discover', req: null,
-        desc: 'Search any YouTube channel by @handle, name, or URL. Includes competitor comparison.',
-      },
-      {
-        id: 'analyze', icon: '🎬', label: 'Analyze Video', req: null, needsChannel: true,
-        desc: 'Browse channel videos and run deep AI analysis — engagement, SEO, hook strength, viral score.',
-        primary: true,
-      },
-      {
-        id: 'improve', icon: '✨', label: 'Fix My Video', req: null, needsChannel: true,
-        desc: 'AI-generated title rewrites, hook scripts, and CTAs based on your video\'s deep analysis.',
-        highlight: true,
+        id: 'dashboard', icon: '🏠', label: 'Dashboard', req: null,
+        desc: 'Search channels, find videos, and start your workflow.',
       },
     ],
   },
   {
-    label: 'AI Studio',
+    label: 'Fix My Video',
+    pillar: 'post',
+    desc: 'Posted already? Diagnose performance and improve.',
     items: [
       {
-        id: 'validator', icon: '🚀', label: 'Pre-Publish Validator', req: 'starter',
-        desc: 'Paste title, description, and tags before publishing. AI scores it and predicts CTR and performance.',
+        id: 'analyze', icon: '🎬', label: 'Analyze Video', req: null, needsChannel: true,
+        desc: 'Deep AI analysis — engagement, SEO, hook strength, viral score, insight modes.',
       },
       {
-        id: 'scorer', icon: '⚡', label: 'Idea Scorer', req: 'starter',
-        desc: 'Validate your video idea before filming. AI scores CTR potential, scroll stop power, and gives improved titles.',
+        id: 'improve', icon: '✨', label: 'Rewrites & Fixes', req: null, needsChannel: true,
+        desc: 'AI title rewrites, hook scripts, thumbnail ideas, and CTAs from your video analysis.',
       },
       {
-        id: 'script', icon: '✍️', label: 'Script Generator', req: 'starter',
-        desc: 'Enter a topic and tone. AI writes a full video script with hook, chapters, and CTA.',
+        id: 'sentiment', icon: '💬', label: 'Comment Insights', req: 'starter', needsChannel: true,
+        desc: 'AI reads top comments to extract audience emotion, complaints, and content ideas.',
+      },
+    ],
+  },
+  {
+    label: 'Plan My Video',
+    pillar: 'pre',
+    desc: "Haven't posted yet? Research, build, and validate.",
+    items: [
+      {
+        id: 'trends', icon: '🔥', label: 'Niche Trends', req: 'starter',
+        desc: 'Scan trending videos in any niche — find content gaps and untapped video ideas.',
       },
       {
         id: 'viral', icon: '🧬', label: 'Viral Formula', req: 'starter',
-        desc: 'AI reverse-engineers why a video went viral — hook, title psychology, thumbnail strategy.',
-      },
-    ],
-  },
-  {
-    label: 'Growth Insights',
-    items: [
-      {
-        id: 'timing', icon: '⏰', label: 'Best Time to Post', req: null, needsChannel: true,
-        desc: 'Analyzes upload history to find which days and times historically get the most views.',
+        desc: 'Reverse-engineer why a video went viral — hook, title psychology, thumbnail strategy.',
       },
       {
-        id: 'cadence', icon: '📅', label: 'Upload Cadence', req: null, needsChannel: true,
-        desc: 'Upload frequency trends and how consistency affects channel performance.',
+        id: 'competitor', icon: '⚔️', label: 'Competitor Research', req: 'starter', needsChannel: true,
+        desc: 'Benchmark your channel against competitors — gaps, strengths, and opportunities.',
       },
       {
-        id: 'trends', icon: '🔥', label: 'Niche Trends', req: 'starter',
-        desc: 'AI scans trending videos in any niche and surfaces content gaps and specific video ideas.',
+        id: 'script', icon: '✍️', label: 'Script Generator', req: 'starter',
+        desc: 'AI writes a full video script with hook, chapters, and CTA from your topic.',
       },
       {
-        id: 'sentiment', icon: '💬', label: 'Comment Insights', req: 'starter',
-        desc: 'AI reads top comments to extract audience emotion, complaints, and video ideas your viewers want.',
+        id: 'scorer', icon: '⚡', label: 'Idea Scorer', req: 'starter',
+        desc: 'Score your title and thumbnail — CTR potential, scroll stop power, improved alternatives.',
+      },
+      {
+        id: 'seo', icon: '🏷️', label: 'SEO & Tags', req: null, needsChannel: true,
+        desc: 'Analyze tags, find keyword gaps, and get SEO recommendations before publishing.',
+      },
+      {
+        id: 'validator', icon: '🚀', label: 'Pre-Publish Validator', req: null,
+        desc: 'Final gate — AI scores your video across 8 dimensions and gives a launch decision.',
+        capstone: true,
       },
     ],
   },
@@ -73,7 +76,7 @@ const NAV_GROUPS = [
     items: [
       {
         id: 'myanalytics', icon: '📊', label: 'My Analytics', req: 'pro', oauthRequired: true,
-        desc: 'Connect your Google account to see private YouTube Analytics — watch time, impressions, CTR, revenue.',
+        desc: 'Connect Google to see private YouTube Analytics — watch time, impressions, CTR, revenue.',
       },
     ],
   },
@@ -85,10 +88,6 @@ const NAV_GROUPS = [
         desc: 'Save and reload channel + competitor setups instantly without re-searching.',
       },
       {
-        id: 'report', icon: '📄', label: 'PDF Report', req: 'starter',
-        desc: 'Generate a branded PDF report of channel analytics — ideal for client presentations.',
-      },
-      {
         id: 'pricing', icon: '💎', label: 'Upgrade Plan', req: null,
         desc: 'View plans and unlock AI tools, competitor analysis, PDF reports, and more.',
       },
@@ -96,20 +95,30 @@ const NAV_GROUPS = [
   },
 ];
 
+const PILLAR_COLORS = {
+  post: { accent: '#7c4dff', bg: '#7c4dff' },
+  pre:  { accent: '#00b894', bg: '#00b894' },
+};
+
 // ── Component ──────────────────────────────────────────────────────────────────
 export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOAuthConnected }) {
   const tierColor = TIER_COLORS[tier] || '#666';
 
-  // Normalize: map old view IDs to new ones so active state works for both
-  const normalizedView = { search: 'discover', channel: 'discover', video: 'analyze' }[activeView] ?? activeView;
-  const [collapsed, setCollapsed] = useState({ 'AI Studio': true, 'Growth Insights': true });
+  const normalizedView = {
+    search:   'dashboard',
+    channel:  'dashboard',
+    discover: 'dashboard',
+    video:    'analyze',
+  }[activeView] ?? activeView;
+
+  const [collapsed, setCollapsed] = useState({ 'Fix My Video': false, 'Plan My Video': false });
   const toggleGroup = (label) => setCollapsed(prev => ({ ...prev, [label]: !prev[label] }));
 
   return (
     <aside className="sidebar">
 
       {/* Logo */}
-      <button className="sidebar-logo" onClick={() => onNavigate('discover')}>
+      <button className="sidebar-logo" onClick={() => onNavigate('dashboard')}>
         <svg width="22" height="22" viewBox="0 0 24 24">
           <rect x="2" y="4" width="20" height="16" rx="3" fill="none" stroke="#ff0000" strokeWidth="2" />
           <path d="M10 8l6 4-6 4V8z" fill="#ff0000" />
@@ -132,93 +141,129 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
       {/* Nav */}
       <nav className="sidebar-nav">
         {NAV_GROUPS.map(group => {
-          const visibleItems = group.items.filter(item => {
-            if (item.needsChannel && !hasChannel) return false;
-            return true;
-          });
+          const visibleItems = group.items;
           if (!visibleItems.length) return null;
-          const collapsible = group.label === 'AI Studio' || group.label === 'Growth Insights';
+
+          const collapsible = !!group.pillar;
           const isCollapsed = collapsible && collapsed[group.label];
+          const pillarColor = group.pillar ? PILLAR_COLORS[group.pillar] : null;
 
           return (
-            <div key={group.label} className="sidebar-group">
-              <div
-                className="sidebar-group-label"
-                onClick={collapsible ? () => toggleGroup(group.label) : undefined}
-                style={collapsible ? { cursor: 'pointer', userSelect: 'none', display: 'flex', alignItems: 'center', justifyContent: 'space-between' } : {}}
-              >
-                <span>{group.label}</span>
-                {collapsible && (
-                  <span style={{ fontSize: 10, color: '#444', display: 'inline-block', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s' }}>▾</span>
-                )}
-              </div>
+            <div key={group.label ?? '__root'} className="sidebar-group">
+              {group.label && (
+                <div
+                  className="sidebar-group-label"
+                  onClick={collapsible ? () => toggleGroup(group.label) : undefined}
+                  style={collapsible ? {
+                    cursor: 'pointer', userSelect: 'none',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                    borderLeft: `3px solid ${pillarColor.accent}44`,
+                    paddingLeft: 8, marginLeft: -8,
+                  } : {}}
+                >
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 1 }}>
+                    <span style={pillarColor ? { color: pillarColor.accent, fontWeight: 800 } : {}}>
+                      {group.label}
+                    </span>
+                    {group.desc && !isCollapsed && (
+                      <span style={{ fontSize: 10, color: '#444', fontWeight: 400, lineHeight: 1.3 }}>
+                        {group.desc}
+                      </span>
+                    )}
+                  </div>
+                  {collapsible && (
+                    <span style={{ fontSize: 10, color: '#444', display: 'inline-block', transform: isCollapsed ? 'rotate(-90deg)' : 'rotate(0deg)', transition: 'transform 0.15s', flexShrink: 0 }}>▾</span>
+                  )}
+                </div>
+              )}
 
-              {!isCollapsed && visibleItems.map(item => {
-                const locked  = item.req && !meetsRequirement(tier, item.req);
-                const active  = normalizedView === item.id;
+              {!isCollapsed && visibleItems.map((item, idx) => {
+                const locked       = item.req && !meetsRequirement(tier, item.req);
+                const needsChannel = item.needsChannel && !hasChannel;
+                const active       = normalizedView === item.id;
+                const isCapstone   = item.capstone && !locked;
+                const isLastInPillar = item.capstone;
+                const disabled     = locked || needsChannel;
+
                 const classes = [
                   'nav-item',
-                  active   ? 'nav-item-active'    : '',
-                  locked   ? 'nav-item-locked'    : '',
-                  item.highlight ? 'nav-item-highlight' : '',
+                  active    ? 'nav-item-active' : '',
+                  locked    ? 'nav-item-locked' : '',
+                  needsChannel && !locked ? 'nav-item-locked' : '',
                 ].filter(Boolean).join(' ');
 
+                const tooltipDesc = locked
+                  ? `Requires ${item.req} plan. ${item.desc}`
+                  : needsChannel
+                  ? `Search a channel first. ${item.desc}`
+                  : item.desc;
+
                 return (
-                  <Tooltip
-                    key={item.id}
-                    title={item.label}
-                    desc={locked ? `Requires ${item.req} plan. ${item.desc}` : item.desc}
-                    placement="right"
-                  >
-                    <button
-                      className={classes}
-                      onClick={() => onNavigate(item.id)}
+                  <div key={item.id}>
+                    {isLastInPillar && visibleItems.length > 1 && (
+                      <div style={{ height: 1, background: '#1e1e1e', margin: '6px 0' }} />
+                    )}
+                    <Tooltip
+                      title={item.label}
+                      desc={tooltipDesc}
+                      placement="right"
                     >
-                      <span className="nav-icon">{item.icon}</span>
-                      <span className="nav-label">{item.label}</span>
+                      <button
+                        className={classes}
+                        onClick={() => !disabled && onNavigate(item.id)}
+                        style={isCapstone ? {
+                          borderColor: '#00b89444',
+                          background: active ? '#00b89422' : '#00b89411',
+                        } : {}}
+                      >
+                        <span className="nav-icon">{item.icon}</span>
+                        <span className="nav-label">{item.label}</span>
 
-                      {/* Tier lock badge */}
-                      {locked && (
-                        <span className="nav-lock">
-                          {item.req === 'agency' ? 'Agency' : item.req === 'pro' ? 'Pro' : 'Starter'}
-                        </span>
-                      )}
+                        {locked && (
+                          <span className="nav-lock">
+                            {item.req === 'agency' ? 'Agency' : item.req === 'pro' ? 'Pro' : 'Starter'}
+                          </span>
+                        )}
+                        {!locked && needsChannel && (
+                          <span className="nav-lock" style={{ background: '#1a1a1a', color: '#444', borderColor: '#2a2a2a' }}>
+                            Channel
+                          </span>
+                        )}
 
-                      {/* OAuth connected dot */}
-                      {!locked && item.oauthRequired && isOAuthConnected && (
-                        <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
-                      )}
+                        {!locked && item.oauthRequired && isOAuthConnected && (
+                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
+                        )}
 
-                      {/* My Analytics demo badge */}
-                      {item.id === 'myanalytics' && (
-                        <span
-                          onClick={e => {
-                            e.stopPropagation();
-                            try { sessionStorage.setItem('tubeintel_launch_demo', '1'); } catch {}
-                            onNavigate('myanalytics');
-                          }}
-                          style={{
-                            fontSize: 9, fontWeight: 800, background: '#f9731699',
-                            color: '#fff', borderRadius: 4, padding: '2px 5px',
-                            cursor: 'pointer', flexShrink: 0, letterSpacing: 0.3,
-                          }}
-                        >
-                          DEMO
-                        </span>
-                      )}
+                        {item.id === 'myanalytics' && (
+                          <span
+                            onClick={e => {
+                              e.stopPropagation();
+                              try { sessionStorage.setItem('tubeintel_launch_demo', '1'); } catch {}
+                              onNavigate('myanalytics');
+                            }}
+                            style={{
+                              fontSize: 9, fontWeight: 800, background: '#f9731699',
+                              color: '#fff', borderRadius: 4, padding: '2px 5px',
+                              cursor: 'pointer', flexShrink: 0, letterSpacing: 0.3,
+                            }}
+                          >
+                            DEMO
+                          </span>
+                        )}
 
-                      {/* New badge on Fix My Video */}
-                      {item.id === 'improve' && !locked && (
-                        <span style={{
-                          fontSize: 8, fontWeight: 800, background: '#7c3aed99',
-                          color: '#e9d5ff', borderRadius: 4, padding: '2px 5px',
-                          flexShrink: 0, letterSpacing: 0.3,
-                        }}>
-                          NEW
-                        </span>
-                      )}
-                    </button>
-                  </Tooltip>
+                        {isCapstone && (
+                          <span style={{
+                            fontSize: 8, fontWeight: 800,
+                            background: '#00b89433', color: '#00b894',
+                            borderRadius: 4, padding: '2px 6px',
+                            flexShrink: 0, letterSpacing: 0.4,
+                          }}>
+                            GATE
+                          </span>
+                        )}
+                      </button>
+                    </Tooltip>
+                  </div>
                 );
               })}
             </div>

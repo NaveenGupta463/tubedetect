@@ -172,13 +172,8 @@ const CHECKLIST_ITEMS = [
   { id: 'best_time',   text: 'Best time to post selected' },
 ];
 
-export default function PrePublishValidator({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade, channel, videos }) {
-  const isPro = meetsRequirement(tier, 'pro');
+export default function PrePublishValidator({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade, channel, videos, navigationPayload, onNavigate }) {
   const isAgency = meetsRequirement(tier, 'agency');
-
-  const avgChannelViews = videos?.length
-    ? Math.round(videos.reduce((s, v) => s + parseInt(v.statistics?.viewCount || 0), 0) / videos.length)
-    : '';
 
   const [form, setForm] = useState({
     title: '', description: '', tags: '', category: 'Entertainment',
@@ -206,16 +201,35 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
   const [lastThumbInputType, setLastThumbInputType] = useState('none');
   const resultsRef = useRef(null);
 
-  // Auto-fill from loaded channel
+  // Auto-fill from loaded channel + recent videos
   useEffect(() => {
-    if (!channel) return;
+    if (!channel && !videos?.length) return;
+    const recentAvg = videos?.length
+      ? Math.round(videos.reduce((s, v) => s + parseInt(v.statistics?.viewCount || 0), 0) / videos.length)
+      : 0;
     setForm(f => ({
       ...f,
-      channelName: f.channelName || channel.snippet?.title || '',
-      subscribers: f.subscribers || channel.statistics?.subscriberCount || '',
-      avgViews:    f.avgViews    || (avgChannelViews ? String(avgChannelViews) : ''),
+      channelName: f.channelName || channel?.snippet?.title || '',
+      subscribers: f.subscribers || channel?.statistics?.subscriberCount || '',
+      avgViews:    f.avgViews    || (recentAvg ? String(recentAvg) : ''),
     }));
-  }, [channel]);
+  }, [channel, videos]);
+
+  // Prefill from navigation payload (coming from Script, Scorer, Trends, Viral tools)
+  useEffect(() => {
+    if (!navigationPayload) return;
+    const matchCategory = (niche) => {
+      if (!niche) return null;
+      const lower = niche.toLowerCase();
+      return CATEGORIES.find(c => lower.includes(c.toLowerCase())) || null;
+    };
+    setForm(f => ({
+      ...f,
+      title:    navigationPayload.title || f.title,
+      category: matchCategory(navigationPayload.niche) || f.category,
+      hook:     navigationPayload.hook  || f.hook,
+    }));
+  }, [navigationPayload]);
 
   // Auto-check checklist from form state
   useEffect(() => {
@@ -231,7 +245,6 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
     }));
   }, [form, thumbPreview, thumbDescription]);
 
-  if (!isPro) return <ProGate onUpgrade={onUpgrade} />;
 
   const setField = (k, v) => setForm(f => ({ ...f, [k]: v }));
 
@@ -284,7 +297,10 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
     const contentDescription = `HOOK:\n${form.hook.trim()}\n\nMID:\n${form.midVideo.trim()}\n\nENDING:\n${form.ending.trim()}`;
     const thumbInputType = thumbPreview ? 'image' : thumbDescription.trim() ? 'text' : 'none';
     setLastThumbInputType(thumbInputType);
-    const cacheKey = CACHE_PREFIX + 'v13_' + hashString(form.title + contentDescription + (thumbInputType === 'text' ? thumbDescription.trim() : thumbInputType));
+    const thumbSig = thumbInputType === 'image'
+      ? hashString(thumbPreview.slice(0, 600))
+      : thumbInputType === 'text' ? thumbDescription.trim() : 'none';
+    const cacheKey = CACHE_PREFIX + 'v13_' + hashString(form.title + contentDescription + thumbSig);
     try {
       const cached = localStorage.getItem(cacheKey);
       if (cached) {
@@ -309,7 +325,7 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
         hasThumbnail: !!thumbPreview,
         thumbDescription: thumbPreview ? '' : thumbDescription.trim(),
         thumbInputType,
-      });
+      }, thumbPreview || null);
       timers.forEach(clearTimeout);
       setProgressStep(6);
       consumeAICall();
@@ -1977,6 +1993,36 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
           </div>
 
           {/* Save & Compare */}
+          {onNavigate && result && (
+            <div className="chart-card" style={{ marginBottom: 16 }}>
+              <h3 className="chart-title" style={{ marginBottom: 12 }}>Next Steps</h3>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10 }}>
+                {(sc.titleStrength ?? 0) < 7 && (
+                  <button
+                    onClick={() => onNavigate('scorer', { title: form.title, niche: form.category })}
+                    style={{ background: '#1a0a3c', border: '1px solid #7c4dff44', borderRadius: 8, padding: '10px 18px', fontSize: 13, fontWeight: 700, color: '#c084fc', cursor: 'pointer' }}
+                  >
+                    ✏️ Improve Title →
+                  </button>
+                )}
+                {(sc.hookPotential ?? 0) < 7 && (
+                  <button
+                    onClick={() => onNavigate('script', { title: form.title, niche: form.category })}
+                    style={{ background: '#0a1a0a', border: '1px solid #00c85344', borderRadius: 8, padding: '10px 18px', fontSize: 13, fontWeight: 700, color: '#69f0ae', cursor: 'pointer' }}
+                  >
+                    📝 Strengthen Hook →
+                  </button>
+                )}
+                <button
+                  onClick={() => onNavigate('trends', { niche: form.category })}
+                  style={{ background: '#111', border: '1px solid #2a2a2a', borderRadius: 8, padding: '10px 18px', fontSize: 13, fontWeight: 700, color: '#888', cursor: 'pointer' }}
+                >
+                  🔍 Research Niche →
+                </button>
+              </div>
+            </div>
+          )}
+
           <div className="chart-card" style={{ marginBottom: 16 }}>
             <div className="chart-title-row">
               <h3 className="chart-title">💾 Save & Compare</h3>

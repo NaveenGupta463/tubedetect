@@ -4,7 +4,7 @@ import { analyzeViralFormula } from '../api/claude';
 import { parseDuration, formatNum } from '../utils/analysis';
 import ProGate from './ProGate';
 
-export default function ViralFormulaDecoder({ videos, tier, canUseAI, consumeAICall, remainingCalls, onUpgrade }) {
+export default function ViralFormulaDecoder({ videos, tier, canUseAI, consumeAICall, remainingCalls, onUpgrade, onNavigate }) {
   const [selectedId, setSelectedId] = useState('');
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -259,6 +259,16 @@ export default function ViralFormulaDecoder({ videos, tier, canUseAI, consumeAIC
                 )}
               </div>
             )}
+          </div>
+        )}
+        {result && onNavigate && (
+          <div style={{ marginTop: 8, textAlign: 'center' }}>
+            <button
+              onClick={() => onNavigate('validator', { title: selectedVideo?.snippet?.title || '' })}
+              style={{ background: 'linear-gradient(135deg,#7c4dff,#5b2be8)', border: 'none', borderRadius: 8, padding: '12px 28px', fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer' }}
+            >
+              🚀 Validate Before Publishing →
+            </button>
           </div>
         )}
       </div>

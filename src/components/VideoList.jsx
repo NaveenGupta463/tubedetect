@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { formatNum, calcEngagement, parseDuration, analyzeVideo } from '../utils/analysis';
+import { formatNum, calcEngagement, parseDuration } from '../utils/analysis';
 
 const SORT_OPTIONS = [
   { key: 'date', label: 'Date' },

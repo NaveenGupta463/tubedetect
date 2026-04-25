@@ -2,9 +2,52 @@ import TITooltip from './Tooltip';
 import { VIRALITY_TIPS, ALGO_TIPS } from './VideoAnalysisConstants';
 import { SkeletonCard, AiRunPrompt } from './VideoAnalysisPrimitives';
 
-export default function VideoAnalysisAlgoTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade }) {
+export default function VideoAnalysisAlgoTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade, videoType }) {
   if (!aiData) return <AiRunPrompt onRun={handleDeepAnalysis} loading={aiLoading} noAI={!canUseAI?.()} onUpgrade={onUpgrade} tabLabel="Algorithm & Virality" />;
   if (aiLoading) return <><SkeletonCard lines={4} /><SkeletonCard lines={3} /></>;
+
+  if (videoType === 'LEGACY_VIRAL' && aiData.intelligence) {
+    const dm = aiData.intelligence.distributionMechanics || {};
+    return (
+      <>
+        <div className="chart-card" style={{ borderTop: '3px solid #7c3aed' }}>
+          {dm.primaryDistributionVector && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+              <span style={{ background: '#7c3aed22', border: '1px solid #7c3aed44', borderRadius: 6, padding: '3px 10px', fontSize: 12, color: '#c084fc', fontWeight: 700 }}>
+                {dm.primaryDistributionVector}
+              </span>
+            </div>
+          )}
+          <h3 className="chart-title" style={{ marginBottom: 14 }}>Distribution Mechanics</h3>
+          {dm.velocityPattern && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Velocity Pattern</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{dm.velocityPattern}</div>
+            </div>
+          )}
+          {dm.algorithmSignals && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#a855f7', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Algorithm Signals</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{dm.algorithmSignals}</div>
+            </div>
+          )}
+          {dm.audienceExpansion && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Audience Expansion</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{dm.audienceExpansion}</div>
+            </div>
+          )}
+          {dm.sustainedReachReason && (
+            <div style={{ padding: '12px 14px', background: '#0a0a1a', border: '1px solid #2a1060', borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Why It Still Surfaces</div>
+              <div style={{ fontSize: 13, color: '#c4b5fd', lineHeight: 1.55 }}>{dm.sustainedReachReason}</div>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   const algo = aiData.algorithm || {};
   const viralityFactors = algo.virality ? [
     { name: 'Novelty',            value: algo.virality.novelty ?? 0 },

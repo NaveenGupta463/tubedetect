@@ -1,6 +1,6 @@
 import jsPDF from 'jspdf';
 import 'jspdf-autotable';
-import { formatNum, calcEngagement, parseDuration, analyzeVideo } from './analysis';
+import { formatNum, calcEngagement, parseDuration } from './analysis';
 
 const BRAND = '#cc0000';
 const DARK  = '#111111';

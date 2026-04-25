@@ -2,9 +2,50 @@ import TITooltip from './Tooltip';
 import { TITLE_SCORE_TIPS } from './VideoAnalysisConstants';
 import { SkeletonCard, AiRunPrompt } from './VideoAnalysisPrimitives';
 
-export default function VideoAnalysisTitleTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade }) {
+export default function VideoAnalysisTitleTab({ aiData, aiLoading, handleDeepAnalysis, canUseAI, onUpgrade, videoType }) {
   if (!aiData) return <AiRunPrompt onRun={handleDeepAnalysis} loading={aiLoading} noAI={!canUseAI?.()} onUpgrade={onUpgrade} tabLabel="Thumbnail & Title" />;
   if (aiLoading) return <><SkeletonCard lines={4} /><SkeletonCard lines={5} /><SkeletonCard lines={3} /></>;
+
+  if (videoType === 'LEGACY_VIRAL' && aiData.intelligence) {
+    const ti = aiData.intelligence.titleIntelligence || {};
+    return (
+      <>
+        <div className="chart-card" style={{ borderTop: '3px solid #7c3aed' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
+            <span style={{ background: '#7c3aed22', border: '1px solid #7c3aed44', borderRadius: 6, padding: '3px 10px', fontSize: 12, color: '#c084fc', fontWeight: 700 }}>
+              {ti.formulaType || 'Pattern Analysis'}
+            </span>
+          </div>
+          <h3 className="chart-title" style={{ marginBottom: 14 }}>Why This Title Worked</h3>
+          {ti.psychologicalHook && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Psychological Hook</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{ti.psychologicalHook}</div>
+            </div>
+          )}
+          {ti.whyItWorked && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#a855f7', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Mass Click Behaviour</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{ti.whyItWorked}</div>
+            </div>
+          )}
+          {ti.culturalContext && (
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#6d28d9', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Cultural Context</div>
+              <div className="ai-text-block" style={{ marginTop: 0 }}>{ti.culturalContext}</div>
+            </div>
+          )}
+          {ti.replicableFormula && (
+            <div style={{ padding: '12px 14px', background: '#1e0a3c', border: '1px solid #6d28d9', borderRadius: 8 }}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', textTransform: 'uppercase', letterSpacing: 1, marginBottom: 6 }}>Replicable Formula</div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: '#e9d5ff', lineHeight: 1.5, fontStyle: 'italic' }}>{ti.replicableFormula}</div>
+            </div>
+          )}
+        </div>
+      </>
+    );
+  }
+
   const tt = aiData.titleThumbnail || {};
   const scores4 = [
     { label: 'Curiosity',       value: tt.curiosityScore ?? 0 },

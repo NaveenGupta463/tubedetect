@@ -1,15 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import { generateVideoImprovements } from '../api/claude';
 import { ScoreRing } from './VideoAnalysisPrimitives';
 
-const IMPROVE_KEY = 'tubeintel_improve_';
+const IMPROVE_KEY = 'tubeintel_improve_v2_';
 
-const CHECKLIST_KEYS = ['title', 'hook', 'thumbnail', 'cta'];
+const CHECKLIST_KEYS = ['title', 'thumbnail', 'seo', 'cta'];
 const CHECKLIST_META = {
-  title:     { icon: '🎯', label: 'Title',     sublabel: 'CTR' },
-  hook:      { icon: '🎣', label: 'Hook',       sublabel: 'Retention' },
-  thumbnail: { icon: '🖼️', label: 'Thumbnail',  sublabel: 'CTR boost' },
-  cta:       { icon: '📢', label: 'CTA',         sublabel: 'Comments' },
+  title:     { icon: '🎯', label: 'Title',     sublabel: 'Packaging' },
+  thumbnail: { icon: '🖼️', label: 'Thumbnail',  sublabel: 'Packaging' },
+  seo:       { icon: '🔍', label: 'SEO',        sublabel: 'Discoverability' },
+  cta:       { icon: '📢', label: 'CTA',         sublabel: 'Engagement' },
 };
 
 
@@ -91,54 +91,69 @@ function ScoreBar({ label, baseline, projected, active }) {
 
 // ── DimensionPanel ────────────────────────────────────────────────────────────
 const DIM_LABELS = [
-  { key: 'titleThumbnail',     label: 'Title & Thumb' },
-  { key: 'hookRetention',      label: 'Hook & Retention' },
-  { key: 'contentStructure',   label: 'Content Structure' },
-  { key: 'engagement',         label: 'Engagement' },
-  { key: 'algorithm',          label: 'Algorithm' },
-  { key: 'seoDiscoverability', label: 'SEO' },
-  { key: 'emotionalImpact',    label: 'Emotional Impact' },
-  { key: 'valueDelivery',      label: 'Value Delivery' },
+  { key: 'packaging',  label: 'Packaging' },
+  { key: 'engagement', label: 'Engagement' },
+  { key: 'seo',        label: 'SEO' },
+  { key: 'velocity',   label: 'Velocity' },
 ];
+
+const MILESTONES = [
+  { min: 0,  max: 49,  label: 'Needs Work',     next: 'Average',         nextScore: 50 },
+  { min: 50, max: 59,  label: 'Average',         next: 'Improving',       nextScore: 60 },
+  { min: 60, max: 74,  label: 'Improving',       next: 'High Performer',  nextScore: 75 },
+  { min: 75, max: 89,  label: 'High Performer',  next: 'Viral Potential', nextScore: 90 },
+  { min: 90, max: 100, label: 'Viral Potential', next: null,              nextScore: null },
+];
+
+function getMilestone(score) {
+  const m = MILESTONES.find(m => score >= m.min && score <= m.max) || MILESTONES[0];
+  return { next: m.next, nextScore: m.nextScore };
+}
+
+const DIM_WEIGHTS_LOCAL = {
+  packaging:  0.40,
+  engagement: 0.30,
+  seo:        0.15,
+  velocity:   0.15,
+};
 
 function DimensionPanel({ aiData, improvements, selectedTitle, selectedThumbnail, selectedFixes }) {
   const bp = aiData?.blueprint || {};
   const baseScores = bp.scores || {};
-  const baseOverall = bp.overallScore ?? 0;
+  const baseOverall = bp.viralScore ?? 0;
 
-  // Merge projected dims from all active selections
+  const anyActive = selectedTitle !== null || selectedThumbnail !== null || selectedFixes.seo;
+
+  // Merge all active items' pre-spread projected dims using Math.max per dimension
   const projDims = { ...baseScores };
-  let overallDelta = 0;
 
-  if (selectedTitle !== null) {
-    const t = improvements?.titles?.[selectedTitle];
-    if (t) {
-      if (t.projectedDimensions?.titleThumbnail != null)
-        projDims.titleThumbnail = t.projectedDimensions.titleThumbnail;
-      if (t.projectedOverall != null) overallDelta += t.projectedOverall - baseOverall;
+  const activeItems = [
+    selectedTitle     !== null && improvements?.titles?.[selectedTitle],
+    selectedThumbnail !== null && improvements?.thumbnails?.[selectedThumbnail],
+    selectedFixes.seo          && improvements?.seo_improvements,
+  ].filter(Boolean);
+
+  for (const item of activeItems) {
+    if (!item.projectedDimensions) continue;
+    for (const key of Object.keys(DIM_WEIGHTS_LOCAL)) {
+      if (item.projectedDimensions[key] != null)
+        projDims[key] = Math.max(projDims[key] ?? 0, item.projectedDimensions[key]);
     }
   }
-  if (selectedThumbnail !== null) {
-    const th = improvements?.thumbnails?.[selectedThumbnail];
-    if (th) {
-      if (th.projectedDimensions?.titleThumbnail != null)
-        projDims.titleThumbnail = Math.max(projDims.titleThumbnail ?? 0, th.projectedDimensions.titleThumbnail);
-      if (th.projectedOverall != null) overallDelta += th.projectedOverall - baseOverall;
-    }
-  }
-  if (selectedFixes.hook) {
-    const h = improvements?.hook;
-    if (h?.projectedDimensions?.hookRetention != null) projDims.hookRetention = h.projectedDimensions.hookRetention;
-    if (h?.projectedOverall != null) overallDelta += h.projectedOverall - baseOverall;
-  }
-  if (selectedFixes.cta) {
-    const c = improvements?.cta;
-    if (c?.projectedDimensions?.engagement != null) projDims.engagement = c.projectedDimensions.engagement;
-    if (c?.projectedOverall != null) overallDelta += c.projectedOverall - baseOverall;
-  }
 
-  const projOverall = Math.min(100, Math.max(0, Math.round(baseOverall + overallDelta)));
-  const anyActive = selectedTitle !== null || selectedThumbnail !== null || selectedFixes.hook || selectedFixes.cta;
+  const projOverall = anyActive
+    ? Math.max(
+        baseOverall,
+        Math.min(
+          Math.round(Object.entries(DIM_WEIGHTS_LOCAL).reduce((s, [k, w]) => {
+            const val = Number(projDims?.[k] ?? baseScores?.[k] ?? 0);
+            return s + (val * w);
+          }, 0)),
+          baseOverall + 15
+        )
+      )
+    : baseOverall;
+  const overallDelta = projOverall - baseOverall;
 
   return (
     <div style={{ background: '#09090f', border: `1px solid ${anyActive ? '#7c3aed44' : '#1e1e2e'}`, borderRadius: 14, padding: '16px 18px', transition: 'border-color 0.3s' }}>
@@ -152,24 +167,33 @@ function DimensionPanel({ aiData, improvements, selectedTitle, selectedThumbnail
           </div>
         </div>
         <div style={{ textAlign: 'right' }}>
-          <div style={{ fontSize: '0.6rem', color: '#444', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 2 }}>Overall</div>
-          <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
-            <span style={{ fontSize: '1.6rem', fontWeight: 900, lineHeight: 1, color: projOverall >= 75 ? '#00c853' : projOverall >= 55 ? '#ff9100' : '#ff1744', transition: 'color 0.4s' }}>
-              {projOverall}
-            </span>
-            <span style={{ fontSize: '0.72rem', color: '#444' }}>/100</span>
-            {anyActive && overallDelta > 0 && (
-              <span style={{ fontSize: '0.68rem', fontWeight: 800, color: '#22c55e', background: '#0b1f0e', border: '1px solid #22c55e33', borderRadius: 4, padding: '1px 6px', marginLeft: 4 }}>
-                +{Math.round(overallDelta)}
-              </span>
-            )}
+          <div style={{ fontSize: '0.6rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 2, color: anyActive && overallDelta > 0 ? '#22c55e' : '#444' }}>
+            {anyActive && overallDelta > 0 ? 'Optimized Potential' : 'Overall'}
           </div>
+          {anyActive && overallDelta > 0 ? (
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{ fontSize: '1.1rem', fontWeight: 700, lineHeight: 1, color: '#555' }}>{baseOverall}</span>
+              <span style={{ fontSize: '0.9rem', color: '#555', margin: '0 2px' }}>→</span>
+              <span style={{ fontSize: '1.6rem', fontWeight: 900, lineHeight: 1, color: '#22c55e', transition: 'color 0.4s' }}>{projOverall}</span>
+              <span style={{ fontSize: '0.62rem', color: '#22c55e', fontWeight: 600, alignSelf: 'flex-end', paddingBottom: 2 }}>potential</span>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'baseline', gap: 4 }}>
+              <span style={{ fontSize: '1.6rem', fontWeight: 900, lineHeight: 1, color: projOverall >= 75 ? '#00c853' : projOverall >= 55 ? '#ff9100' : '#ff1744' }}>
+                {projOverall}
+              </span>
+              <span style={{ fontSize: '0.72rem', color: '#444' }}>/100</span>
+            </div>
+          )}
+          {anyActive && overallDelta > 0 && (
+            <div style={{ fontSize: '0.58rem', color: '#555', marginTop: 3 }}>Based on selected improvements</div>
+          )}
         </div>
       </div>
       <div style={{ fontSize: '0.65rem', color: '#2a2a2a', marginBottom: 14, lineHeight: 1.5 }}>
         Scores reflect content quality signals. Actual YouTube performance depends on posting time, niche competition, and algorithm factors beyond these metrics.
       </div>
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 8, justifyItems: 'center' }}>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 8, justifyItems: 'center' }}>
         {DIM_LABELS.map(({ key, label }) => {
           const base = baseScores[key] ?? 0;
           const proj = projDims[key] ?? base;
@@ -187,17 +211,75 @@ function DimensionPanel({ aiData, improvements, selectedTitle, selectedThumbnail
           );
         })}
       </div>
+      {anyActive && overallDelta > 0 && (() => {
+        const ms = getMilestone(projOverall);
+        const feedbackText = ms.next
+          ? `Getting closer to ${ms.next} (${ms.nextScore})`
+          : "You've reached Viral Potential!";
+        return (
+          <div style={{ marginTop: 10, padding: '8px 12px', background: '#0b1a0b', border: '1px solid #22c55e22', borderRadius: 8, display: 'flex', alignItems: 'center', gap: 8 }}>
+            <span style={{ color: '#22c55e', fontSize: '0.85rem', flexShrink: 0 }}>✅</span>
+            <span style={{ fontSize: '0.7rem', color: '#86efac' }}>
+              +{Math.round(overallDelta)} improvement applied · {feedbackText}
+            </span>
+          </div>
+        );
+      })()}
     </div>
   );
 }
 
 // ── FixChecklist ──────────────────────────────────────────────────────────────
 function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix }) {
+  const gains = useMemo(() => {
+    const baseOverall      = aiData?.blueprint?.viralScore ?? 0;
+    const basePackagingDim = aiData?.blueprint?.scores?.packaging ?? 0;
+    return {
+      title: improvements?.titles?.length > 0
+        ? Math.max(...improvements.titles.map(t => (t.projectedOverall ?? baseOverall) - baseOverall))
+        : 0,
+      thumbnail: improvements?.thumbnails?.length > 0
+        ? Math.max(0, ...improvements.thumbnails.map(t =>
+            ((t.projectedDimensions?.packaging ?? basePackagingDim) - basePackagingDim) * DIM_WEIGHTS_LOCAL.packaging
+          ))
+        : 0,
+      seo: Math.max(0, (improvements?.seo_improvements?.projectedOverall ?? baseOverall) - baseOverall),
+      cta: 0,
+    };
+  }, [improvements, aiData]);
+
+  const sortedGains       = Object.entries(gains).filter(([, g]) => g > 0).sort(([, a], [, b]) => b - a);
+  const highestImpactKey  = sortedGains[0]?.[0] ?? null;
+  const highestImpactGain = sortedGains[0]?.[1] ?? 0;
+
+  const [orderedKeys, setOrderedKeys] = useState(CHECKLIST_KEYS);
+  const prevDoneRef = useRef({});
+
+  const sortKeys = (currentDone) => {
+    const active    = CHECKLIST_KEYS.filter(k => !currentDone[k]).sort((a, b) => (gains[b] ?? 0) - (gains[a] ?? 0));
+    const completed = CHECKLIST_KEYS.filter(k =>  currentDone[k]);
+    return [...active, ...completed];
+  };
+
+  useEffect(() => {
+    setOrderedKeys(sortKeys(done));
+  }, [improvements]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    const changed = CHECKLIST_KEYS.some(k => !!done[k] !== !!prevDoneRef.current[k]);
+    prevDoneRef.current = { ...done };
+    if (!changed) return;
+    setOrderedKeys(sortKeys(done));
+  }, [done]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const activeKeys = orderedKeys.filter(k => !done[k]);
+  const doneKeys   = orderedKeys.filter(k =>  done[k]);
+
   const getText = key => {
     if (key === 'title')     return improvements?.titles?.[0]?.text || '';
-    if (key === 'hook')      return improvements?.hook?.text || '';
-    if (key === 'cta')       return improvements?.cta?.text || '';
     if (key === 'thumbnail') return aiData?.titleThumbnail?.thumbnailTips?.[0] || '';
+    if (key === 'seo')       return improvements?.seo_improvements?.title_suggestion || '';
+    if (key === 'cta')       return improvements?.cta?.text || '';
     return '';
   };
 
@@ -238,71 +320,130 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
         }} />
       </div>
 
+      <style>{`@keyframes fix-rise { from { opacity: 0.6; transform: translateY(-3px); } to { opacity: 1; transform: translateY(0); } }`}</style>
+
+      {/* Active items */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {CHECKLIST_KEYS.map(key => {
+        {activeKeys.map((key, idx) => {
           const { icon, label, sublabel } = CHECKLIST_META[key];
           const text = getText(key);
-          const isDone = !!done[key];
           const isRecommended = bestCombo?.includes(key);
+          const isHighest = key === highestImpactKey && highestImpactGain > 0;
           return (
-            <div key={key} style={{
-              display: 'flex', alignItems: 'center', gap: 10,
-              background: isDone ? '#0b1a0b' : isRecommended ? '#110d1f' : '#111',
-              border: `1px solid ${isDone ? '#22c55e22' : isRecommended ? '#7c3aed55' : '#1a1a1a'}`,
-              borderRadius: 8, padding: '9px 12px',
-              opacity: isDone ? 0.7 : 1,
-              transition: 'all 0.4s ease',
-              boxShadow: isRecommended && !isDone ? '0 0 10px #7c3aed18' : 'none',
-            }}>
-              {/* Checkbox */}
-              <div
-                onClick={() => onMark(key)}
-                style={{
+            <div key={key} style={{ display: 'flex', flexDirection: 'column', gap: 4, animation: idx === 0 ? 'fix-rise 0.2s ease' : 'none' }}>
+              {isHighest && (
+                <div style={{
+                  fontSize: '0.6rem', fontWeight: 800, letterSpacing: '0.14em',
+                  textTransform: 'uppercase', display: 'flex', alignItems: 'center',
+                  gap: 6, paddingLeft: 4,
+                }}>
+                  <span style={{ color: '#fbbf24' }}>▶ Start here</span>
+                  <span style={{ color: '#d97706', fontWeight: 600, textTransform: 'none', letterSpacing: 0 }}>→ +{Math.round(highestImpactGain)} pts</span>
+                </div>
+              )}
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10,
+                background: isHighest ? '#1a1200' : isRecommended ? '#110d1f' : '#111',
+                border: `1px solid ${isHighest ? '#fbbf2466' : isRecommended ? '#7c3aed55' : '#1a1a1a'}`,
+                borderRadius: 8, padding: '9px 12px',
+                transition: 'background 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease',
+                boxShadow: isHighest
+                  ? '0 0 20px #fbbf2428, inset 0 1px 0 #fbbf2418'
+                  : isRecommended ? '0 0 10px #7c3aed18' : 'none',
+              }}>
+                <div onClick={() => onMark(key)} style={{
                   width: 18, height: 18, borderRadius: 4, flexShrink: 0,
-                  border: `2px solid ${isDone ? '#22c55e' : isRecommended ? '#7c3aed' : '#333'}`,
-                  background: isDone ? '#22c55e22' : 'transparent',
+                  border: `2px solid ${isHighest ? '#fbbf24' : isRecommended ? '#7c3aed' : '#333'}`,
+                  background: 'transparent',
                   display: 'flex', alignItems: 'center', justifyContent: 'center',
                   cursor: 'pointer', fontSize: '0.65rem', color: '#22c55e',
-                }}
-              >
-                {isDone ? '✓' : ''}
-              </div>
-              <span style={{ fontSize: '1rem', flexShrink: 0 }}>{icon}</span>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
-                  <span style={{ fontSize: '0.7rem', fontWeight: 700, color: isDone ? '#4ade80' : isRecommended ? '#c4b5fd' : '#555', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</span>
-                  <span style={{ fontSize: '0.62rem', background: '#1a1a1a', border: '1px solid #222', borderRadius: 4, padding: '1px 6px', color: '#444', fontWeight: 600 }}>{sublabel}</span>
-                  {isRecommended && !isDone && (
-                    <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#a78bfa', background: '#7c3aed22', border: '1px solid #7c3aed44', borderRadius: 4, padding: '1px 6px' }}>
-                      ★ Recommended
-                    </span>
+                }} />
+                <span style={{ fontSize: '1rem', flexShrink: 0 }}>{icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2, flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '0.7rem', fontWeight: 700, color: isHighest ? '#fde68a' : isRecommended ? '#c4b5fd' : '#555', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</span>
+                    <span style={{ fontSize: '0.62rem', background: '#1a1a1a', border: '1px solid #222', borderRadius: 4, padding: '1px 6px', color: '#444', fontWeight: 600 }}>{sublabel}</span>
+                    {isHighest && (
+                      <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#fbbf24', background: '#1a1200', border: '1px solid #fbbf2433', borderRadius: 4, padding: '1px 6px' }}>
+                        🏆 Biggest Impact
+                      </span>
+                    )}
+                    {isRecommended && !isHighest && (
+                      <span style={{ fontSize: '0.58rem', fontWeight: 800, color: '#a78bfa', background: '#7c3aed22', border: '1px solid #7c3aed44', borderRadius: 4, padding: '1px 6px' }}>
+                        ★ Recommended
+                      </span>
+                    )}
+                  </div>
+                  {text && (
+                    <div style={{ fontSize: '0.78rem', color: isHighest ? '#e5c97e' : isRecommended ? '#ccc' : '#bbb', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {text}
+                    </div>
                   )}
                 </div>
-                {text && (
-                  <div style={{ fontSize: '0.78rem', color: isDone ? '#555' : isRecommended ? '#ccc' : '#bbb', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: isDone ? 'line-through' : 'none' }}>
-                    {text}
-                  </div>
-                )}
-              </div>
-              <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
-                {text && <CopyButton text={text} small onCopied={() => onMark(key)} />}
-                <button
-                  onClick={() => onMark(key)}
-                  style={{
+                <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}>
+                  {text && <CopyButton text={text} small onCopied={() => onMark(key)} />}
+                  <button onClick={() => onMark(key)} style={{
                     padding: '3px 8px', borderRadius: 6, cursor: 'pointer',
-                    border: isDone ? '1px solid #22c55e44' : '1px solid #2a2a2a',
-                    background: isDone ? '#0b1f0e' : '#1a1a1a',
-                    color: isDone ? '#22c55e' : '#555',
+                    border: '1px solid #2a2a2a', background: '#1a1a1a', color: '#555',
                     fontSize: '0.65rem', fontWeight: 700, whiteSpace: 'nowrap',
-                  }}
-                >
-                  {isDone ? '✓ Done' : 'Mark Done'}
-                </button>
+                  }}>
+                    Mark Done
+                  </button>
+                </div>
               </div>
             </div>
           );
         })}
       </div>
+
+      {/* Completed section */}
+      {doneKeys.length > 0 && (
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: '0.58rem', fontWeight: 700, color: '#2a2a2a', textTransform: 'uppercase', letterSpacing: '0.12em', marginBottom: 6, paddingLeft: 2 }}>
+            Completed ({doneKeys.length})
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {doneKeys.map(key => {
+              const { icon, label, sublabel } = CHECKLIST_META[key];
+              const text = getText(key);
+              return (
+                <div key={key} style={{
+                  display: 'flex', alignItems: 'center', gap: 10,
+                  background: '#0b1a0b', border: '1px solid #22c55e22',
+                  borderRadius: 8, padding: '9px 12px',
+                  opacity: 0.55, transition: 'opacity 0.2s ease',
+                }}>
+                  <div onClick={() => onMark(key)} style={{
+                    width: 18, height: 18, borderRadius: 4, flexShrink: 0,
+                    border: '2px solid #22c55e', background: '#22c55e22',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    cursor: 'pointer', fontSize: '0.65rem', color: '#22c55e',
+                  }}>✓</div>
+                  <span style={{ fontSize: '1rem', flexShrink: 0 }}>{icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 2 }}>
+                      <span style={{ fontSize: '0.7rem', fontWeight: 700, color: '#4ade80', textTransform: 'uppercase', letterSpacing: '0.1em', textDecoration: 'line-through' }}>{label}</span>
+                      <span style={{ fontSize: '0.62rem', background: '#1a1a1a', border: '1px solid #222', borderRadius: 4, padding: '1px 6px', color: '#444', fontWeight: 600 }}>{sublabel}</span>
+                    </div>
+                    {text && (
+                      <div style={{ fontSize: '0.78rem', color: '#555', lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', textDecoration: 'line-through' }}>
+                        {text}
+                      </div>
+                    )}
+                  </div>
+                  <button onClick={() => onMark(key)} style={{
+                    padding: '3px 8px', borderRadius: 6, cursor: 'pointer', flexShrink: 0,
+                    border: '1px solid #22c55e44', background: '#0b1f0e', color: '#22c55e',
+                    fontSize: '0.65rem', fontWeight: 700, whiteSpace: 'nowrap',
+                  }}>
+                    ✓ Done
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -402,80 +543,63 @@ function TitlesSection({ titles, selectedTitle, onSelectTitle, aiData }) {
   );
 }
 
-// ── HookSection ───────────────────────────────────────────────────────────────
-function HookSection({ hook, selected, onToggle, hookBaseline }) {
-  const [showWhy, setShowWhy] = useState(false);
-  if (!hook?.text) return null;
-
-  const raw = hook.text.trim();
-  const steps = raw.split(/(?<=[.!?])\s+(?=[A-Z"'])|(?:\n)+/).filter(Boolean).slice(0, 4);
-  const displaySteps = steps.length >= 2 ? steps : [raw];
+// ── SEOSection ────────────────────────────────────────────────────────────────
+function SEOSection({ seoImprovements, selected, onToggle, baseScore }) {
+  if (!seoImprovements?.title_suggestion && !seoImprovements?.description_keywords?.length) return null;
+  const projScore = seoImprovements?.projectedDimensions?.seo ?? baseScore;
 
   return (
     <div style={{ background: '#09090f', border: `1px solid ${selected ? '#7c3aed66' : '#1e1e2e'}`, borderRadius: 14, padding: '16px 18px', transition: 'border-color 0.2s', boxShadow: selected ? '0 0 12px #7c3aed22' : 'none' }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
         <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#7c3aed' }}>
-          🎣 Hook Script
+          🔍 SEO Improvements
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button
-            onClick={onToggle}
-            style={{
-              padding: '3px 10px', borderRadius: 6, cursor: 'pointer', fontSize: '0.65rem', fontWeight: 700,
-              border: selected ? '1px solid #7c3aed66' : '1px solid #2a2a2a',
-              background: selected ? '#7c3aed22' : '#1a1a1a',
-              color: selected ? '#a78bfa' : '#555',
-              transition: 'all 0.2s',
-            }}
-          >
-            {selected ? '● Simulating' : 'Simulate fix'}
-          </button>
-          <CopyButton text={hook.text} small />
-        </div>
+        <button
+          onClick={onToggle}
+          style={{
+            padding: '3px 10px', borderRadius: 6, cursor: 'pointer', fontSize: '0.65rem', fontWeight: 700,
+            border: selected ? '1px solid #7c3aed66' : '1px solid #2a2a2a',
+            background: selected ? '#7c3aed22' : '#1a1a1a',
+            color: selected ? '#a78bfa' : '#555',
+            transition: 'all 0.2s',
+          }}
+        >
+          {selected ? '● Simulating' : 'Simulate fix'}
+        </button>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-        {displaySteps.map((line, i) => (
-          <div key={i} style={{ background: '#111', borderRadius: 8, padding: '9px 12px', display: 'flex', gap: 10, alignItems: 'flex-start' }}>
-            <div style={{
-              flexShrink: 0, minWidth: 44,
-              fontSize: '0.58rem', fontWeight: 800, color: '#7c3aed',
-              textTransform: 'uppercase', letterSpacing: '0.1em', marginTop: 2,
-            }}>
-              Step {i + 1}
-            </div>
-            <div style={{ flex: 1, display: 'flex', alignItems: 'flex-start', gap: 8 }}>
-              <span style={{ fontSize: '0.82rem', color: '#ccc', lineHeight: 1.55, flex: 1 }}>{line.trim()}</span>
-              <CopyButton text={line.trim()} small />
-            </div>
+      {seoImprovements.title_suggestion && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 5 }}>SEO Title Suggestion</div>
+          <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8, background: '#111', borderRadius: 8, padding: '9px 12px' }}>
+            <span style={{ fontSize: '0.82rem', color: '#e0e0e0', lineHeight: 1.55, flex: 1, fontWeight: 600 }}>{seoImprovements.title_suggestion}</span>
+            <CopyButton text={seoImprovements.title_suggestion} small />
           </div>
-        ))}
-      </div>
-      {hook.reason && (
-        <>
-          <button
-            onClick={() => setShowWhy(v => !v)}
-            style={{ marginTop: 10, background: 'none', border: 'none', color: '#444', fontSize: '0.68rem', cursor: 'pointer', padding: 0 }}
-          >
-            {showWhy ? '▲ Hide explanation' : '💡 Why this works'}
-          </button>
-          {showWhy && (
-            <div style={{ marginTop: 8, fontSize: '0.74rem', color: '#666', lineHeight: 1.6, background: '#0a0a14', borderRadius: 6, padding: '8px 10px' }}>
-              {hook.reason}
-            </div>
-          )}
-        </>
+        </div>
       )}
-
-      {/* Local hook strength bar */}
-      {hookBaseline > 0 && (
-        <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #131323' }}>
-          <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 8 }}>Hook Strength</div>
-          <ScoreBar
-            label="Strength"
-            baseline={hookBaseline}
-            projected={hook.projectedHookStrength ?? hookBaseline}
-            active={selected}
-          />
+      {seoImprovements.description_keywords?.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 5 }}>Description Keywords</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+            {seoImprovements.description_keywords.map((kw, i) => (
+              <span key={i} style={{ fontSize: '0.72rem', background: '#111', border: '1px solid #2a2a2a', borderRadius: 5, padding: '3px 8px', color: '#888' }}>{kw}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {seoImprovements.tags?.length > 0 && (
+        <div style={{ marginBottom: 12 }}>
+          <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 5 }}>Tags</div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 5 }}>
+            {seoImprovements.tags.map((tag, i) => (
+              <span key={i} style={{ fontSize: '0.72rem', background: '#0a0a14', border: '1px solid #1e1e2e', borderRadius: 5, padding: '3px 8px', color: '#7c3aed' }}>{tag}</span>
+            ))}
+          </div>
+        </div>
+      )}
+      {baseScore > 0 && (
+        <div style={{ paddingTop: 10, borderTop: '1px solid #131323' }}>
+          <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 6 }}>SEO Score Impact</div>
+          <ScoreBar label="SEO" baseline={baseScore} projected={projScore} active={selected} />
         </div>
       )}
     </div>
@@ -487,9 +611,9 @@ function ThumbnailSection({ aiData, improvements, selectedThumbnail, onSelectThu
   const concepts = aiData?.titleThumbnail?.thumbnailTips || [];
   if (!concepts.length) return null;
 
-  const baseScore = aiData?.blueprint?.scores?.titleThumbnail ?? 0;
+  const baseScore = aiData?.blueprint?.scores?.packaging ?? 0;
   const projScore = selectedThumbnail !== null
-    ? (improvements?.thumbnails?.[selectedThumbnail]?.projectedDimensions?.titleThumbnail ?? baseScore)
+    ? (improvements?.thumbnails?.[selectedThumbnail]?.projectedDimensions?.packaging ?? baseScore)
     : baseScore;
 
   return (
@@ -538,8 +662,8 @@ function ThumbnailSection({ aiData, improvements, selectedThumbnail, onSelectThu
 
       {/* Estimated impact bar */}
       <div style={{ marginTop: 14, paddingTop: 14, borderTop: '1px solid #131323' }}>
-        <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 8 }}>Estimated Impact on Title & Thumb</div>
-        <ScoreBar label="Title & Thumb" baseline={baseScore} projected={projScore} active={selectedThumbnail !== null} />
+        <div style={{ fontSize: '0.58rem', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.1em', color: '#2a2a2a', marginBottom: 8 }}>Estimated Impact on Packaging</div>
+        <ScoreBar label="Packaging" baseline={baseScore} projected={projScore} active={selectedThumbnail !== null} />
       </div>
     </div>
   );
@@ -643,15 +767,153 @@ function ViralPlaybookSection({ playbook }) {
   );
 }
 
+// ── DiagnosticBreakdown (DIAGNOSE + CONTEXT modes) ───────────────────────────
+function DiagnosticBreakdown({ video, aiData, onGoToVideo, onNavigate, insightMode }) {
+  const bp = aiData?.blueprint || {};
+  const getMessage = (f) => !f ? '' : (typeof f === 'string' ? f : f.message ?? '');
+
+  const isContext = insightMode === 'CONTEXT';
+  const isEarly   = bp.videoType === 'EARLY';
+
+  const videoTypeLabel =
+    bp.videoType === 'LEGACY_VIRAL' ? 'Legacy Viral'
+    : bp.videoType === 'EARLY'      ? 'Early Phase'
+    : bp.videoType === 'DORMANT'    ? 'Dormant'
+    : 'Inactive';
+
+  const accentColor = isEarly ? '#3b82f6' : isContext ? '#7c3aed' : '#6b7280';
+
+  const headerTitle = isEarly
+    ? '🕐 Early Distribution Phase'
+    : isContext
+    ? '📖 Historical Context'
+    : '📊 Diagnostic Report';
+
+  const headerSub = isEarly
+    ? 'This video is still in early distribution — signals are not yet stable enough for optimization advice.'
+    : isContext
+    ? 'This video has reached peak distribution — optimization tools are not applicable to legacy viral content.'
+    : `This video is classified as ${videoTypeLabel} — optimization tools are not applicable. This is a read-only performance record.`;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
+
+      {/* Header */}
+      <div>
+        <h2 style={{ margin: '0 0 6px', fontSize: '1.35rem', fontWeight: 900, color: accentColor }}>
+          {headerTitle}
+        </h2>
+        <p style={{ margin: 0, fontSize: '0.85rem', color: '#555', lineHeight: 1.6 }}>
+          {headerSub}
+        </p>
+      </div>
+
+      {/* Video chip */}
+      {video && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, background: '#0a0a0a', border: '1px solid #1e1e1e', borderRadius: 10, padding: '10px 14px' }}>
+          {video.snippet?.thumbnails?.default?.url && (
+            <img src={video.snippet.thumbnails.default.url} alt="" style={{ width: 56, height: 38, borderRadius: 5, objectFit: 'cover', flexShrink: 0, border: '1px solid #2a2a2a' }} />
+          )}
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: '0.72rem', color: '#444', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 3 }}>Analyzing</div>
+            <div style={{ fontSize: '0.85rem', color: '#ccc', fontWeight: 600, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {video.snippet?.title ?? 'Unknown video'}
+            </div>
+          </div>
+          <div style={{ fontSize: '0.7rem', color: accentColor, fontWeight: 700, letterSpacing: '0.08em', textTransform: 'uppercase', flexShrink: 0 }}>
+            {videoTypeLabel}
+          </div>
+        </div>
+      )}
+
+      {/* Primary finding */}
+      {getMessage(bp.primaryIssue) && (
+        <div style={{ background: '#111', border: '1px solid #2a2a2a', borderRadius: 12, padding: '16px 18px' }}>
+          <div style={{ fontSize: '0.62rem', fontWeight: 700, color: '#6b7280', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Primary Finding</div>
+          <div style={{ fontSize: '0.9rem', color: '#d1d5db', lineHeight: 1.6 }}>{getMessage(bp.primaryIssue)}</div>
+        </div>
+      )}
+
+      {/* Diagnostics list */}
+      {bp.diagnostics?.length > 0 && (
+        <div style={{ background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 12, padding: '16px 18px' }}>
+          <div style={{ fontSize: '0.62rem', fontWeight: 700, color: '#6b7280', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 12 }}>Analysis Notes</div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {bp.diagnostics.map((d, i) => (
+              <div key={i} style={{ display: 'flex', gap: 12, alignItems: 'flex-start' }}>
+                <span style={{ color: '#374151', fontSize: '0.85rem', flexShrink: 0, marginTop: 2 }}>—</span>
+                <span style={{ fontSize: '0.85rem', color: '#9ca3af', lineHeight: 1.55 }}>
+                  {typeof d === 'string' ? d : d.message ?? ''}
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Strengths / Weaknesses */}
+      {(bp.strengths || bp.weaknesses) && (
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+          <div style={{ background: '#0d1f13', border: '1px solid #1a3d22', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontSize: '0.62rem', fontWeight: 700, color: '#4ade80', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Strengths</div>
+            <p style={{ margin: 0, fontSize: '0.83rem', color: '#86efac', lineHeight: 1.55 }}>
+              {bp.strengths || 'None identified'}
+            </p>
+          </div>
+          <div style={{ background: '#1a0d0d', border: '1px solid #3d1a1a', borderRadius: 10, padding: '14px 16px' }}>
+            <div style={{ fontSize: '0.62rem', fontWeight: 700, color: '#f87171', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Weaknesses</div>
+            <p style={{ margin: 0, fontSize: '0.83rem', color: '#fca5a5', lineHeight: 1.55 }}>
+              {bp.weaknesses || 'None identified'}
+            </p>
+          </div>
+        </div>
+      )}
+
+      {/* Score row */}
+      {bp.viralScore != null && (
+        <div style={{ background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 10, padding: '14px 18px', display: 'flex', alignItems: 'center', gap: 16 }}>
+          <div style={{ textAlign: 'center' }}>
+            <div style={{ fontSize: '2rem', fontWeight: 900, color: '#6b7280', lineHeight: 1 }}>{bp.viralScore}</div>
+            <div style={{ fontSize: '0.58rem', color: '#4b5563', letterSpacing: '0.1em', textTransform: 'uppercase', marginTop: 3 }}>Score</div>
+          </div>
+          <div style={{ width: 1, height: 40, background: '#1e1e1e', flexShrink: 0 }} />
+          <div style={{ fontSize: '0.82rem', color: '#6b7280', lineHeight: 1.55 }}>
+            {isEarly
+              ? 'Preliminary score — will stabilize as the algorithm completes its distribution test.'
+              : isContext
+              ? 'Historical performance score — reflects peak distribution state, not current optimization potential.'
+              : 'Historical performance score — reflects the video\'s final distribution state, not current optimization potential.'}
+          </div>
+        </div>
+      )}
+
+      {/* Back link */}
+      <div style={{ textAlign: 'center' }}>
+        <button
+          onClick={() => onGoToVideo ? onGoToVideo() : onNavigate?.('video')}
+          style={{
+            background: 'none', border: '1px solid #2a2a2a', borderRadius: 8,
+            padding: '10px 24px', color: '#6b7280', fontSize: '0.85rem',
+            fontWeight: 700, cursor: 'pointer',
+          }}
+        >
+          ← Back to Video Analysis
+        </button>
+      </div>
+
+    </div>
+  );
+}
+
 // ── Main component ────────────────────────────────────────────────────────────
-export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoToVideo, canUseAI, consumeAICall }) {
+export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoToVideo, canUseAI, consumeAICall, actionType, insightMode, videoType }) {
   const [improvements,      setImprovements]      = useState(null);
   const [improving,         setImproving]         = useState(false);
   const [improveError,      setImproveError]      = useState('');
   const [checkDone,         setCheckDone]         = useState({});
   const [selectedTitle,     setSelectedTitle]     = useState(null);
   const [selectedThumbnail, setSelectedThumbnail] = useState(null);
-  const [selectedFixes,     setSelectedFixes]     = useState({ hook: false, cta: false });
+  const [selectedFixes,     setSelectedFixes]     = useState({ seo: false, cta: false });
   const [bestCombo,         setBestCombo]         = useState(null);
 
   const autoSelectBest = (impr) => {
@@ -659,26 +921,14 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
     if (!impr) {
       setSelectedTitle(null);
       setSelectedThumbnail(null);
-      setSelectedFixes({ hook: false, cta: false });
+      setSelectedFixes({ seo: false, cta: false });
       return;
     }
-    const tt          = aiData?.titleThumbnail || {};
-    const baseOverall = aiData?.blueprint?.overallScore ?? 0;
-    const baseThumbDim = aiData?.blueprint?.scores?.titleThumbnail ?? 0;
-    const baseSub = {
-      curiosity:      tt.curiosityScore      ?? 0,
-      emotional:      tt.emotionalScore      ?? 0,
-      clarity:        tt.clarityScore        ?? 0,
-      scrollStopping: tt.scrollStoppingScore ?? 0,
-    };
-    const titleBoost = t => {
-      const sub = t.projectedTitleSubScores || {};
-      return ['curiosity', 'emotional', 'clarity', 'scrollStopping']
-        .reduce((s, k) => s + ((sub[k] ?? baseSub[k]) - baseSub[k]), 0)
-        + ((t.projectedOverall ?? baseOverall) - baseOverall);
-    };
-    const thumbBoost = t =>
-      (t.projectedDimensions?.titleThumbnail ?? baseThumbDim) - baseThumbDim;
+    const baseOverall      = aiData?.blueprint?.viralScore ?? 0;
+    const basePackagingDim = aiData?.blueprint?.scores?.packaging ?? 0;
+
+    const titleBoost = t => (t.projectedOverall ?? baseOverall) - baseOverall;
+    const thumbBoost = t => (t.projectedDimensions?.packaging ?? basePackagingDim) - basePackagingDim;
 
     const titles = impr.titles || [];
     if (titles.length > 0) {
@@ -688,7 +938,10 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
     } else {
       setSelectedTitle(null);
     }
-    setSelectedFixes({ hook: !!(impr.hook?.text), cta: !!(impr.cta?.text) });
+
+    const hasSeo = !!(impr.seo_improvements?.title_suggestion);
+    setSelectedFixes({ seo: hasSeo, cta: !!(impr.cta?.text) });
+
     const thumbs = impr.thumbnails || [];
     if (thumbs.length > 0) {
       const bestIdx = thumbs.reduce((best, t, i) =>
@@ -704,28 +957,16 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
     if (bestCombo !== null) {
       setSelectedTitle(null);
       setSelectedThumbnail(null);
-      setSelectedFixes({ hook: false, cta: false });
+      setSelectedFixes({ seo: false, cta: false });
       setBestCombo(null);
       setCheckDone({});
       return;
     }
-    const tt           = aiData?.titleThumbnail || {};
-    const baseOverall  = aiData?.blueprint?.overallScore ?? 0;
-    const baseThumbDim = aiData?.blueprint?.scores?.titleThumbnail ?? 0;
-    const baseSub = {
-      curiosity:      tt.curiosityScore      ?? 0,
-      emotional:      tt.emotionalScore      ?? 0,
-      clarity:        tt.clarityScore        ?? 0,
-      scrollStopping: tt.scrollStoppingScore ?? 0,
-    };
-    const titleBoost = t => {
-      const sub = t.projectedTitleSubScores || {};
-      return ['curiosity', 'emotional', 'clarity', 'scrollStopping']
-        .reduce((s, k) => s + ((sub[k] ?? baseSub[k]) - baseSub[k]), 0)
-        + ((t.projectedOverall ?? baseOverall) - baseOverall);
-    };
-    const thumbBoost = t =>
-      (t.projectedDimensions?.titleThumbnail ?? baseThumbDim) - baseThumbDim;
+    const baseOverall      = aiData?.blueprint?.viralScore ?? 0;
+    const basePackagingDim = aiData?.blueprint?.scores?.packaging ?? 0;
+
+    const titleBoost = t => (t.projectedOverall ?? baseOverall) - baseOverall;
+    const thumbBoost = t => (t.projectedDimensions?.packaging ?? basePackagingDim) - basePackagingDim;
 
     const bestTitleIdx = (improvements.titles || []).reduce((best, t, i) =>
       titleBoost(t) > titleBoost(improvements.titles[best]) ? i : best, 0);
@@ -733,20 +974,15 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
     const bestThumbIdx = (improvements.thumbnails || []).reduce((best, t, i) =>
       thumbBoost(t) > thumbBoost(improvements.thumbnails[best]) ? i : best, 0);
 
-    const includeHook = ((improvements.hook?.projectedOverall ?? baseOverall) - baseOverall) > 0;
-    const includeCTA  = ((improvements.cta?.projectedOverall  ?? baseOverall) - baseOverall) > 0;
+    const includeSeo = !!(improvements.seo_improvements?.title_suggestion);
 
-    // Build checklist keys that are recommended
     const combo = ['title', 'thumbnail'];
-    if (includeHook) combo.push('hook');
-    if (includeCTA)  combo.push('cta');
+    if (includeSeo) combo.push('seo');
     setBestCombo(combo);
 
-    // Staggered apply — each step 400ms apart
-    setTimeout(() => setSelectedTitle(bestTitleIdx),              0);
-    setTimeout(() => setSelectedThumbnail(bestThumbIdx),        400);
-    setTimeout(() => { if (includeHook) setSelectedFixes(p => ({ ...p, hook: true })); }, 800);
-    setTimeout(() => { if (includeCTA)  setSelectedFixes(p => ({ ...p, cta: true }));  }, 1200);
+    setTimeout(() => setSelectedTitle(bestTitleIdx),                             0);
+    setTimeout(() => setSelectedThumbnail(bestThumbIdx),                       400);
+    setTimeout(() => { if (includeSeo) setSelectedFixes(p => ({ ...p, seo: true })); }, 800);
   };
 
   useEffect(() => {
@@ -770,6 +1006,10 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
 
   const handleGenerate = async () => {
     if (canUseAI && !canUseAI()) { onUpgrade?.(); return; }
+    setImprovements(null);
+    setSelectedTitle(null);
+    setSelectedThumbnail(null);
+    setSelectedFixes({ seo: false, cta: false });
     setImproving(true);
     setImproveError('');
     try {
@@ -786,27 +1026,19 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
         comments:       cms.toLocaleString(),
         engagementRate: vws > 0 ? ((lks + cms) / vws * 100).toFixed(2) : '0',
       };
-      const bp  = aiData?.blueprint  || {};
-      const hs  = aiData?.hookStructure || {};
-      const tt  = aiData?.titleThumbnail || {};
+      const bp = aiData?.blueprint    || {};
+      const tt = aiData?.titleThumbnail || {};
       const analysisData = {
-        overallScore:     bp.overallScore ?? null,
-        grade:            bp.grade        ?? null,
-        contentDNA:       bp.contentDNA   || 'Not available',
-        strengths:        bp.strengths    || '',
+        viralScore:       bp.viralScore ?? 0,
+        grade:            bp.grade      ?? null,
+        contentDNA:       bp.contentDNA || 'Not available',
+        strengths:        bp.strengths  || '',
         weaknesses:       bp.improvements || '',
-        hookType:         hs.hookType     || 'unknown',
-        hookAnalysis:     hs.hookAnalysis || '',
-        hookStrength:     hs.hookStrength ?? null,
         dimensionScores: {
-          titleThumbnail:     bp.scores?.titleThumbnail     ?? null,
-          hookRetention:      bp.scores?.hookRetention      ?? null,
-          contentStructure:   bp.scores?.contentStructure   ?? null,
-          engagement:         bp.scores?.engagement         ?? null,
-          algorithm:          bp.scores?.algorithm          ?? null,
-          seoDiscoverability: bp.scores?.seoDiscoverability ?? null,
-          emotionalImpact:    bp.scores?.emotionalImpact    ?? null,
-          valueDelivery:      bp.scores?.valueDelivery      ?? null,
+          packaging:  bp.scores?.packaging  ?? null,
+          engagement: bp.scores?.engagement ?? null,
+          seo:        bp.scores?.seo        ?? null,
+          velocity:   bp.scores?.velocity   ?? null,
         },
         titleScores: {
           curiosity:      tt.curiosityScore      ?? null,
@@ -816,12 +1048,18 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
         },
         thumbnailConcepts: tt.thumbnailTips || [],
       };
-      const result = await generateVideoImprovements(videoData, analysisData);
+      const result = await generateVideoImprovements(videoData, {
+        ...analysisData,
+        actionType: actionType || null,
+      });
       if (result) {
         consumeAICall?.();
         setImprovements(result);
         setCheckDone({});
         autoSelectBest(result);
+        if (actionType === 'TITLE_REWRITE' && result.titles?.length > 0) {
+          setSelectedTitle(0);
+        }
         try { localStorage.setItem(IMPROVE_KEY + video.id, JSON.stringify(result)); } catch {}
       } else {
         setImproveError('AI returned an unexpected format. Please try again.');
@@ -832,6 +1070,10 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
       setImproving(false);
     }
   };
+
+  if (insightMode === 'DIAGNOSE' || insightMode === 'CONTEXT') {
+    return <DiagnosticBreakdown video={video} aiData={aiData} onGoToVideo={onGoToVideo} onNavigate={onNavigate} insightMode={insightMode} />;
+  }
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 24 }}>
@@ -844,7 +1086,7 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
         </p>
       </div>
 
-      {hasAnalysis && (
+      {aiData?.blueprint?.scores && Object.keys(aiData.blueprint.scores).length > 0 && (
         <DimensionPanel
           aiData={aiData}
           improvements={improvements}
@@ -927,11 +1169,11 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
                 onSelectTitle={setSelectedTitle}
                 aiData={aiData}
               />
-              <HookSection
-                hook={improvements?.hook}
-                selected={selectedFixes.hook}
-                onToggle={() => setSelectedFixes(p => ({ ...p, hook: !p.hook }))}
-                hookBaseline={aiData?.hookStructure?.hookStrength ?? 0}
+              <SEOSection
+                seoImprovements={improvements?.seo_improvements}
+                selected={selectedFixes.seo}
+                onToggle={() => setSelectedFixes(p => ({ ...p, seo: !p.seo }))}
+                baseScore={aiData?.blueprint?.scores?.seo ?? 0}
               />
               <ThumbnailSection
                 aiData={aiData}

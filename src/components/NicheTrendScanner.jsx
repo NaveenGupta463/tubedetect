@@ -126,7 +126,7 @@ function TrendAngleCard({ a }) {
   );
 }
 
-export default function NicheTrendScanner({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade }) {
+export default function NicheTrendScanner({ tier, canUseAI, consumeAICall, remainingCalls, onUpgrade, onNavigate }) {
   const [query, setQuery]      = useState('');
   const [videos, setVideos]    = useState([]);
   const [analysis, setAnalysis] = useState(null);
@@ -310,6 +310,16 @@ export default function NicheTrendScanner({ tier, canUseAI, consumeAICall, remai
                 </tbody>
               </table>
             </div>
+          </div>
+        )}
+        {analysis && onNavigate && (
+          <div style={{ marginTop: 8, textAlign: 'center' }}>
+            <button
+              onClick={() => onNavigate('validator', { niche: query })}
+              style={{ background: 'linear-gradient(135deg,#7c4dff,#5b2be8)', border: 'none', borderRadius: 8, padding: '12px 28px', fontSize: 13, fontWeight: 700, color: '#fff', cursor: 'pointer' }}
+            >
+              🚀 Validate Before Publishing →
+            </button>
           </div>
         )}
       </div>

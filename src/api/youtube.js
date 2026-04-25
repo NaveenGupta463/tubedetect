@@ -2,12 +2,12 @@ const BASE = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'}/api
 
 // ─── Frontend cache (localStorage, 6-hour TTL) ───────────────────────────────
 const CACHE_TTL    = 30 * 60 * 1000; // 30 minutes
-const CACHE_PREFIX = 'tubeintel_yt2_'; // bumped to evict stale entries from old cache
+const CACHE_PREFIX = 'tubeintel_yt3_'; // bumped to evict stale entries from old cache
 
-// Clear any entries from the old cache prefix
+// Clear any entries from old cache prefixes
 try {
   Object.keys(localStorage)
-    .filter(k => k.startsWith('tubeintel_yt_'))
+    .filter(k => k.startsWith('tubeintel_yt_') || k.startsWith('tubeintel_yt2_'))
     .forEach(k => localStorage.removeItem(k));
 } catch {}
 
@@ -127,6 +127,47 @@ export async function fetchChannelVideos(channelId, maxResults = 50) {
   return videosData.items || [];
 }
 
+export async function fetchChannelVideosExpanded(channelId, maxVideos = 200) {
+  const cacheKey = `expanded_ch_${channelId}`;
+  const cached = cacheGet(cacheKey);
+  if (cached) return cached;
+
+  const channelData = await apiFetch('channels', { part: 'contentDetails', id: channelId });
+  const uploadsId = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  if (!uploadsId) return [];
+
+  const oneYearAgo = Date.now() - 365 * 24 * 3_600_000;
+  const allItems = [];
+  let pageToken;
+
+  while (allItems.length < maxVideos) {
+    const params = { part: 'contentDetails', playlistId: uploadsId, maxResults: 50 };
+    if (pageToken) params.pageToken = pageToken;
+    const page = await apiFetch('playlistItems', params);
+    const items = page.items || [];
+    if (!items.length) break;
+    let hitLimit = false;
+    for (const item of items) {
+      const pubAt = item.contentDetails?.videoPublishedAt;
+      if (pubAt && new Date(pubAt).getTime() < oneYearAgo) { hitLimit = true; break; }
+      allItems.push(item);
+    }
+    if (hitLimit || !page.nextPageToken || allItems.length >= maxVideos) break;
+    pageToken = page.nextPageToken;
+  }
+
+  if (!allItems.length) return [];
+  const ids = allItems.map(i => i.contentDetails.videoId);
+  const results = [];
+  for (let i = 0; i < ids.length; i += 50) {
+    const batch = ids.slice(i, i + 50).join(',');
+    const data = await apiFetch('videos', { part: 'snippet,statistics,contentDetails', id: batch });
+    results.push(...(data.items || []));
+  }
+  cacheSet(cacheKey, results);
+  return results;
+}
+
 export async function searchChannels(query, maxResults = 8) {
   try {
     const searchData = await apiFetch('search', {
@@ -162,13 +203,31 @@ export async function searchChannels(query, maxResults = 8) {
   }
 }
 
-export async function fetchVideoById(videoId) {
-  const data = await apiFetch('videos', {
-    part: 'snippet,statistics,contentDetails',
-    id: videoId,
-  });
-  if (!data.items?.length) throw new Error('Video not found');
-  return data.items[0];
+export async function fetchVideoById(id) {
+  const requestUrl = `http://localhost:3001/api/youtube/videos?id=${id}&part=snippet,statistics,contentDetails`;
+  console.log('[fetchVideoById] request URL:', requestUrl);
+  try {
+    const res = await fetch(requestUrl);
+    console.log('[fetchVideoById] response status:', res.status, res.statusText);
+
+    if (!res.ok) {
+      const text = await res.text();
+      console.error('[fetchVideoById] API error body:', text);
+      throw new Error('Failed to fetch video data');
+    }
+
+    const data = await res.json();
+    console.log('[fetchVideoById] response JSON:', data);
+
+    if (!data.items?.length) {
+      console.error('[fetchVideoById] no items in response — video not found for id:', id);
+      throw new Error('Video not found');
+    }
+    return data.items[0];
+  } catch (err) {
+    console.error('[fetchVideoById] caught error:', err);
+    throw err;
+  }
 }
 
 export async function fetchVideoComments(videoId, maxResults = 100) {
