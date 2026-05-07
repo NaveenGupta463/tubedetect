@@ -1,5 +1,6 @@
 const express  = require('express');
 const { getDb }             = require('../db/init');
+const { getMetricsCoverage } = require('../db/queries');
 const { getStats: quotaStats } = require('../services/quotaGuard');
 const { getUsageStats: explainStats } = require('../services/llmExplain');
 const { getRefreshStats }   = require('../jobs/refreshCron');
@@ -14,10 +15,7 @@ const router = express.Router();
 router.get('/metrics', (_req, res) => {
   const db = getDb();
 
-  const { total_videos }      = db.get('SELECT COUNT(*) AS total_videos FROM videos');
-  const { training_ready }    = db.get('SELECT COUNT(*) AS training_ready FROM performance_metrics WHERE training_ready=1');
-  const { with_embeddings }   = db.get('SELECT COUNT(*) AS with_embeddings FROM embeddings');
-  const { with_last_updated } = db.get('SELECT COUNT(*) AS with_last_updated FROM videos WHERE last_updated_at IS NOT NULL');
+  const { total_videos, training_ready, with_embeddings, with_last_updated } = getMetricsCoverage(db);
   const { stale_count }       = db.get(`
     SELECT COUNT(*) AS stale_count FROM videos v
     JOIN performance_metrics pm ON pm.video_id = v.id

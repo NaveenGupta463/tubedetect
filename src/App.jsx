@@ -46,6 +46,9 @@ import CompetitorAnalyzer from './components/CompetitorAnalyzer';
 // Plan My Video wizard
 import PlanMyVideo from './components/PlanMyVideo';
 
+// Diagnostics
+import DiagnosticsPanel from './components/DiagnosticsPanel';
+
 // Dashboard
 import DashboardLanding from './components/DashboardLanding';
 import DashboardLayout from './layouts/DashboardLayout';
@@ -564,6 +567,9 @@ export default function App() {
 
       case 'pricing':
         return <PricingPage currentTier={tier} onSelectTier={handleSelectTier} />;
+
+      case 'diagnostics':
+        return <DiagnosticsPanel />;
 
       default:
         return <DashboardLayout aiProps={aiProps} channel={channel} videos={videos} activeTab="analyze" onTabChange={handleNavigate} />;

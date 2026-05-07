@@ -13,6 +13,7 @@ import {
 } from '../api/analyticsApi';
 import { analyzeChannelOverview, analyzeChannelTab } from '../api/claude';
 import * as storage from '../utils/storage';
+import { GOOGLE_CLIENT_ID } from '../config';
 
 // ── Error Boundary ─────────────────────────────────────────────────────────────
 class AnalyticsErrorBoundary extends Component {
@@ -285,7 +286,7 @@ function AIInsightCard({ insight, loading, error, onGenerate, label = 'Generate 
 // ── Setup Guide ────────────────────────────────────────────────────────────────
 function SetupGuide() {
   const [open, setOpen] = useState(false);
-  const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+  const clientId = GOOGLE_CLIENT_ID;
   const hasClientId = clientId && clientId !== 'YOUR_GOOGLE_CLIENT_ID';
 
   return (

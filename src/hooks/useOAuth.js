@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { loginWithGoogle, clearJWT } from '../api/auth';
 import * as storage from '../utils/storage';
+import { GOOGLE_CLIENT_ID } from '../config';
 
 const TOKEN_KEY    = 'tubeintel_oauth_token';
 const EXPIRY_KEY   = 'tubeintel_oauth_expiry';
@@ -72,7 +73,7 @@ export function useOAuth() {
   }, []);
 
   const connect = useCallback(async () => {
-    const clientId = import.meta.env.VITE_GOOGLE_CLIENT_ID;
+    const clientId = GOOGLE_CLIENT_ID;
     if (!clientId) {
       alert('Google OAuth is not configured. Please add VITE_GOOGLE_CLIENT_ID to your .env file.');
       return;

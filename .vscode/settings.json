@@ -1,0 +1,73 @@
+{
+  // ── Formatting ────────────────────────────────────────────────────────────
+  "editor.formatOnSave": true,
+  "editor.defaultFormatter": "esbenp.prettier-vscode",
+  "editor.tabSize": 2,
+  "editor.insertSpaces": true,
+  "editor.printMarginColumn": 100,
+  "editor.rulers": [100],
+  "editor.wordWrap": "off",
+
+  // ── ESLint ────────────────────────────────────────────────────────────────
+  "editor.codeActionsOnSave": {
+    "source.fixAll.eslint": "explicit"
+  },
+  "eslint.validate": ["javascript", "javascriptreact"],
+  "eslint.run": "onSave",
+
+  // ── Prettier (matches existing codebase style) ────────────────────────────
+  "prettier.singleQuote": true,
+  "prettier.semi": true,
+  "prettier.trailingComma": "es5",
+  "prettier.printWidth": 100,
+  "prettier.jsxSingleQuote": false,
+
+  // ── AI inline suggestions ─────────────────────────────────────────────────
+  "editor.inlineSuggest.enabled": true,
+  "editor.suggestSelection": "first",
+  "editor.quickSuggestions": {
+    "strings": "on"
+  },
+
+  // ── JSX / Emmet ───────────────────────────────────────────────────────────
+  "files.associations": {
+    "*.jsx": "javascriptreact"
+  },
+  "emmet.includeLanguages": {
+    "javascriptreact": "html"
+  },
+  "javascript.updateImportsOnFileMove.enabled": "always",
+
+  // ── Editor UX ─────────────────────────────────────────────────────────────
+  "workbench.editor.enablePreview": false,
+  "editor.minimap.enabled": false,
+  "breadcrumbs.enabled": true,
+
+  // ── Search / File Explorer exclusions ─────────────────────────────────────
+  // Keeps AI tools (Cline, Continue) from pulling irrelevant context
+  "files.exclude": {
+    "**/.git": true,
+    "**/node_modules": true,
+    "**/dist": true,
+    "server/data": true,
+    "ml/models": true,
+    "ml/__pycache__": true
+  },
+  "search.exclude": {
+    "**/node_modules": true,
+    "**/dist": true,
+    "server/data/**": true,
+    "ml/models/**": true,
+    "ml/__pycache__/**": true,
+    "**/*.db": true,
+    "**/*.db-wal": true,
+    "**/*.db-shm": true
+  },
+
+  // ── Error Lens ────────────────────────────────────────────────────────────
+  "errorLens.enabled": true,
+  "errorLens.enabledDiagnosticLevels": ["error", "warning"],
+
+  // ── Terminal ──────────────────────────────────────────────────────────────
+  "terminal.integrated.defaultProfile.windows": "PowerShell"
+}

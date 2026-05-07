@@ -9,29 +9,30 @@ process.on('unhandledRejection', (err) => {
 try {
   require('dotenv').config({ path: __dirname + '/.env' });
 
-  console.log('=== ENV CHECK ===');
-  console.log('OPENAI_API_KEY:    ', process.env.OPENAI_API_KEY    ? 'Loaded' : 'Missing');
-  console.log('ANTHROPIC_API_KEY: ', process.env.ANTHROPIC_API_KEY ? 'Loaded' : 'Missing');
-  console.log('YT_API_KEY:        ', process.env.YT_API_KEY        ? 'Loaded' : 'Missing');
-  console.log('=================');
+  logger.info('STARTUP', `TubeIntel Scoring Server — Node ${process.version} — PID ${process.pid}`);
+  logger.info('STARTUP', `OPENAI_API_KEY   : ${process.env.OPENAI_API_KEY    ? '✓ loaded' : '✗ missing — embeddings disabled'}`);
+  logger.info('STARTUP', `ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? '✓ loaded' : '✗ missing — explain uses rule-based fallback'}`);
+  logger.info('STARTUP', `YT_API_KEY       : ${(process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY) ? '✓ loaded' : '✗ missing — cron/ingest disabled'}`);
 
   if (!process.env.OPENAI_API_KEY)
-    console.warn('[WARN] OPENAI_API_KEY not set — embeddings disabled, performance peers only');
+    logger.warn('STARTUP', 'Embeddings disabled — similarity scoring will use performance peers only');
   if (!process.env.ANTHROPIC_API_KEY)
-    console.warn('[WARN] ANTHROPIC_API_KEY not set — /api/explain will use rule-based fallback');
+    logger.warn('STARTUP', '/api/explain will use rule-based fallback');
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY)
-    console.warn('[WARN] YT_API_KEY not set — feedback cron and ingestion will not run');
+    logger.warn('STARTUP', 'Feedback cron and YouTube ingestion will not run');
 
   const express = require('express');
   const cors    = require('cors');
-  const { getDb }        = require('./db/init');
-  const analyzeRoute     = require('./routes/analyze');
-  const resultsRoute     = require('./routes/results');
-  const feedbackRoute    = require('./routes/feedback');
-  const explainRoute     = require('./routes/explain');
-  const lookupRoute      = require('./routes/lookup');
-  const metricsRoute     = require('./routes/metrics');
-  const workspacesRoute  = require('./routes/workspaces');
+  const logger        = require('./utils/logger');
+  const { getDb }     = require('./db/init');
+  const analyzeRoute  = require('./routes/analyze');
+  const resultsRoute  = require('./routes/results');
+  const feedbackRoute = require('./routes/feedback');
+  const explainRoute  = require('./routes/explain');
+  const lookupRoute   = require('./routes/lookup');
+  const metricsRoute  = require('./routes/metrics');
+  const workspacesRoute = require('./routes/workspaces');
+  const dbRoute       = require('./routes/db');
   const { startCron }         = require('./jobs/feedbackCron');
   const { startIngestCron }   = require('./jobs/youtubeIngest');
   const { startRefreshCron }  = require('./jobs/refreshCron');
@@ -50,8 +51,9 @@ try {
   app.use('/api', lookupRoute);
   app.use('/api', metricsRoute);
   app.use('/api', workspacesRoute);
+  app.use('/api', dbRoute);
 
-  app.get('/health', (_req, res) => res.json({ status: 'ok' }));
+  app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
   app.use((err, _req, res, _next) => {
     console.error('[Server Error]', err.stack || err.message);
@@ -63,7 +65,7 @@ try {
 
   function startServer(port) {
     const server = app.listen(port, () => {
-      console.log(`Scoring Server running on port ${port}`);
+      logger.info('STARTUP', `Scoring Server listening on port ${port}`);
       if (!cronStarted) {
         cronStarted = true;
         startCron();
@@ -74,10 +76,10 @@ try {
 
     server.on('error', (err) => {
       if (err.code === 'EADDRINUSE') {
-        console.warn(`Port ${port} busy, trying ${port + 1}...`);
+        logger.warn('STARTUP', `Port ${port} busy, trying ${port + 1}...`);
         startServer(port + 1);
       } else {
-        console.error('SERVER ERROR:', err);
+        logger.error('STARTUP', 'Server error', err);
       }
     });
   }

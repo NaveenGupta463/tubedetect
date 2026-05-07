@@ -12,7 +12,8 @@
     "build": "vite build",
     "preview": "vite preview",
     "electron:dev": "concurrently \"npm run dev:frontend\" \"npm run dev:backend\" \"npm run dev:scoring\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
-    "electron:build": "npm run build && electron-builder"
+    "electron:build": "npm run build && electron-builder",
+    "lint:arch": "node scripts/lint-architecture.js"
   },
   "build": {
     "appId": "com.tubeintel.app",

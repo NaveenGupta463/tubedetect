@@ -99,6 +99,10 @@ const NAV_GROUPS = [
         id: 'pricing', icon: '💎', label: 'Upgrade Plan', req: null,
         desc: 'View plans and unlock AI tools, competitor analysis, PDF reports, and more.',
       },
+      {
+        id: 'diagnostics', icon: '🔬', label: 'Diagnostics', req: null,
+        desc: 'Runtime health, service status, SQLite stats, memory usage, and error log.',
+      },
     ],
   },
 ];

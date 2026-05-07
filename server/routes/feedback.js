@@ -1,5 +1,6 @@
 const express = require('express');
-const { getDb } = require('../db/init');
+const { getDb }                        = require('../db/init');
+const { getVideoById, updateFeedback } = require('../db/queries');
 
 const router = express.Router();
 
@@ -17,19 +18,10 @@ router.post('/feedback/:id', (req, res) => {
     return res.status(400).json({ error: 'user_correction must be a number 0–100' });
   }
 
-  const video = db.get('SELECT id FROM videos WHERE id = ?', [id]);
+  const video = getVideoById(db, id);
   if (!video) return res.status(404).json({ error: 'Video not found' });
 
-  // Add feedback columns on first use (idempotent)
-  try {
-    db.exec('ALTER TABLE predictions ADD COLUMN user_correction REAL');
-    db.exec('ALTER TABLE predictions ADD COLUMN correction_reason TEXT');
-  } catch { /* columns already exist */ }
-
-  db.run(
-    'UPDATE predictions SET user_correction = ?, correction_reason = ? WHERE video_id = ?',
-    [user_correction, reason ?? null, id],
-  );
+  updateFeedback(db, id, user_correction, reason);
 
   res.json({ success: true, video_id: id, user_correction, reason });
 });

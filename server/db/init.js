@@ -38,6 +38,11 @@ const NEW_VIDEOS_COLS = [
   ['last_updated_at', 'TEXT'],
 ];
 
+const NEW_PREDICTION_COLS = [
+  ['user_correction',   'REAL'],
+  ['correction_reason', 'TEXT'],
+];
+
 function migrate(database) {
   const featureCols = database.all("PRAGMA table_info(features)").map(r => r.name);
   for (const [col, def] of NEW_FEATURE_COLS) {
@@ -60,6 +65,14 @@ function migrate(database) {
     if (!videoCols.includes(col)) {
       database.exec(`ALTER TABLE videos ADD COLUMN ${col} ${def}`);
       console.log(`[DB] Added column: videos.${col}`);
+    }
+  }
+
+  const predictionCols = database.all("PRAGMA table_info(predictions)").map(r => r.name);
+  for (const [col, def] of NEW_PREDICTION_COLS) {
+    if (!predictionCols.includes(col)) {
+      database.exec(`ALTER TABLE predictions ADD COLUMN ${col} ${def}`);
+      console.log(`[DB] Added column: predictions.${col}`);
     }
   }
 }

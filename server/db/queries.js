@@ -12,6 +12,10 @@ function insertVideo(db, { title, hook, niche, channel_size, upload_date, predic
   );
 }
 
+function getVideoById(db, id) {
+  return db.get('SELECT * FROM videos WHERE id = ?', [id]);
+}
+
 function getVideoByYouTubeId(db, ytId) {
   return db.get(
     `SELECT v.*, pm.views, pm.likes, pm.performance_score, pm.training_ready, pm.upload_age_days
@@ -98,7 +102,63 @@ function upsertPrediction(db, videoId, { ml_score, similarity_score, final_score
   );
 }
 
+// ── Results / metrics aggregates ──────────────────────────────────────────────
+
+function getVideoResults(db, id) {
+  return {
+    video:       db.get('SELECT * FROM videos WHERE id = ?', [id]),
+    features:    db.get('SELECT * FROM features WHERE video_id = ?', [id]),
+    prediction:  db.get('SELECT * FROM predictions WHERE video_id = ?', [id]),
+    performance: db.get('SELECT * FROM performance_metrics WHERE video_id = ?', [id]),
+  };
+}
+
+function getMetricsCoverage(db) {
+  return {
+    total_videos:      db.get('SELECT COUNT(*) AS n FROM videos')?.n ?? 0,
+    training_ready:    db.get('SELECT COUNT(*) AS n FROM performance_metrics WHERE training_ready=1')?.n ?? 0,
+    with_embeddings:   db.get('SELECT COUNT(*) AS n FROM embeddings')?.n ?? 0,
+    with_last_updated: db.get('SELECT COUNT(*) AS n FROM videos WHERE last_updated_at IS NOT NULL')?.n ?? 0,
+  };
+}
+
+function getModelStatusCounts(db) {
+  return {
+    total_samples:        db.get('SELECT COUNT(*) AS c FROM videos')?.c ?? 0,
+    training_ready_count: db.get('SELECT COUNT(*) AS c FROM performance_metrics WHERE training_ready=1')?.c ?? 0,
+  };
+}
+
+function getDebugCounts(db) {
+  return {
+    total_videos:      db.get('SELECT COUNT(*) AS n FROM videos')?.n ?? 0,
+    total_embeddings:  db.get('SELECT COUNT(*) AS n FROM embeddings')?.n ?? 0,
+    total_predictions: db.get('SELECT COUNT(*) AS n FROM predictions')?.n ?? 0,
+  };
+}
+
+// ── Feedback ──────────────────────────────────────────────────────────────────
+
+function updateFeedback(db, videoId, correction, reason) {
+  return db.run(
+    'UPDATE predictions SET user_correction=?, correction_reason=? WHERE video_id=?',
+    [correction, reason ?? null, videoId],
+  );
+}
+
 // ── Workspaces ────────────────────────────────────────────────────────────────
+
+function getDbStats(db) {
+  const tables = ['videos', 'features', 'predictions', 'performance_metrics', 'embeddings', 'workspaces'];
+  const counts = {};
+  for (const t of tables) {
+    try { counts[t] = db.get(`SELECT COUNT(*) as n FROM ${t}`)?.n ?? 0; }
+    catch { counts[t] = null; }
+  }
+  const pageCount = db.get('PRAGMA page_count')?.page_count ?? 0;
+  const pageSize  = db.get('PRAGMA page_size')?.page_size  ?? 0;
+  return { counts, size_bytes: pageCount * pageSize };
+}
 
 function getAllWorkspaces(db) {
   return db.all('SELECT * FROM workspaces ORDER BY updated_at DESC');
@@ -128,6 +188,7 @@ function deleteWorkspace(db, id) {
 
 module.exports = {
   insertVideo,
+  getVideoById,
   getVideoByYouTubeId,
   updateVideoMeta,
   upsertFeatures,
@@ -135,6 +196,12 @@ module.exports = {
   insertPerformanceMetricsPlaceholder,
   insertPrediction,
   upsertPrediction,
+  getDbStats,
+  getVideoResults,
+  getMetricsCoverage,
+  getModelStatusCounts,
+  getDebugCounts,
+  updateFeedback,
   getAllWorkspaces,
   getWorkspaceById,
   insertWorkspace,

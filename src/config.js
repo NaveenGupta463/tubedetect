@@ -9,6 +9,7 @@ export const GOOGLE_CLIENT_ID = import.meta.env.VITE_GOOGLE_CLIENT_ID || '';
 
 // Claude model used for all frontend-initiated AI calls
 export const CLAUDE_MODEL = 'claude-sonnet-4-6';
+export const IS_DEV = import.meta.env.DEV ?? false;
 
 // YouTube cache TTL
 export const YT_CACHE_TTL_MS = 30 * 60 * 1000; // 30 minutes
@@ -34,4 +35,7 @@ export const ROUTES = {
   results:    (id) => `${SCORING_URL}/api/results/${id}`,
   workspaces: `${SCORING_URL}/api/workspaces`,
   workspace:  (id) => `${SCORING_URL}/api/workspaces/${id}`,
+  dbHealth:   `${SCORING_URL}/api/db/health`,
+  dbStats:    `${SCORING_URL}/api/db/stats`,
+  dbBackup:   `${SCORING_URL}/api/db/backup`,
 };
