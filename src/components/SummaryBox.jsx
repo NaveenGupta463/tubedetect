@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 // ── Score helpers ─────────────────────────────────────────────────────────────
 export function getGrade(score) {
@@ -119,6 +119,16 @@ function _teaserMessage(signal, growthRisk) {
   if (signal === 'STABLE')
     return 'This video is holding steady — there\'s clear room to push it further.';
   return 'This video is underperforming its distribution potential — AI analysis will pinpoint why.';
+}
+
+function _finalStateMessage(final_state, views) {
+  if (final_state === 'INSUFFICIENT_DATA' && views < 1000)
+    return 'Initial distribution appears limited, but it\'s too early to confirm underperformance. More data is needed to establish a reliable trend.';
+  if (final_state === 'CONFIRMED_STRONG')  return 'Strong engagement across all signals — run analysis to find your biggest growth lever.';
+  if (final_state === 'EARLY_OR_BLOCKED')  return 'Engagement is building — run analysis to confirm whether this is early distribution or a reach block.';
+  if (final_state === 'LEAKING_VIRAL')     return 'This video is reaching audiences but engagement isn\'t converting — analysis will identify the exact drop-off point.';
+  if (final_state === 'CRITICAL_LEAK')     return 'High reach with failing engagement — analysis will surface what\'s causing the disconnect.';
+  return null;
 }
 
 const SIGNAL_BADGE_STYLES = {
@@ -339,18 +349,150 @@ function AnalyzeButton({ onClick, loading, label = '🔥 Unlock Full Viral Break
   );
 }
 
+// ── ScoreTooltip ─────────────────────────────────────────────────────────────
+function ScoreTooltip({ explanation, mode, children }) {
+  const [pos, setPos] = useState(null);
+  const ref = useRef(null);
+
+  const show = () => {
+    if (!ref.current || !explanation) return;
+    const r = ref.current.getBoundingClientRect();
+    setPos({ top: r.top + r.height / 2, left: r.right + 12 });
+  };
+  const hide = () => setPos(null);
+
+  if (!explanation) return <>{children}</>;
+
+  let summary, reasons, extra = null;
+  if (mode === 'score') {
+    summary  = explanation.summary?.score;
+    reasons  = explanation.performanceReasons ?? [];
+    extra    = { interpretation: explanation.interpretation, actionHint: explanation.actionHint };
+  } else if (mode === 'confidence') {
+    summary  = explanation.summary?.confidence;
+    reasons  = explanation.confidenceReasons ?? [];
+  } else if (mode === 'authenticity') {
+    summary  = explanation.summary?.authenticity;
+    reasons  = explanation.authenticityReasons ?? [];
+  }
+
+  return (
+    <>
+      <span ref={ref} onMouseEnter={show} onMouseLeave={hide} style={{ display: 'inline-flex', cursor: 'default' }}>
+        {children}
+      </span>
+      {pos && (
+        <div style={{
+          position: 'fixed', top: pos.top, left: pos.left,
+          transform: 'translateY(-50%)',
+          zIndex: 99999,
+          background: '#161616', border: '1px solid #2e2e2e',
+          borderRadius: 10, padding: '12px 14px', maxWidth: 280,
+          boxShadow: '0 8px 32px rgba(0,0,0,0.8)',
+          pointerEvents: 'none',
+          display: 'flex', flexDirection: 'column', gap: 8,
+        }}>
+          {summary && (
+            <div style={{ fontSize: 12, fontWeight: 800, color: '#e4e4e7', lineHeight: 1.4 }}>{summary}</div>
+          )}
+          {reasons?.length > 0 && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+              {reasons.map((r, i) => (
+                <div key={i} style={{ fontSize: 11, color: '#888', lineHeight: 1.5, display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                  <span style={{ color: '#555', flexShrink: 0, marginTop: 2 }}>·</span>
+                  <span>{r}</span>
+                </div>
+              ))}
+            </div>
+          )}
+          {extra?.interpretation && (
+            <div style={{ fontSize: 11, color: '#a78bfa', lineHeight: 1.5, borderTop: '1px solid #222', paddingTop: 8 }}>
+              {extra.interpretation}
+            </div>
+          )}
+          {extra?.actionHint && (
+            <div style={{ fontSize: 11, color: '#4ade80', lineHeight: 1.5 }}>
+              → {extra.actionHint}
+            </div>
+          )}
+        </div>
+      )}
+    </>
+  );
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // MAIN COMPONENT
 // Props: video, aiData, aiLoading, onAnalyze
 // ═══════════════════════════════════════════════════════════════════════════════
-const MISMATCH_CONFIG = {
-  WEAK_CONTENT:       { icon: '🚨', color: '#ef4444', bg: '#1c0505', border: '#7f1d1d', text: 'High reach but weak engagement' },
-  UNDER_DISTRIBUTED:  { icon: '💎', color: '#818cf8', bg: '#0d0f1f', border: '#312e81', text: 'Strong engagement but low distribution' },
-  ALIGNED:            { icon: '🔥', color: '#22c55e', bg: '#052e16', border: '#14532d', text: 'Strong performance — engagement matches distribution' },
-  NO_SIGNAL:          { icon: '⚪', color: '#6b7280', bg: '#111827', border: '#374151', text: 'No clear signal yet — video hasn\'t gained traction or engagement' },
+const CONFIDENCE_CONFIG = {
+  LOW:    { icon: '⚠️', color: '#f59e0b', bg: '#1c1000', border: '#92400e', text: 'Low confidence — insights based on limited data' },
+  MEDIUM: { icon: '🟡', color: '#eab308', bg: '#1a1400', border: '#713f12', text: 'Moderate confidence — early signals, monitor performance' },
+  HIGH:   { icon: '🟢', color: '#22c55e', bg: '#052e16', border: '#14532d', text: 'High confidence — performance patterns are reliable' },
 };
 
-export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insightMode, metrics, channelAvg, channelBaseline, sampleLevel, lowVolume, signalState, engagementQuality, mismatch }) {
+const FINAL_STATE_CONFIG = {
+  CONFIRMED_VIRAL:   { label: '🚀 YouTube is pushing this HARD', color: '#22c55e', bg: '#052e16', border: '#14532d' },
+  LEAKING_VIRAL:     { label: '⚠️ Viral but losing engagement',  color: '#eab308', bg: '#1a1400', border: '#713f12' },
+  CRITICAL_LEAK:     { label: '🚨 High reach, failing badly',    color: '#ef4444', bg: '#1c0505', border: '#7f1d1d' },
+  CONFIRMED_STRONG:  { label: '✅ Strong performance',           color: '#22c55e', bg: '#052e16', border: '#14532d' },
+  EARLY_OR_BLOCKED:  { label: '⏳ Early signal / Needs push',    color: '#3b82f6', bg: '#0c1a2e', border: '#1e3a5f' },
+  WEAK:              { label: '❌ Weak performance',             color: '#ef4444', bg: '#1c0505', border: '#7f1d1d' },
+  INSUFFICIENT_DATA: { label: '⚪ Not enough data',             color: '#6b7280', bg: '#111827', border: '#374151' },
+};
+
+const AUTHENTICITY_CONFIG = {
+  AUTHENTIC:   { icon: '🟢', color: '#22c55e', bg: '#052e16', border: '#14532d', text: 'Engagement signals are reliable' },
+  UNVERIFIED:  { icon: '🟡', color: '#eab308', bg: '#1a1400', border: '#713f12', text: 'Low data — insights may not be reliable' },
+  SUSPICIOUS:  { icon: '🔴', color: '#ef4444', bg: '#1c0505', border: '#7f1d1d', text: 'Engagement pattern mismatch detected' },
+};
+
+function getProjection({ mismatch, viewsRatio, engagementRate, likeRate, commentRate, channelAvg, ageH, views }) {
+  const avgEng      = channelAvg?.engagement  ?? 0;
+  const avgLike     = channelAvg?.likeRate    ?? 0;
+  const avgComment  = channelAvg?.commentRate ?? 0;
+
+  if (ageH > 72 && viewsRatio < 0.5) return {
+    label: '📉 Stalled performance',
+    message: views < 1000
+      ? 'This video has not gained enough traction after release — performance is currently below baseline, but may still evolve with more data.'
+      : 'This video has not gained distribution after its initial release window — performance is below your channel baseline and unlikely to improve without changes.',
+  };
+
+  if (mismatch === 'UNDER_DISTRIBUTED') return {
+    label: '💎 High engagement, low reach',
+    message: 'Audience response is strong, but distribution is limited — this video may need additional push.',
+  };
+  if (mismatch === 'WEAK_CONTENT' && viewsRatio > 1.5) return {
+    label: '⚠️ Spike without depth',
+    message: 'Initial clicks are not supported by strong engagement — retention or content quality may be limiting growth.',
+  };
+  if (viewsRatio > 2 && avgEng > 0 && engagementRate < avgEng) return {
+    label: '🤖 Distribution-driven spike',
+    message: 'Performance appears driven by algorithmic push rather than strong audience validation.',
+  };
+  if (avgLike > 0 && avgComment > 0 && likeRate > avgLike && commentRate < 0.5 * avgComment) return {
+    label: '😐 Passive engagement',
+    message: 'Viewers are watching but not actively interacting — discussion signals are weak.',
+  };
+  if (avgLike > 0 && avgComment > 0 && likeRate > 1.3 * avgLike && commentRate > 1.3 * avgComment && viewsRatio < 2.5) return {
+    label: '🎯 Strong niche resonance',
+    message: 'This video strongly resonates with a specific audience segment but has limited broad reach.',
+  };
+  return null;
+}
+
+const CONTENT_FORMAT_NOTES = {
+  MUSIC_SEARCH: 'This video relies on search-based discovery. Performance depends more on visibility than audience interaction.',
+  PASSIVE:      'This content is designed for passive consumption — low comments and interaction are expected.',
+  MUSIC_PROMO:  'This content can benefit from stronger audience interaction signals to boost distribution.',
+};
+
+const COMMENT_ENGAGEMENT_RE = /comment rate|comment count|low comment|interaction|engagement rate/i;
+
+export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insightMode, metrics, channelAvg, channelBaseline, sampleLevel, lowVolume, engagementAuthenticity, confidence, explanation, final_state, videoType, finalScore, grade, mismatch, contentFormat }) {
+  const isLegacy         = videoType === 'LEGACY_VIRAL';
+  const isDominantState  = final_state === 'CONFIRMED_VIRAL' || isLegacy;
   const bp               = aiData?.blueprint ?? {};
   const diag             = aiData?.diagnosis ?? null;
   const hasValidAnalysis = !!diag && !aiData?._diagnosisOutdated;
@@ -433,8 +575,13 @@ export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insigh
     }
 
     // Pre-analysis: no aiData at all — signal + narrative CTA
-    const { signal, growthRisk, message } = deriveTeaser(video, metrics, channelBaseline);
-    console.log('[SummaryBox teaser]', { signal, growthRisk, viewsRatio: metrics?.viewsRatio, likeRate: metrics?.likeRate, commentRate: metrics?.commentRate });
+    // deriveTeaser is growth-framing logic — skip entirely for legacy mode
+    const { signal, growthRisk, message } = isLegacy
+      ? { signal: null, growthRisk: false, message: '' }
+      : deriveTeaser(video, metrics, channelBaseline);
+    if (!isLegacy) {
+      console.log('[SummaryBox teaser]', { signal, growthRisk, viewsRatio: metrics?.viewsRatio, likeRate: metrics?.likeRate, commentRate: metrics?.commentRate });
+    }
     const badgeStyle = signal ? SIGNAL_BADGE_STYLES[signal] : null;
 
     return (
@@ -455,77 +602,220 @@ export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insigh
         )}
 
         {/* Signal badges + headline message */}
-        <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 14, padding: '8px 0 10px' }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 14, padding: '8px 0 10px' }}>
 
-          {/* Primary signal badge — large */}
-          {badgeStyle && (
-            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 6 }}>
+          {/* Score circle + badge stack row */}
+          <div style={{ display: 'flex', flexDirection: 'row', alignItems: 'center', gap: 20 }}>
+
+            {/* Score circle */}
+            {finalScore != null && grade && (
               <div style={{
-                fontSize: '1.1rem', fontWeight: 900, letterSpacing: '0.22em', textTransform: 'uppercase',
-                color: badgeStyle.color, background: badgeStyle.bg,
-                border: `2px solid ${badgeStyle.border}`,
-                borderRadius: 10, padding: '10px 28px',
-                boxShadow: `0 0 20px ${badgeStyle.color}44, 0 0 40px ${badgeStyle.color}18`,
-                display: 'inline-block',
+                flexShrink: 0,
+                width: 90, height: 90, borderRadius: '50%',
+                background: '#0a0a0f',
+                border: `2px solid ${gradeColor(finalScore)}`,
+                boxShadow: `0 0 18px ${gradeColor(finalScore)}44`,
+                display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 2,
               }}>
-                {signal}
+                <span style={{ fontSize: '1.9rem', fontWeight: 900, color: gradeColor(finalScore), lineHeight: 1 }}>{grade}</span>
+                <span style={{ fontSize: '0.62rem', fontWeight: 600, color: '#9ca3af', letterSpacing: '0.03em' }}>{finalScore}/100</span>
               </div>
-              <div style={{ fontSize: '0.72rem', color: '#52525b', fontWeight: 500, letterSpacing: '0.01em' }}>
-                {metrics?.viewsRatio != null
-                  ? `This video got ${Math.round(metrics.viewsRatio * 100)}% of your channel's average views`
-                  : 'Based on views vs channel average'}
-              </div>
-              {signalState === 'EARLY' && (
+            )}
+
+            {/* Badge column */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 10, flex: 1 }}>
+
+              {/* Primary verdict badge — final_state is single source of truth; signal badge only as fallback */}
+              {!isDominantState && (() => {
+                if (final_state && FINAL_STATE_CONFIG[final_state]) {
+                  const cfg = FINAL_STATE_CONFIG[final_state];
+                  const _badgeAgeH = video?.snippet?.publishedAt
+                    ? (Date.now() - new Date(video.snippet.publishedAt).getTime()) / 3_600_000
+                    : null;
+                  const badgeLabel = (final_state === 'EARLY_OR_BLOCKED' && _badgeAgeH != null && _badgeAgeH > 168)
+                    ? '⏳ Low reach / Needs push'
+                    : cfg.label;
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                      <div style={{
+                        fontSize: '1.1rem', fontWeight: 900, letterSpacing: '0.18em', textTransform: 'uppercase',
+                        color: cfg.color, background: cfg.bg, border: `2px solid ${cfg.border}`,
+                        borderRadius: 10, padding: '10px 28px',
+                        boxShadow: `0 0 20px ${cfg.color}44, 0 0 40px ${cfg.color}18`,
+                        display: 'inline-block',
+                      }}>
+                        {badgeLabel}
+                      </div>
+                      {metrics?.viewsRatio != null && (
+                        <div style={{ fontSize: '0.72rem', color: '#52525b', fontWeight: 500, letterSpacing: '0.01em' }}>
+                          This video got {Math.round(metrics.viewsRatio * 100)}% of your channel's average views
+                        </div>
+                      )}
+                    </div>
+                  );
+                }
+                if (badgeStyle) {
+                  return (
+                    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 4 }}>
+                      <div style={{
+                        fontSize: '1.1rem', fontWeight: 900, letterSpacing: '0.22em', textTransform: 'uppercase',
+                        color: badgeStyle.color, background: badgeStyle.bg, border: `2px solid ${badgeStyle.border}`,
+                        borderRadius: 10, padding: '10px 28px',
+                        boxShadow: `0 0 20px ${badgeStyle.color}44, 0 0 40px ${badgeStyle.color}18`,
+                        display: 'inline-block',
+                      }}>
+                        {signal}
+                      </div>
+                      <div style={{ fontSize: '0.72rem', color: '#52525b', fontWeight: 500, letterSpacing: '0.01em' }}>
+                        {metrics?.viewsRatio != null
+                          ? `This video got ${Math.round(metrics.viewsRatio * 100)}% of your channel's average views`
+                          : 'Based on views vs channel average'}
+                      </div>
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+
+              {/* Growth risk secondary badge */}
+              {!isDominantState && growthRisk && (
                 <div style={{
-                  fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase',
-                  color: '#f59e0b', background: '#1c1000', border: '1px solid #78350f',
-                  borderRadius: 6, padding: '4px 10px', marginTop: 2,
+                  fontSize: '0.78rem', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
+                  color: '#f97316', background: '#1a0800', border: '1px solid #c2410c',
+                  borderRadius: 8, padding: '7px 16px',
+                  display: 'inline-flex', alignItems: 'center', gap: 6,
                 }}>
-                  Engagement signal preliminary
+                  <span>⚠️</span>
+                  <span>Growth Risk Detected</span>
                 </div>
               )}
-            </div>
-          )}
 
-          {/* Growth risk secondary badge */}
-          {growthRisk && (
-            <div style={{
-              fontSize: '0.78rem', fontWeight: 800, letterSpacing: '0.12em', textTransform: 'uppercase',
-              color: '#f97316', background: '#1a0800', border: '1px solid #c2410c',
-              borderRadius: 8, padding: '7px 16px',
-              display: 'inline-flex', alignItems: 'center', gap: 6,
-            }}>
-              <span>⚠️</span>
-              <span>Growth Risk Detected</span>
-            </div>
-          )}
+              {/* LEGACY_VIRAL post-peak badge */}
+              {isLegacy && (
+                <div style={{
+                  fontSize: '0.76rem', fontWeight: 700, letterSpacing: '0.08em',
+                  color: '#a78bfa', background: '#0d0a1a', border: '1px solid #3b1a7a',
+                  borderRadius: 8, padding: '7px 16px',
+                  display: 'inline-flex', alignItems: 'center', gap: 7,
+                }}>
+                  <span>📼 Post-Peak Phase</span>
+                </div>
+              )}
 
-          {/* Mismatch badge */}
-          {mismatch && MISMATCH_CONFIG[mismatch] && (() => {
-            const cfg = MISMATCH_CONFIG[mismatch];
+              {/* Engagement authenticity badge */}
+              {!(isDominantState && engagementAuthenticity === 'SUSPICIOUS') && engagementAuthenticity && AUTHENTICITY_CONFIG[engagementAuthenticity] && (() => {
+                const cfg = AUTHENTICITY_CONFIG[engagementAuthenticity];
+                return (
+                  <ScoreTooltip mode="authenticity" explanation={explanation}>
+                    <div style={{
+                      fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.06em',
+                      color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}`,
+                      borderRadius: 7, padding: '6px 14px',
+                      display: 'inline-flex', alignItems: 'center', gap: 6,
+                    }}>
+                      <span>{cfg.icon}</span>
+                      <span>{cfg.text}</span>
+                    </div>
+                  </ScoreTooltip>
+                );
+              })()}
+
+              {/* Confidence badge */}
+              {!(isDominantState && confidence === 'LOW') && confidence && CONFIDENCE_CONFIG[confidence] && (() => {
+                const cfg = CONFIDENCE_CONFIG[confidence];
+                const ageH = video?.snippet?.publishedAt
+                  ? (Date.now() - new Date(video.snippet.publishedAt).getTime()) / 3_600_000
+                  : null;
+                const confidenceLabel = final_state === 'CONFIRMED_STRONG'
+                  ? (ageH != null && ageH > 24
+                    ? 'High confidence — sustained strong performance'
+                    : 'Moderate confidence — early strong signals')
+                  : cfg.text;
+                return (
+                  <ScoreTooltip mode="confidence" explanation={explanation}>
+                    <div style={{
+                      fontSize: '0.72rem', fontWeight: 700, letterSpacing: '0.06em',
+                      color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}`,
+                      borderRadius: 7, padding: '6px 16px',
+                      display: 'inline-flex', alignItems: 'center', gap: 7,
+                    }}>
+                      <span>{cfg.icon}</span>
+                      <span>{confidenceLabel}</span>
+                    </div>
+                  </ScoreTooltip>
+                );
+              })()}
+
+            </div>
+          </div>
+
+          {(() => {
+            if (final_state === 'CONFIRMED_STRONG') return null;
+            if (final_state === 'INSUFFICIENT_DATA') return null;
+            const _projAgeH = video?.snippet?.publishedAt
+              ? (Date.now() - new Date(video.snippet.publishedAt).getTime()) / 3_600_000
+              : null;
+            if (_projAgeH != null && _projAgeH < 12) return null;
+            const proj = getProjection({
+              mismatch,
+              viewsRatio:     metrics?.viewsRatio    ?? 1,
+              engagementRate: metrics?.engagementRate ?? 0,
+              likeRate:       metrics?.likeRate       ?? 0,
+              commentRate:    metrics?.commentRate    ?? 0,
+              channelAvg,
+              ageH:  _projAgeH ?? 0,
+              views: metrics?.views ?? 0,
+            });
+            if (!proj) return null;
             return (
               <div style={{
-                fontSize: '0.76rem', fontWeight: 700, letterSpacing: '0.08em',
-                color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}`,
-                borderRadius: 8, padding: '7px 16px',
-                display: 'inline-flex', alignItems: 'center', gap: 7,
+                display: 'flex', flexDirection: 'column', gap: 3,
+                background: '#0d1117', border: '1px solid #30363d',
+                borderRadius: 8, padding: '9px 14px',
               }}>
-                <span>{cfg.icon}</span>
-                <span>{cfg.text}</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: '#c9d1d9' }}>{proj.label}</span>
+                <span style={{ fontSize: '0.72rem', color: '#8b949e', lineHeight: 1.5 }}>{proj.message}</span>
               </div>
             );
           })()}
 
-          {/* Engagement quality warning */}
-          {engagementQuality === 'LOW' && (
+          {(() => {
+            const _ageH = video?.snippet?.publishedAt
+              ? (Date.now() - new Date(video.snippet.publishedAt).getTime()) / 3_600_000
+              : null;
+            const showUnderperformanceNote = (
+              _ageH != null && _ageH >= 24 && _ageH <= 48 &&
+              metrics?.views != null && channelAvg?.views > 0 &&
+              metrics.views < 0.5 * channelAvg.views &&
+              metrics?.engagementRate != null && channelAvg?.engagement > 0 &&
+              metrics.engagementRate < channelAvg.engagement &&
+              final_state !== 'CONFIRMED_STRONG'
+            );
+            if (!showUnderperformanceNote) return null;
+            return (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 8,
+                background: '#1a0f00', border: '1px solid #92400e',
+                borderRadius: 8, padding: '8px 14px',
+              }}>
+                <span style={{ fontSize: '0.85rem', flexShrink: 0 }}>⚠️</span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 600, color: '#fbbf24' }}>
+                  Probable underperformance
+                </span>
+              </div>
+            );
+          })()}
+
+          {CONTENT_FORMAT_NOTES[contentFormat?.type] && (
             <div style={{
-              fontSize: '0.72rem', fontWeight: 600, letterSpacing: '0.04em',
-              color: '#d97706', background: '#1c1000', border: '1px solid #92400e',
-              borderRadius: 7, padding: '6px 14px',
-              display: 'inline-flex', alignItems: 'center', gap: 6,
+              display: 'flex', alignItems: 'flex-start', gap: 10,
+              background: '#0d1117', border: '1px solid #1e3a5f',
+              borderRadius: 8, padding: '9px 14px',
             }}>
-              <span>⚠️</span>
-              <span>Engagement signals may not reflect real audience behavior</span>
+              <span style={{ flexShrink: 0, fontSize: '0.85rem' }}>ℹ️</span>
+              <span style={{ fontSize: '0.75rem', color: '#93c5fd', lineHeight: 1.5 }}>
+                {CONTENT_FORMAT_NOTES[contentFormat.type]}
+              </span>
             </div>
           )}
 
@@ -533,48 +823,75 @@ export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insigh
             margin: 0, fontSize: '1.05rem', fontWeight: 600, color: '#e4e4e7',
             textAlign: 'center', lineHeight: 1.6, padding: '0 4px',
           }}>
-            {message}
+            {isDominantState
+              ? (videoType === 'LEGACY_VIRAL'
+                  ? 'This video has reached peak distribution and is now in a passive resurfacing phase.'
+                  : 'YouTube is actively pushing this video — performance is currently driven by strong distribution momentum.')
+              : (() => {
+                  const _ageH = video?.snippet?.publishedAt
+                    ? (Date.now() - new Date(video.snippet.publishedAt).getTime()) / 3_600_000
+                    : null;
+                  const showUnderperformanceNote = (
+                    _ageH != null && _ageH >= 24 && _ageH <= 48 &&
+                    metrics?.views != null && channelAvg?.views > 0 &&
+                    metrics.views < 0.5 * channelAvg.views &&
+                    metrics?.engagementRate != null && channelAvg?.engagement > 0 &&
+                    metrics.engagementRate < channelAvg.engagement &&
+                    final_state !== 'CONFIRMED_STRONG'
+                  );
+                  if (showUnderperformanceNote)
+                    return 'This video is trending below your channel\'s typical performance after initial distribution. If this continues, it may indicate weak audience response or limited reach.';
+                  const isStale = _ageH != null && _ageH > 72 && (metrics?.viewsRatio ?? 1) < 0.5;
+                  if (isStale) return message;
+                  const suppressEarlyLanguage = _ageH != null && _ageH > 168 && final_state === 'EARLY_OR_BLOCKED';
+                  if (suppressEarlyLanguage) return message;
+                  return _finalStateMessage(final_state, metrics?.views) || message;
+                })()}
           </p>
         </div>
 
-        {/* Opportunity / Risk block */}
-        <div style={{
-          borderRadius: 12, padding: '18px 20px',
-          background: growthRisk ? '#0a0300' : '#00080a',
-          border: `1px solid ${growthRisk ? '#7c2d12' : '#0e3a2f'}`,
-          display: 'flex', flexDirection: 'column', gap: 10,
-        }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>{growthRisk ? '⚠️' : '🧠'}</span>
-            <div style={{
-              fontSize: '0.8rem', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase',
-              color: growthRisk ? '#f97316' : '#22c55e',
-            }}>
-              {growthRisk ? 'Growth Risk Detected' : 'Opportunity Detected'}
-            </div>
-          </div>
-          <p style={{
-            margin: 0, fontSize: '0.85rem', lineHeight: 1.65,
-            color: growthRisk ? '#fed7aa' : '#bbf7d0',
+        {/* Opportunity / Risk block — hidden for dominant states */}
+        {!isDominantState && (
+          <div style={{
+            borderRadius: 12, padding: '18px 20px',
+            background: growthRisk ? '#0a0300' : '#00080a',
+            border: `1px solid ${growthRisk ? '#7c2d12' : '#0e3a2f'}`,
+            display: 'flex', flexDirection: 'column', gap: 10,
           }}>
-            {growthRisk
-              ? 'YouTube is pushing this video right now — but without certain fixes, momentum will drop after the initial push.'
-              : 'This video has real growth potential. Run analysis to find the exact levers to scale it further.'}
-          </p>
-        </div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span style={{ fontSize: '1.3rem', flexShrink: 0 }}>{growthRisk ? '⚠️' : '🧠'}</span>
+              <div style={{
+                fontSize: '0.8rem', fontWeight: 800, letterSpacing: '0.14em', textTransform: 'uppercase',
+                color: growthRisk ? '#f97316' : '#22c55e',
+              }}>
+                {growthRisk ? 'Growth Risk Detected' : 'Opportunity Detected'}
+              </div>
+            </div>
+            <p style={{
+              margin: 0, fontSize: '0.85rem', lineHeight: 1.65,
+              color: growthRisk ? '#fed7aa' : '#bbf7d0',
+            }}>
+              {growthRisk
+                ? 'YouTube is pushing this video right now — but without certain fixes, momentum will drop after the initial push.'
+                : 'This video has real growth potential. Run analysis to find the exact levers to scale it further.'}
+            </p>
+          </div>
+        )}
 
         <div style={{ borderTop: '1px solid #1a1a1a', margin: '0 -4px' }} />
 
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-          <AnalyzeButton
-            onClick={onAnalyze}
-            loading={false}
-            label={isLikelyLegacyViral ? '🔍 Analyze Viral Patterns' : 'Unlock What\'s Killing Your Growth →'}
-          />
-          <p style={{ margin: 0, fontSize: '0.7rem', color: '#3a3a3a', textAlign: 'center', letterSpacing: '0.02em' }}>
-            AI will break down EXACTLY what to fix in your video
-          </p>
-        </div>
+        {!isLegacy && (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            <AnalyzeButton
+              onClick={onAnalyze}
+              loading={false}
+              label={isLikelyLegacyViral ? '🔍 Analyze Viral Patterns' : 'Unlock What\'s Killing Your Growth →'}
+            />
+            <p style={{ margin: 0, fontSize: '0.7rem', color: '#3a3a3a', textAlign: 'center', letterSpacing: '0.02em' }}>
+              AI will break down EXACTLY what to fix in your video
+            </p>
+          </div>
+        )}
 
       </Card>
     );
@@ -613,19 +930,21 @@ export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insigh
         {/* Header row: score pill + content type + confidence */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           {score != null && (
-            <div style={{
-              display: 'flex', alignItems: 'center', gap: 6,
-              background: `${gradeColor(score)}12`, border: `1px solid ${gradeColor(score)}44`,
-              borderRadius: 8, padding: '5px 12px',
-              transition: 'all 0.3s ease',
-            }}>
-              <span style={{ fontSize: '1rem', fontWeight: 900, color: gradeColor(score), lineHeight: 1 }}>
-                {getGrade(score)}
-              </span>
-              <span style={{ fontSize: '0.75rem', fontWeight: 700, color: gradeColor(score), opacity: 0.8 }}>
-                {Math.round(score)}/100
-              </span>
-            </div>
+            <ScoreTooltip mode="score" explanation={explanation}>
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 6,
+                background: `${gradeColor(score)}12`, border: `1px solid ${gradeColor(score)}44`,
+                borderRadius: 8, padding: '5px 12px',
+                transition: 'all 0.3s ease',
+              }}>
+                <span style={{ fontSize: '1rem', fontWeight: 900, color: gradeColor(score), lineHeight: 1 }}>
+                  {getGrade(score)}
+                </span>
+                <span style={{ fontSize: '0.75rem', fontWeight: 700, color: gradeColor(score), opacity: 0.8 }}>
+                  {Math.round(score)}/100
+                </span>
+              </div>
+            </ScoreTooltip>
           )}
           {diag.contentType && (
             <span style={{
@@ -637,15 +956,89 @@ export default function SummaryBox({ video, aiData, aiLoading, onAnalyze, insigh
             </span>
           )}
           {diag.confidence && (
-            <span style={{
-              fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
-              background: `${confColor}14`, border: `1px solid ${confColor}44`, color: confColor,
-              borderRadius: 6, padding: '4px 10px',
-            }}>
-              {diag.confidence} confidence
-            </span>
+            <ScoreTooltip mode="confidence" explanation={explanation}>
+              <span style={{
+                fontSize: '0.66rem', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase',
+                background: `${confColor}14`, border: `1px solid ${confColor}44`, color: confColor,
+                borderRadius: 6, padding: '4px 10px',
+              }}>
+                {diag.confidence} confidence
+              </span>
+            </ScoreTooltip>
           )}
         </div>
+
+        {/* What's Working / What's Failing / Leverage Points */}
+        {diag.insights && (() => {
+          const ins      = diag.insights;
+          const working  = (ins.what_is_working || []).slice(0, 5);
+          const shouldFilterEngagement = contentFormat?.type === 'MUSIC_SEARCH' || contentFormat?.type === 'PASSIVE';
+          const failing  = (ins.what_is_failing || [])
+            .filter(item => !shouldFilterEngagement || !COMMENT_ENGAGEMENT_RE.test(item))
+            .slice(0, 5);
+          const leverage = (ins.leverage_points  || []).slice(0, 5);
+          return (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12 }}>
+                <div style={{ background: '#060f06', border: '1px solid #1a2e1a', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+                    <span style={{ fontSize: '0.8rem' }}>✅</span>
+                    <span style={{ ...LS, color: '#15803d' }}>What's Working</span>
+                  </div>
+                  {working.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {working.map((item, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                          <span style={{ color: '#22c55e', fontSize: '0.7rem', flexShrink: 0, marginTop: 3 }}>•</span>
+                          <span style={{ fontSize: '0.78rem', color: '#86efac', lineHeight: 1.55 }}>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: '0.78rem', color: '#2a4a2a', fontStyle: 'italic' }}>No major strengths detected.</p>
+                  )}
+                </div>
+                <div style={{ background: '#0f0606', border: '1px solid #2e1a1a', borderRadius: 10, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 12 }}>
+                    <span style={{ fontSize: '0.8rem' }}>❌</span>
+                    <span style={{ ...LS, color: '#b91c1c' }}>What's Failing</span>
+                  </div>
+                  {failing.length > 0 ? (
+                    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+                      {failing.map((item, i) => (
+                        <div key={i} style={{ display: 'flex', gap: 8, alignItems: 'flex-start' }}>
+                          <span style={{ color: '#ef4444', fontSize: '0.7rem', flexShrink: 0, marginTop: 3 }}>•</span>
+                          <span style={{ fontSize: '0.78rem', color: '#fca5a5', lineHeight: 1.55 }}>{item}</span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p style={{ margin: 0, fontSize: '0.78rem', color: '#6b7280', fontStyle: 'italic' }}>No critical issues detected.</p>
+                  )}
+                </div>
+              </div>
+              {leverage.length > 0 && (
+                <div style={{ background: '#0a0814', border: '1px solid #2a1060', borderRadius: 10, padding: '16px 18px' }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 7, marginBottom: 14 }}>
+                    <span style={{ fontSize: '0.8rem' }}>⚡</span>
+                    <span style={{ ...LS, color: '#7c3aed' }}>Leverage Points</span>
+                    <span style={{ marginLeft: 'auto', fontSize: '0.6rem', color: '#4c1d95', letterSpacing: '0.1em', textTransform: 'uppercase' }}>highest impact first</span>
+                  </div>
+                  <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+                    {leverage.map((item, i) => (
+                      <div key={i} style={{ display: 'flex', gap: 10, alignItems: 'flex-start' }}>
+                        <span style={{ fontSize: '0.65rem', fontWeight: 800, color: '#7c3aed', flexShrink: 0, marginTop: 2, minWidth: 16, textAlign: 'center' }}>
+                          {i + 1}
+                        </span>
+                        <span style={{ fontSize: '0.8rem', color: '#c4b5fd', lineHeight: 1.6 }}>{item}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </div>
+          );
+        })()}
 
         {/* Mechanism — 3 labeled sections with progressive emphasis */}
         <div style={{

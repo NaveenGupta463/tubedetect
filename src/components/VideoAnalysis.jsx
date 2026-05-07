@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { fetchVideoComments, fetchChannelVideosExpanded } from '../api/youtube';
 import { analyzeVideoDeep, getVideoSignals, analyzeVideoDiagnosis, adjustScoreWithAI } from '../api/claude';
+import * as storage from '../utils/storage';
 import { SCHEMA_VERSION } from '../scoring/truthEngine';
 import { scoreVideoUnified } from '../scoring/unifiedScoring';
 import { fetchPerVideoOAuthMetrics, fetchChannelImpressionsBaseline } from '../api/analyticsApi';
@@ -9,6 +10,8 @@ import { buildFixCards } from '../scoring/fixEngine';
 import { buildActionEngineOutput } from '../engine/actionEngine';
 import { extractTimestamps, formatNum, parseDuration } from '../utils/analysis';
 import { meetsRequirement } from '../utils/tierConfig';
+import { detectContentFormat, filterActions } from '../utils/contentFormat';
+import { saveLearningSample } from '../utils/learningStore';
 import SummaryBox from './SummaryBox';
 
 import {
@@ -46,10 +49,239 @@ function recomputeClassification(cached, video, allVideos, niche) {
       diagnostics:  computedInsights.diagnostics,
     },
   };
-  try {
-    localStorage.setItem(DEEP_CACHE_PREFIX + video.id, JSON.stringify(patched));
-  } catch {}
+  storage.setJSON(DEEP_CACHE_PREFIX + video.id, patched);
   return patched;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LEGACY VIRAL — celebration card + decode CTA
+// ─────────────────────────────────────────────────────────────────────────────
+function formatBigNum(n) {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(1).replace(/\.0$/, '') + 'B';
+  if (n >= 1_000_000)     return (n / 1_000_000).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1_000)         return (n / 1_000).toFixed(1).replace(/\.0$/, '') + 'K';
+  return String(n);
+}
+
+function LegacyAchievementCard({ video, onDecode, decoding, canUseAI, onUpgrade, intelligenceData }) {
+  const stats = video.statistics || {};
+  const vws = parseInt(stats.viewCount || 0);
+  const lks = parseInt(stats.likeCount || 0);
+  const cms = parseInt(stats.commentCount || 0);
+  const publishedAt = video.snippet?.publishedAt ? new Date(video.snippet.publishedAt) : null;
+  const ageYears = publishedAt ? Math.floor((Date.now() - publishedAt.getTime()) / (86400000 * 365)) : null;
+
+  const tierBadge =
+    vws >= 1_000_000_000 ? { label: '🏆 Billion Views Club', color: '#fbbf24', bg: '#120e00', border: '#92400e' } :
+    vws >= 100_000_000   ? { label: '💎 100M Views Elite',   color: '#e0e7ff', bg: '#06060f', border: '#3730a3' } :
+    vws >= 10_000_000    ? { label: '🔥 10M Views Legend',   color: '#f87171', bg: '#0f0606', border: '#7f1d1d' } :
+                           { label: '📼 Viral Legacy',       color: '#a78bfa', bg: '#0d0a1a', border: '#3b1a7a' };
+
+  const intel = intelligenceData?.intelligence;
+
+  return (
+    <div style={{ marginTop: 20 }}>
+      {/* Achievement banner */}
+      <div style={{ background: tierBadge.bg, border: `1px solid ${tierBadge.border}`, borderRadius: 14, padding: '22px 24px', marginBottom: 14 }}>
+        <div style={{
+          display: 'inline-flex', alignItems: 'center', gap: 6,
+          background: tierBadge.color + '18', border: `1px solid ${tierBadge.color}44`,
+          borderRadius: 6, padding: '4px 12px', marginBottom: 16,
+        }}>
+          <span style={{ fontSize: '0.68rem', fontWeight: 800, letterSpacing: '0.1em', color: tierBadge.color, textTransform: 'uppercase' }}>
+            {tierBadge.label}
+          </span>
+        </div>
+        <div style={{ fontSize: '3rem', fontWeight: 900, color: tierBadge.color, lineHeight: 1, marginBottom: 4 }}>
+          {formatBigNum(vws)}
+        </div>
+        <div style={{ fontSize: '0.72rem', color: '#444', marginBottom: 18, letterSpacing: '0.08em', textTransform: 'uppercase' }}>Total Views</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+          {[
+            { label: 'Likes',    value: formatBigNum(lks) },
+            { label: 'Comments', value: formatBigNum(cms) },
+            { label: 'Age',      value: ageYears != null ? `${ageYears}y old` : '—' },
+          ].map(({ label, value }) => (
+            <div key={label} style={{ background: '#ffffff08', borderRadius: 8, padding: '10px 12px' }}>
+              <div style={{ fontSize: '1.05rem', fontWeight: 800, color: '#e2e8f0' }}>{value}</div>
+              <div style={{ fontSize: '0.62rem', color: '#555', marginTop: 2, textTransform: 'uppercase', letterSpacing: '0.06em' }}>{label}</div>
+            </div>
+          ))}
+        </div>
+        {intel?.patternStrengths?.summary && (
+          <div style={{ marginTop: 14, padding: '12px 14px', background: '#ffffff05', borderRadius: 8, fontSize: '0.8rem', color: '#6d7a8a', lineHeight: 1.7 }}>
+            {intel.patternStrengths.summary}
+          </div>
+        )}
+      </div>
+
+      {/* Nothing to fix */}
+      <div style={{ padding: '11px 16px', background: '#0c0c0c', border: '1px solid #181818', borderRadius: 8, fontSize: '0.78rem', color: '#4b5563', lineHeight: 1.65, marginBottom: 2 }}>
+        No fixes needed. This video has already done its job.{' '}
+        <span style={{ color: '#3b1a6a' }}>The only thing left to do is extract what made it work.</span>
+      </div>
+
+      {/* Decode CTA */}
+      {!intel && !decoding && (
+        <div style={{
+          background: '#0d0a1a', border: '1px solid #2a1060', borderRadius: 12,
+          padding: '20px 22px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 16,
+          marginBottom: 0,
+        }}>
+          <div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 800, color: '#e9d5ff', marginBottom: 6 }}>🔍 Decode the Viral Formula</div>
+            <div style={{ fontSize: '0.75rem', color: '#5a4a7a', lineHeight: 1.6 }}>
+              Uncover the psychological triggers, distribution mechanics, and reusable patterns that drove this video to {formatBigNum(vws)} views.
+            </div>
+          </div>
+          <button
+            onClick={() => { if (canUseAI?.()) onDecode(); else onUpgrade?.(); }}
+            style={{
+              background: 'linear-gradient(135deg, #4c1d95, #7c3aed)',
+              color: '#f3e8ff', border: 'none', borderRadius: 8,
+              padding: '10px 20px', fontWeight: 800, fontSize: '0.82rem',
+              cursor: 'pointer', flexShrink: 0,
+              boxShadow: '0 0 16px rgba(124,58,237,0.3)',
+            }}
+          >
+            Decode →
+          </button>
+        </div>
+      )}
+
+      {/* Decoding spinner */}
+      {decoding && (
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '16px 20px', background: '#0d0a1a', border: '1px solid #2a1060',
+          borderRadius: 12, color: '#a78bfa', fontSize: '0.85rem',
+        }}>
+          <span className="btn-spinner" /> Decoding viral pattern…
+        </div>
+      )}
+
+      {/* Intelligence results */}
+      {intel && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Pattern Strengths */}
+          {intel.patternStrengths && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 14 }}>Pattern Strength</div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 10 }}>
+                {[
+                  ['Title',        intel.patternStrengths.titleStrength],
+                  ['Hook',         intel.patternStrengths.hookStrength],
+                  ['Emotion',      intel.patternStrengths.emotionalResonance],
+                  ['Shareability', intel.patternStrengths.shareability],
+                  ['Longevity',    intel.patternStrengths.longevity],
+                  ['Overall',      intel.patternStrengths.overallStrength],
+                ].filter(([, v]) => v).map(([label, val]) => (
+                  <div key={label} style={{ background: '#ffffff06', borderRadius: 6, padding: '8px 10px' }}>
+                    <div style={{ fontSize: '0.6rem', color: '#4c1d95', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 700, color: '#c4b5fd' }}>{val}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {/* Title Intelligence */}
+          {intel.titleIntelligence && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 14 }}>Title Formula</div>
+              {intel.titleIntelligence.formulaType && (
+                <div style={{ display: 'inline-block', background: '#4c1d9520', border: '1px solid #4c1d9540', borderRadius: 6, padding: '3px 10px', fontSize: '0.72rem', fontWeight: 800, color: '#a78bfa', marginBottom: 12 }}>
+                  {intel.titleIntelligence.formulaType}
+                </div>
+              )}
+              {intel.titleIntelligence.psychologicalHook && (
+                <p style={{ margin: '0 0 12px', fontSize: '0.81rem', color: '#9ca3af', lineHeight: 1.7 }}>{intel.titleIntelligence.psychologicalHook}</p>
+              )}
+              {intel.titleIntelligence.replicableFormula && (
+                <div style={{ background: '#0f0f1a', border: '1px solid #2a2a4a', borderRadius: 8, padding: '10px 14px', fontSize: '0.78rem', color: '#c4b5fd', fontFamily: 'monospace', lineHeight: 1.6 }}>
+                  {intel.titleIntelligence.replicableFormula}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* Viewer Behavior */}
+          {intel.viewerBehaviorFlow && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 14 }}>Viewer Psychology</div>
+              {intel.viewerBehaviorFlow.entryTriggerType && (
+                <div style={{ display: 'inline-block', background: '#4c1d9520', border: '1px solid #4c1d9540', borderRadius: 6, padding: '3px 10px', fontSize: '0.72rem', fontWeight: 800, color: '#a78bfa', marginBottom: 12 }}>
+                  {intel.viewerBehaviorFlow.entryTriggerType}
+                </div>
+              )}
+              {intel.viewerBehaviorFlow.behavioralFlow && (
+                <p style={{ margin: '0 0 10px', fontSize: '0.81rem', color: '#9ca3af', lineHeight: 1.7 }}>{intel.viewerBehaviorFlow.behavioralFlow}</p>
+              )}
+              {intel.viewerBehaviorFlow.viralEntryMechanism && (
+                <p style={{ margin: 0, fontSize: '0.81rem', color: '#9ca3af', lineHeight: 1.7 }}>{intel.viewerBehaviorFlow.viralEntryMechanism}</p>
+              )}
+            </div>
+          )}
+
+          {/* Psychological Drivers */}
+          {intel.psychologicalDrivers && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 14 }}>Psychological Drivers</div>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 12 }}>
+                {intel.psychologicalDrivers.primaryDriver && (
+                  <div style={{ background: '#7c3aed20', border: '1px solid #7c3aed40', borderRadius: 6, padding: '3px 10px', fontSize: '0.72rem', fontWeight: 800, color: '#c4b5fd' }}>
+                    {intel.psychologicalDrivers.primaryDriver}
+                  </div>
+                )}
+                {intel.psychologicalDrivers.secondaryDriver && (
+                  <div style={{ background: '#ffffff08', border: '1px solid #ffffff15', borderRadius: 6, padding: '3px 10px', fontSize: '0.72rem', fontWeight: 700, color: '#6b7280' }}>
+                    {intel.psychologicalDrivers.secondaryDriver}
+                  </div>
+                )}
+              </div>
+              {intel.psychologicalDrivers.driverAnalysis && (
+                <p style={{ margin: 0, fontSize: '0.81rem', color: '#9ca3af', lineHeight: 1.7 }}>{intel.psychologicalDrivers.driverAnalysis}</p>
+              )}
+            </div>
+          )}
+
+          {/* Distribution Mechanics */}
+          {intel.distributionMechanics && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 14 }}>Distribution Mechanics</div>
+              {intel.distributionMechanics.primaryDistributionVector && (
+                <div style={{ display: 'inline-block', background: '#4c1d9520', border: '1px solid #4c1d9540', borderRadius: 6, padding: '3px 10px', fontSize: '0.72rem', fontWeight: 800, color: '#a78bfa', marginBottom: 12 }}>
+                  {intel.distributionMechanics.primaryDistributionVector}
+                </div>
+              )}
+              {intel.distributionMechanics.velocityPattern && (
+                <p style={{ margin: '0 0 10px', fontSize: '0.81rem', color: '#9ca3af', lineHeight: 1.7 }}>{intel.distributionMechanics.velocityPattern}</p>
+              )}
+              {intel.distributionMechanics.sustainedReachReason && (
+                <p style={{ margin: 0, fontSize: '0.81rem', color: '#6b7280', lineHeight: 1.7, fontStyle: 'italic' }}>{intel.distributionMechanics.sustainedReachReason}</p>
+              )}
+            </div>
+          )}
+
+          {/* Reusable Patterns */}
+          {intel.reusablePatterns?.length > 0 && (
+            <div style={{ background: '#0a0814', border: '1px solid #1e1a3a', borderRadius: 12, padding: '18px 20px' }}>
+              <div style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.15em', textTransform: 'uppercase', color: '#6d28d9', marginBottom: 16 }}>Reusable Patterns</div>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+                {intel.reusablePatterns.map((p, i) => (
+                  <div key={i} style={{ borderLeft: '2px solid #4c1d95', paddingLeft: 14 }}>
+                    <div style={{ fontSize: '0.8rem', fontWeight: 800, color: '#c4b5fd', marginBottom: 6 }}>{p.pattern}</div>
+                    <p style={{ margin: '0 0 6px', fontSize: '0.78rem', color: '#9ca3af', lineHeight: 1.65 }}>{p.description}</p>
+                    <div style={{ fontSize: '0.75rem', color: '#6d28d9' }}>→ {p.howToApply}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -102,12 +334,29 @@ export default function VideoAnalysis({
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
   const [bulkQueue, setBulkQueue] = useState([]);
   const [channelVideos, setChannelVideos] = useState(null);
+  const [intelligenceData, setIntelligenceData] = useState(null);
+  const [decoding, setDecoding] = useState(false);
   const progressTimerRef = useRef(null);
   const tabBarRef = useRef(null);
 
   useEffect(() => {
     if (pendingTab) setActiveTab(pendingTab);
   }, [pendingTab]);
+
+  // Capture learning sample once per video, only after data has stabilised (72h+)
+  useEffect(() => {
+    if (!video) return;
+    const publishedAt = new Date(video.snippet?.publishedAt);
+    const ageHours = (Date.now() - publishedAt.getTime()) / 3_600_000;
+    if (ageHours < 72) return;
+    saveLearningSample({
+      videoId:    video.id,
+      views:      Number(video.statistics?.viewCount    || 0),
+      likes:      Number(video.statistics?.likeCount    || 0),
+      comments:   Number(video.statistics?.commentCount || 0),
+      categoryId: Number(video.snippet?.categoryId      || 0),
+    });
+  }, [video?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Load cached AI analysis when video changes
   useEffect(() => {
@@ -119,10 +368,9 @@ export default function VideoAnalysis({
     setAiData(null);
     setInsights(null);
     setFixes(null);
-    try {
-      const cached = localStorage.getItem(DEEP_CACHE_PREFIX + video.id);
-      if (cached) {
-        const parsed = JSON.parse(cached);
+    {
+      const parsed = storage.getJSON(DEEP_CACHE_PREFIX + video.id);
+      if (parsed) {
         if (parsed?.blueprint?.scores && parsed.schemaVersion === SCHEMA_VERSION) {
           // Stale LEGACY_VIRAL entries from before intelligence mode — force re-run
           if (parsed.blueprint?.videoType === 'LEGACY_VIRAL' && !parsed.intelligence) return;
@@ -139,7 +387,15 @@ export default function VideoAnalysis({
           }
         }
       }
-    } catch {}
+    }
+  }, [video?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Load cached intelligence when video changes
+  useEffect(() => {
+    if (!video?.id) { setIntelligenceData(null); return; }
+    setIntelligenceData(null);
+    const intel = storage.getJSON(`tubeintel_intel_${video.id}`);
+    if (intel) setIntelligenceData(intel);
   }, [video?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Fetch channel videos for unified scoring baseline
@@ -177,6 +433,7 @@ export default function VideoAnalysis({
 
   const unified = scoreVideoUnified(video, channelVideos, null, niche);
   const { scores, metrics, analysis, channelAvg, ratios, baseline: unifiedBaseline } = unified;
+  const contentFormat = detectContentFormat(video, channelStats);
   const score = scores.finalScore;
   const grade = scores.grade;
 
@@ -185,9 +442,11 @@ export default function VideoAnalysis({
     commentRate: unifiedBaseline.medianCommentRate,
   } : null;
 
-  const insightMode = aiData?.blueprint?.insightMode ?? null;
-  const videoType   = aiData?.blueprint?.videoType   ?? null;
-  const TABS        = buildTabs(videoType);
+  const insightMode     = aiData?.blueprint?.insightMode ?? null;
+  const videoType       = aiData?.blueprint?.videoType ?? unified.videoType ?? null;
+  const isLegacy        = videoType === 'LEGACY_VIRAL';
+  const isDominantState = unified.final_state === 'CONFIRMED_VIRAL' || isLegacy;
+  const TABS            = buildTabs(videoType);
   const { views, likes, comments: commentCount, engagementRate, duration } = metrics;
 
   const publishDate = video.snippet?.publishedAt
@@ -202,6 +461,7 @@ export default function VideoAnalysis({
   const nextVid = vidIdx < allVideos.length - 1 ? allVideos[vidIdx + 1] : null;
 
   const handleDeepAnalysis = async () => {
+    if (isLegacy) return;
     if (!canUseAI || !canUseAI()) {
       setAiError('No AI calls remaining. Upgrade to unlock deep analysis.');
       return;
@@ -262,13 +522,17 @@ export default function VideoAnalysis({
 
       // Unified scoring — single source of truth for both render and analysis
       const unifiedResult = scoreVideoUnified(video, baselineSource, oauthMetrics, niche);
-      videoData.videoType   = unifiedResult.videoType;
-      videoData.sampleLevel       = unifiedResult.sampleLevel;
-      videoData.lowVolume         = unifiedResult.lowVolume;
-      videoData.signalState       = unifiedResult.signalState;
-      videoData.engagementQuality = unifiedResult.engagementQuality;
-      videoData.mismatch          = unifiedResult.mismatch;
-      console.log('UNIFIED SCORE:', unifiedResult.scores.finalScore, 'grade:', unifiedResult.scores.grade, 'lowSample:', unifiedResult.lowSample, 'sampleLevel:', unifiedResult.sampleLevel, 'signalState:', unifiedResult.signalState);
+      videoData.videoType              = unifiedResult.videoType;
+      videoData.sampleLevel            = unifiedResult.sampleLevel;
+      videoData.lowVolume              = unifiedResult.lowVolume;
+      videoData.engagementQuality      = unifiedResult.engagementQuality;
+      videoData.engagementAuthenticity = unifiedResult.engagementAuthenticity;
+      videoData.confidence             = unifiedResult.confidence;
+      videoData.noBaseline             = unifiedResult.noBaseline;
+      videoData.final_state            = unifiedResult.final_state;
+      videoData.leak                   = unifiedResult.leak;
+      videoData.leak_intensity         = unifiedResult.leak_intensity;
+      videoData.reliability            = unifiedResult.reliability;
 
       const [deepResult, diagnosis] = await Promise.all([
         analyzeVideoDeep(videoData, commentsText),
@@ -315,12 +579,18 @@ export default function VideoAnalysis({
           deepResult.blueprint.insightMode          = computedInsights.insightMode;
         }
 
+        // Merge AI-generated dimension scores (packaging, seo) with data-driven ones (engagement, velocity)
+        // AI scores are in deepResult.blueprint.dimensionScores; unified scores override engagement/velocity
+        deepResult.blueprint.scores = {
+          ...(deepResult.blueprint.dimensionScores || {}),
+          ...unifiedResult.dimensionScores,
+        };
+
         deepResult.blueprint.confidenceScore      = unifiedResult.confidenceScore;
         deepResult.blueprint.dimensionConfidence  = unifiedResult.dimensionConfidence;
         deepResult.blueprint.mode                 = unifiedResult.mode;
         deepResult.blueprint.format               = unifiedResult.format;
         deepResult.blueprint.oauthDisplay         = unifiedResult.oauthDisplay;
-        deepResult.blueprint.scores               = unifiedResult.dimensionScores;
         deepResult.blueprint.viralScore           = unifiedResult.viralScore;
         deepResult.blueprint.grade                = unifiedResult.grade;
         deepResult.blueprint.videoType            = unifiedResult.videoType;
@@ -335,14 +605,9 @@ export default function VideoAnalysis({
         consumeAICall();
         setAiData(deepResult);
         setProgress(100);
-        try {
-          if (deepResult?.blueprint?.scores) {
-            localStorage.setItem(
-              DEEP_CACHE_PREFIX + video.id,
-              JSON.stringify({ ...deepResult, schemaVersion: SCHEMA_VERSION })
-            );
-          }
-        } catch {}
+        if (deepResult?.blueprint?.scores) {
+          storage.setJSON(DEEP_CACHE_PREFIX + video.id, { ...deepResult, schemaVersion: SCHEMA_VERSION });
+        }
       } else {
         setAiError('Analysis returned an unexpected format. Please try again.');
       }
@@ -350,6 +615,46 @@ export default function VideoAnalysis({
       setAiError(e?.message || String(e) || 'Analysis failed. Please try again.');
     } finally {
       setAiLoading(false);
+    }
+  };
+
+  const handleLegacyDecode = async () => {
+    if (!canUseAI?.()) { onUpgrade?.(); return; }
+    setDecoding(true);
+    try {
+      const dur = parseDuration(video.contentDetails?.duration);
+      const stats = video.statistics || {};
+      const vws = parseInt(stats.viewCount || 0);
+      const lks = parseInt(stats.likeCount || 0);
+      const cms = parseInt(stats.commentCount || 0);
+
+      const videoData = {
+        title:        video.snippet?.title || '',
+        views:        vws,
+        likes:        lks,
+        commentCount: cms,
+        duration:     dur.formatted,
+        publishedAt:  video.snippet?.publishedAt ? new Date(video.snippet.publishedAt).toLocaleDateString() : '',
+        tags:         (video.snippet?.tags || []).slice(0, 10).join(', ') || 'none',
+        videoType:    'LEGACY_VIRAL',
+      };
+
+      const commentsText = comments?.length
+        ? comments.slice(0, 30).map(c =>
+            (c.snippet?.topLevelComment?.snippet?.textDisplay || '').replace(/<[^>]+>/g, '')
+          ).filter(Boolean).join('\n')
+        : 'No comments available';
+
+      const result = await analyzeVideoDeep(videoData, commentsText);
+      if (result) {
+        consumeAICall();
+        setIntelligenceData(result);
+        storage.setJSON(`tubeintel_intel_${video.id}`, result);
+      }
+    } catch (e) {
+      console.warn('[handleLegacyDecode]', e?.message);
+    } finally {
+      setDecoding(false);
     }
   };
 
@@ -466,7 +771,7 @@ export default function VideoAnalysis({
   );
 
   const handleActionClick = (action) => {
-    onNavigate('improve', { actionType: action.type, insightMode, videoType });
+    onNavigate('improve', { actionType: action.type, insightMode, videoType, contentFormat });
   };
 
   // ── Tab 6: Blueprint & Score ────────────────────────────────────────────────
@@ -587,10 +892,27 @@ export default function VideoAnalysis({
         channelBaseline={channelBaselineForUI}
         sampleLevel={unified.sampleLevel}
         lowVolume={unified.lowVolume}
-        signalState={unified.signalState}
-        engagementQuality={unified.engagementQuality}
+        engagementAuthenticity={unified.engagementAuthenticity}
+        confidence={unified.confidence}
+        explanation={unified.explanation}
+        final_state={unified.final_state}
+        videoType={videoType}
+        finalScore={unified.scores?.finalScore}
+        grade={unified.scores?.grade}
         mismatch={unified.mismatch}
+        contentFormat={contentFormat}
       />
+
+      {isLegacy ? (
+        <LegacyAchievementCard
+          video={video}
+          onDecode={handleLegacyDecode}
+          decoding={decoding}
+          canUseAI={canUseAI}
+          onUpgrade={onUpgrade}
+          intelligenceData={intelligenceData}
+        />
+      ) : (<>
       {aiData && !aiLoading && (
         insightMode === 'CONTEXT' ? (
           <div style={{
@@ -609,7 +931,7 @@ export default function VideoAnalysis({
               </div>
             </div>
             <button
-              onClick={() => onNavigate?.('improve', { insightMode, videoType })}
+              onClick={() => onNavigate?.('improve', { insightMode, videoType, contentFormat })}
               style={{
                 background: '#111', border: '1px solid #2a2a2a', borderRadius: 8,
                 padding: '10px 20px', fontWeight: 800, fontSize: '0.82rem',
@@ -634,7 +956,7 @@ export default function VideoAnalysis({
               </div>
             </div>
             <button
-              onClick={() => onNavigate?.('improve', { insightMode, videoType })}
+              onClick={() => onNavigate?.('improve', { insightMode, videoType, contentFormat })}
               style={{
                 background: '#1a1a1a', border: '1px solid #333', borderRadius: 8,
                 padding: '10px 20px', fontWeight: 800, fontSize: '0.82rem',
@@ -660,7 +982,7 @@ export default function VideoAnalysis({
               </div>
             </div>
             <button
-              onClick={() => onNavigate?.('improve', { insightMode, videoType })}
+              onClick={() => onNavigate?.('improve', { insightMode, videoType, contentFormat })}
               style={{
                 background: 'linear-gradient(135deg, #4c1d95, #7c3aed)',
                 color: '#f3e8ff', border: 'none', borderRadius: 8,
@@ -802,7 +1124,7 @@ export default function VideoAnalysis({
               <p style={{ margin: '0 0 16px', color: '#aaa', fontSize: '0.82rem', lineHeight: 1.6 }}>{insights.strengths}</p>
             </>
           )}
-          {insights.weaknesses?.length > 0 && (
+          {!isDominantState && insights.weaknesses?.length > 0 && (
             <>
               <h3 style={{ color: '#ff1744', fontSize: '0.85rem', fontWeight: 700, marginBottom: 8 }}>Weaknesses</h3>
               <p style={{ margin: '0 0 16px', color: '#aaa', fontSize: '0.82rem', lineHeight: 1.6 }}>{insights.weaknesses}</p>
@@ -839,7 +1161,7 @@ export default function VideoAnalysis({
       {/* Fix Cards */}
       {fixes && fixes.length > 0 && (() => {
         const QUICK_FIX_DIMS = new Set(['packaging', 'engagement', 'seo']);
-        const sorted = [...fixes].sort((a, b) => {
+        const sorted = [...filterActions(fixes, contentFormat)].sort((a, b) => {
           const order = { HIGH: 0, MEDIUM: 1, LOW: 2 };
           return (order[a.priority] ?? 3) - (order[b.priority] ?? 3);
         });
@@ -988,6 +1310,33 @@ export default function VideoAnalysis({
           setBulkQueue={setBulkQueue}
           onVideoSelect={onVideoSelect}
         />
+      )}
+      </>)}
+
+      {/* Top Comments — bottom of page, overview tab only */}
+      {activeTab === 'overview' && !loadingComments && comments?.length > 0 && (
+        <div className="chart-card" style={{ marginTop: 24 }}>
+          <h3 className="chart-title">Top Comments</h3>
+          <div className="comments-list">
+            {comments.slice(0, 8).map(c => {
+              const s = c.snippet?.topLevelComment?.snippet || {};
+              return (
+                <div key={c.id} className="comment-item">
+                  <img src={s.authorProfileImageUrl || ''} alt="" className="comment-avatar"
+                    onError={e => { e.target.style.display = 'none'; }} />
+                  <div className="comment-body">
+                    <div className="comment-author">{s.authorDisplayName}</div>
+                    <div className="comment-text">{s.textDisplay?.replace(/<[^>]+>/g, '')}</div>
+                    <div className="comment-meta">
+                      👍 {formatNum(s.likeCount || 0)}
+                      {s.publishedAt && <span style={{ marginLeft: 12, color: '#666' }}>{new Date(s.publishedAt).toLocaleDateString()}</span>}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       )}
 
       {/* Upgrade Modal */}

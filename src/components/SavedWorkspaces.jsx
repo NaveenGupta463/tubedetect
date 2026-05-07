@@ -1,88 +1,105 @@
 import { useState, useEffect } from 'react';
 import { TIER_LIMITS } from '../utils/tierConfig';
 import { formatNum } from '../utils/analysis';
+import * as scoring from '../api/scoringApi';
 
-const WS_KEY = 'yta_workspaces';
-
-function loadAll() {
-  try { return JSON.parse(localStorage.getItem(WS_KEY) || '[]'); } catch { return []; }
-}
-function saveAll(ws) {
-  // Slim down video data before storing
-  const slim = ws.map(w => ({
-    ...w,
-    primary: w.primary ? {
-      ...w.primary,
-      videos: (w.primary.videos || []).map(v => ({
-        id: v.id,
-        snippet: { title: v.snippet?.title, publishedAt: v.snippet?.publishedAt, thumbnails: { default: v.snippet?.thumbnails?.default }, tags: v.snippet?.tags },
-        statistics: v.statistics,
-        contentDetails: { duration: v.contentDetails?.duration },
-      })),
-    } : null,
-    competitors: (w.competitors || []).map(c => ({
-      ...c,
-      videos: (c.videos || []).map(v => ({
-        id: v.id,
-        snippet: { title: v.snippet?.title, publishedAt: v.snippet?.publishedAt, thumbnails: { default: v.snippet?.thumbnails?.default } },
-        statistics: v.statistics,
-        contentDetails: { duration: v.contentDetails?.duration },
-      })),
-    })),
+function slimVideos(videos) {
+  return (videos || []).map(v => ({
+    id: v.id,
+    snippet: {
+      title:       v.snippet?.title,
+      publishedAt: v.snippet?.publishedAt,
+      thumbnails:  { default: v.snippet?.thumbnails?.default },
+      tags:        v.snippet?.tags,
+    },
+    statistics:     v.statistics,
+    contentDetails: { duration: v.contentDetails?.duration },
   }));
-  localStorage.setItem(WS_KEY, JSON.stringify(slim));
+}
+
+function slimCompetitorVideos(videos) {
+  return (videos || []).map(v => ({
+    id: v.id,
+    snippet: {
+      title:       v.snippet?.title,
+      publishedAt: v.snippet?.publishedAt,
+      thumbnails:  { default: v.snippet?.thumbnails?.default },
+    },
+    statistics:     v.statistics,
+    contentDetails: { duration: v.contentDetails?.duration },
+  }));
+}
+
+function buildPayload(channel, videos, competitors) {
+  return {
+    primary: {
+      channelId:   channel.id,
+      channelData: channel,
+      videos:      slimVideos(videos),
+    },
+    competitors: (competitors || []).map(c => ({
+      ...c,
+      videos: slimCompetitorVideos(c.videos),
+    })),
+  };
 }
 
 export default function SavedWorkspaces({ tier, channel, videos, competitors, onLoadWorkspace }) {
-  const [workspaces, setWorkspaces] = useState(loadAll);
-  const [editId, setEditId] = useState(null);
-  const [editName, setEditName] = useState('');
-  const [saved, setSaved] = useState(false);
+  const [workspaces, setWorkspaces] = useState([]);
+  const [loading, setLoading]       = useState(true);
+  const [editId, setEditId]         = useState(null);
+  const [editName, setEditName]     = useState('');
+  const [saved, setSaved]           = useState(false);
 
   const limit = TIER_LIMITS[tier]?.workspaces ?? 1;
 
-  const handleSave = () => {
+  useEffect(() => {
+    scoring.getWorkspaces()
+      .then(setWorkspaces)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const handleSave = async () => {
     if (!channel) return;
     const existing = workspaces.find(w => w.primary?.channelId === channel.id);
-    let updated;
+    const now      = new Date().toISOString();
+    const { primary, competitors: comps } = buildPayload(channel, videos, competitors);
+
     if (existing) {
-      updated = workspaces.map(w => w.id === existing.id ? {
-        ...w,
-        updatedAt: new Date().toISOString(),
-        primary: { channelId: channel.id, channelData: channel, videos },
-        competitors: competitors || [],
-      } : w);
+      await scoring.updateWorkspace(existing.id, { name: existing.name, updatedAt: now, primary, competitors: comps });
+      setWorkspaces(ws => ws.map(w =>
+        w.id === existing.id ? { ...w, updatedAt: now, primary, competitors: comps } : w,
+      ));
     } else {
       if (workspaces.length >= limit) {
         alert(`Your ${tier} plan supports up to ${limit} workspace${limit > 1 ? 's' : ''}. Delete one or upgrade.`);
         return;
       }
       const newWs = {
-        id: 'ws_' + Date.now(),
-        name: channel.snippet?.title || 'Workspace',
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
-        primary: { channelId: channel.id, channelData: channel, videos },
-        competitors: competitors || [],
+        id:          'ws_' + Date.now(),
+        name:        channel.snippet?.title || 'Workspace',
+        createdAt:   now,
+        updatedAt:   now,
+        primary,
+        competitors: comps,
       };
-      updated = [...workspaces, newWs];
+      await scoring.saveWorkspace(newWs);
+      setWorkspaces(ws => [...ws, newWs]);
     }
-    setWorkspaces(updated);
-    saveAll(updated);
+
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const handleDelete = (id) => {
-    const updated = workspaces.filter(w => w.id !== id);
-    setWorkspaces(updated);
-    saveAll(updated);
+  const handleDelete = async (id) => {
+    await scoring.deleteWorkspace(id);
+    setWorkspaces(ws => ws.filter(w => w.id !== id));
   };
 
-  const handleRename = (id) => {
-    const updated = workspaces.map(w => w.id === id ? { ...w, name: editName } : w);
-    setWorkspaces(updated);
-    saveAll(updated);
+  const handleRename = async (id) => {
+    await scoring.updateWorkspace(id, { name: editName, updatedAt: new Date().toISOString() });
+    setWorkspaces(ws => ws.map(w => w.id === id ? { ...w, name: editName } : w));
     setEditId(null);
   };
 
@@ -123,7 +140,11 @@ export default function SavedWorkspaces({ tier, channel, videos, competitors, on
         </div>
       )}
 
-      {workspaces.length === 0 ? (
+      {loading ? (
+        <div className="empty-state-card">
+          <div style={{ fontSize: 13, color: '#666' }}>Loading workspaces…</div>
+        </div>
+      ) : workspaces.length === 0 ? (
         <div className="empty-state-card">
           <div style={{ fontSize: 32, marginBottom: 10 }}>📂</div>
           <div>No saved workspaces yet.</div>
@@ -134,7 +155,7 @@ export default function SavedWorkspaces({ tier, channel, videos, competitors, on
       ) : (
         <div className="ws-list">
           {workspaces.map(ws => {
-            const ch = ws.primary?.channelData;
+            const ch   = ws.primary?.channelData;
             const subs = ch?.statistics?.subscriberCount;
             return (
               <div key={ws.id} className="ws-card">
@@ -186,7 +207,7 @@ export default function SavedWorkspaces({ tier, channel, videos, competitors, on
 
       <div className="ts-note" style={{ marginTop: 12 }}>
         <span>ℹ️</span>
-        Workspaces are stored in your browser's localStorage. Clearing browser data will erase them.
+        Workspaces are stored in the local database and persist across sessions.
         {tier === 'free' && ' Upgrade to Pro for up to 6 workspaces.'}
       </div>
     </div>

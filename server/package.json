@@ -1,0 +1,25 @@
+{
+  "name": "tubeintel-scoring-server",
+  "version": "1.0.0",
+  "description": "Self-learning AI scoring layer — port 3002",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "nodemon --ignore data/ --ignore ml/ --ext js index.js",
+    "seed": "node scripts/seedTestData.js",
+    "backfill": "node scripts/backfillEmbeddings.js",
+    "ingest": "node scripts/runIngestionBatch.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.6.1",
+    "express": "^4.18.3",
+    "node-cron": "^3.0.3",
+    "node-sqlite3-wasm": "^0.8.56",
+    "openai": "^4.104.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}

@@ -1,4 +1,6 @@
 // YouTube Analytics API v2
+import * as storage from '../utils/storage';
+
 const ANALYTICS_BASE = 'https://youtubeanalytics.googleapis.com/v2/reports';
 const YT_BASE        = 'https://www.googleapis.com/youtube/v3';
 
@@ -10,16 +12,10 @@ function cacheKey(path) {
   return CACHE_PREFIX + btoa(path).replace(/[^a-z0-9]/gi, '').slice(0, 40);
 }
 function readCache(key) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const { ts, data } = JSON.parse(raw);
-    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem(key); return null; }
-    return data;
-  } catch { return null; }
+  return storage.getCached(key, CACHE_TTL);
 }
 function writeCache(key, data) {
-  try { localStorage.setItem(key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+  storage.setCached(key, data);
 }
 
 async function analyticsQuery(token, params) {
@@ -474,9 +470,5 @@ export async function fetchChannelImpressionsBaseline(token, channelId) {
 }
 
 export function clearAnalyticsCache() {
-  try {
-    Object.keys(localStorage)
-      .filter(k => k.startsWith(CACHE_PREFIX))
-      .forEach(k => localStorage.removeItem(k));
-  } catch {}
+  storage.removeByPrefix(CACHE_PREFIX);
 }

@@ -1,9 +1,11 @@
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
-const JWT_KEY  = 'tubeintel_jwt';
+import { ROUTES } from '../config';
+import * as storage from '../utils/storage';
 
-export function getJWT()       { return localStorage.getItem(JWT_KEY); }
-export function setJWT(token)  { localStorage.setItem(JWT_KEY, token); }
-export function clearJWT()     { localStorage.removeItem(JWT_KEY); }
+const JWT_KEY = 'tubeintel_jwt';
+
+export function getJWT()       { return storage.get(JWT_KEY); }
+export function setJWT(token)  { storage.set(JWT_KEY, token); }
+export function clearJWT()     { storage.remove(JWT_KEY); }
 
 export function authHeaders() {
   const token = getJWT();
@@ -17,7 +19,7 @@ export function authHeaders() {
  * Returns { accessToken, backendUser }
  */
 export async function loginWithGoogle({ code, codeVerifier, redirectUri }) {
-  const res = await fetch(`${BACKEND}/api/auth/google`, {
+  const res = await fetch(ROUTES.authGoogle, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({ code, code_verifier: codeVerifier, redirect_uri: redirectUri }),
@@ -38,7 +40,7 @@ export async function loginWithGoogle({ code, codeVerifier, redirectUri }) {
 export async function fetchUser() {
   const token = getJWT();
   if (!token) return null;
-  const res = await fetch(`${BACKEND}/api/user/me`, {
+  const res = await fetch(ROUTES.userMe, {
     headers: { Authorization: `Bearer ${token}` },
   });
   if (res.status === 401) { clearJWT(); return null; }
@@ -50,7 +52,7 @@ export async function fetchUser() {
  * Update tier via backend.
  */
 export async function setUserTier(tier) {
-  const res = await fetch(`${BACKEND}/api/user/tier`, {
+  const res = await fetch(ROUTES.userTier, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json', ...authHeaders() },
     body:    JSON.stringify({ tier }),

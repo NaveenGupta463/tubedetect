@@ -69,18 +69,27 @@ function buildBaseline(channelVideos, format, videoId) {
     medianVph:         computeMedian(vphList),
     medianEngRate:     computeMedian(engRateList),
     sampleSize,
-    confidence: sampleSize >= 15 ? 'HIGH' : sampleSize >= 8 ? 'MEDIUM' : 'LOW',
+    baselineQuality: sampleSize >= 15 ? 'HIGH' : sampleSize >= 8 ? 'MEDIUM' : 'LOW',
+    baselineTier:    sampleSize <= 1 ? 'NONE' : sampleSize <= 4 ? 'LOW' : sampleSize <= 10 ? 'MEDIUM' : 'HIGH',
   };
 }
 
-function computeSignalTrust(views, likes, comments) {
-  let trust = 1;
-  if (views < 300)       trust *= 0.2;
-  else if (views < 1000) trust *= 0.5;
-  else if (views < 5000) trust *= 0.8;
-  if (comments < 5)      trust *= 0.5;
-  if (likes < 20)        trust *= 0.7;
-  return Math.min(1, Math.max(0, trust));
+function computeSignalTrust(views, likes) {
+  let trust;
+  if (views < 1_000)       trust = 0.3;
+  else if (views < 10_000)  trust = 0.6;
+  else if (views < 100_000) trust = 0.85;
+  else if (views < 1_000_000) trust = 0.95;
+  else trust = 1.0;
+  if (likes < 20) trust *= 0.85;
+  return trust;
+}
+
+function getCommentState({ comments, views, ageH }) {
+  if (comments === 0 && views >= 50_000) return 'RESTRICTED_OR_KIDS';
+  if (comments < 10 && ageH < 6)        return 'TOO_EARLY';
+  if (comments < 10 && views > 50_000)  return 'ANOMALY_LOW_ENGAGEMENT';
+  return 'NORMAL';
 }
 
 function gradeFromScore(score) {
@@ -103,7 +112,184 @@ const WEIGHTS = {
   short_oauth:  { velocity: 0.30, engagement: 0.50, discussion: 0.20 },
 };
 
-export function buildPerformanceInsights(ratios, metrics, duration) {
+function buildExplanation({
+  views, likes, comments,
+  viewsRatio, likeRatio, commentRatio,
+  mViews, mLike, mComment,
+  confidence, engagementAuthenticity, signalState, mismatch,
+  engagementQuality, finalScore,
+  suspiciousCaseA, suspiciousCaseB, suspiciousCaseC,
+  noBaseline, baselineTier,
+  lowSample, trustState,
+  commentState, ignoreCommentMetrics,
+}) {
+  // summary.score — keyed entirely to trustState
+  const scoreSummary = {
+    LOW_CONFIDENCE: 'Insufficient data — patterns not established',
+    EARLY_SIGNAL:   'Early signal detected — not yet confirmed',
+    CONFLICTED:     'Conflicting performance signals detected',
+    CONFIRMED:      'Strong and consistent performance signals',
+  }[trustState] ?? 'Insufficient data — patterns not established';
+
+  // summary.confidence
+  let confidenceSummary;
+  if (baselineTier === 'NONE') {
+    confidenceSummary = 'No channel baseline — insights are highly uncertain';
+  } else if (baselineTier === 'LOW') {
+    confidenceSummary = 'Limited channel history — insights are directional only';
+  } else if (confidence === 'HIGH') {
+    confidenceSummary = 'High confidence — signals are stable and data volume is sufficient';
+  } else if (confidence === 'MEDIUM') {
+    confidenceSummary = 'Moderate confidence — early signals, monitor for changes';
+  } else {
+    confidenceSummary = 'Low confidence — signals are insufficient for reliable conclusions';
+  }
+
+  // summary.authenticity
+  const authenticitySummary = {
+    SUSPICIOUS:  'Engagement pattern mismatch — signals may not reflect real audience behavior',
+    UNVERIFIED:  'Insufficient data to validate engagement authenticity',
+    AUTHENTIC:   'Engagement signals align with expected channel patterns',
+  }[engagementAuthenticity] ?? 'Insufficient data to validate engagement authenticity';
+
+  // performanceReasons
+  const performanceReasons = [];
+  if (mViews > 0) {
+    const pct = Math.round(viewsRatio * 100);
+    if (pct >= 150) performanceReasons.push(`Views are ${pct}% of channel average — above-average reach`);
+    else if (pct >= 80) performanceReasons.push(`Views are ${pct}% of channel average — near channel norm`);
+    else performanceReasons.push(`Views are ${pct}% of channel average — below channel norm`);
+  }
+  if (mLike > 0) {
+    const suffix = lowSample ? ' (low sample — unreliable)' : '';
+    if (likeRatio >= 1.2) performanceReasons.push(`Like rate is ${likeRatio.toFixed(2)}× the channel baseline${suffix}`);
+    else if (likeRatio < 0.8) performanceReasons.push(`Like rate is below channel baseline (${likeRatio.toFixed(2)}×)${suffix}`);
+  }
+  if (mComment > 0 && !ignoreCommentMetrics) {
+    const suffix = lowSample ? ' (low sample — unreliable)' : '';
+    if (commentRatio >= 1.2) performanceReasons.push(`Comment rate is ${commentRatio.toFixed(2)}× the channel baseline${suffix}`);
+    else if (commentRatio < 0.8) performanceReasons.push(`Comment rate is below channel baseline (${commentRatio.toFixed(2)}×)${suffix}`);
+  }
+  if (lowSample) performanceReasons.push('Engagement ratios may be unreliable due to limited data (<1,000 views)');
+  if (mismatch === 'WEAK_CONTENT') performanceReasons.push('Velocity is high but engagement is low — reach is not converting');
+  if (mismatch === 'UNDER_DISTRIBUTED') performanceReasons.push('Engagement is strong but reach is limited — distribution gap detected');
+
+  // confidenceReasons
+  const confidenceReasons = [];
+  if (baselineTier === 'NONE') {
+    confidenceReasons.push('No channel baseline available — insights are highly uncertain');
+  } else if (baselineTier === 'LOW') {
+    confidenceReasons.push('Limited channel history — insights are directional, not validated');
+  }
+  if (lowSample) confidenceReasons.push('Insufficient sample — fewer than 1,000 views');
+  if (commentState === 'RESTRICTED_OR_KIDS') confidenceReasons.push('Comments unavailable — analysis based on behavioral signals only');
+  else if (commentState === 'TOO_EARLY') confidenceReasons.push('Early signal — comment data not yet available');
+  if (engagementQuality === 'LOW') confidenceReasons.push('Engagement quality flag — signals may not reflect real audience behavior');
+  if (trustState === 'EARLY_SIGNAL') confidenceReasons.push('Engagement inconsistency detected — treating as early signal, not confirmed pattern');
+  if (trustState === 'CONFLICTED') confidenceReasons.push('Performance signals contradict each other — overall reliability is reduced');
+
+  // authenticityReasons
+  const authenticityReasons = [];
+  if (engagementAuthenticity === 'SUSPICIOUS') {
+    if (suspiciousCaseA) authenticityReasons.push('High velocity but weak engagement — distribution is not converting to audience connection');
+    if (suspiciousCaseB) authenticityReasons.push('Likes high but comments disproportionately low — shallow engagement pattern');
+    if (suspiciousCaseC) authenticityReasons.push('Extreme imbalance between like and comment rates — unusual engagement pattern');
+  } else if (engagementAuthenticity === 'UNVERIFIED') {
+    authenticityReasons.push('Engagement ratios may be unreliable due to limited data');
+    if (views < 1000) authenticityReasons.push('Under 1,000 views — insufficient to validate engagement patterns');
+  } else {
+    authenticityReasons.push('No suspicious engagement patterns detected');
+    authenticityReasons.push('Data volume meets minimum threshold for pattern validation');
+  }
+
+  // interpretation — keyed to trustState
+  const interpretation = noBaseline
+    ? 'No channel baseline available — performance cannot be compared against channel history'
+    : ({
+        LOW_CONFIDENCE: 'This video has not yet accumulated enough data to establish reliable patterns',
+        EARLY_SIGNAL:   'Engagement inconsistency detected — treat as an early signal, not a confirmed pattern',
+        CONFLICTED:     'Performance signals are contradictory — this tension should be investigated rather than resolved prematurely',
+        CONFIRMED:      'Strong and consistent signals suggest reliable performance patterns',
+      }[trustState] ?? 'This video has not yet accumulated enough data to establish reliable patterns');
+
+  // actionHint — still mismatch/state driven for actionability
+  let actionHint;
+  if (noBaseline || lowSample) {
+    actionHint = 'Allow more data to accumulate before making decisions';
+  } else if (mismatch === 'WEAK_CONTENT') {
+    actionHint = 'Review hook and content structure to improve engagement';
+  } else if (mismatch === 'UNDER_DISTRIBUTED') {
+    actionHint = 'Focus on distribution — promote within the first 24 hours';
+  } else if (signalState === 'WEAK') {
+    actionHint = 'Improve thumbnail and title to increase reach';
+  } else if (trustState === 'CONFIRMED') {
+    actionHint = 'Scale what is working — publish related content to build on momentum';
+  } else if (signalState === 'EARLY') {
+    actionHint = 'Monitor performance over the next 48–72 hours';
+  } else {
+    actionHint = 'Run AI analysis for deeper content-specific recommendations';
+  }
+
+  return {
+    summary: { score: scoreSummary, confidence: confidenceSummary, authenticity: authenticitySummary },
+    performanceReasons,
+    confidenceReasons,
+    authenticityReasons,
+    interpretation,
+    actionHint,
+  };
+}
+
+export function coreScore({ views, channel_avg_views, like_rate, channel_avg_like_rate, comment_rate, channel_avg_comment_rate }) {
+  const V_score = channel_avg_views        > 0 ? views        / channel_avg_views        : 0;
+  const L_score = channel_avg_like_rate    > 0 ? like_rate    / channel_avg_like_rate    : 0;
+  const C_score = channel_avg_comment_rate > 0 ? comment_rate / channel_avg_comment_rate : 0;
+
+  let state;
+  if (V_score > 2.5) {
+    state = 'VIRAL';
+  } else if (V_score >= 0.7 && V_score <= 2.5 && L_score >= 1 && C_score >= 1) {
+    state = 'STRONG';
+  } else if (V_score >= 0.7 && V_score <= 2.5 && (L_score < 1 || C_score < 1)) {
+    state = 'LIMITED';
+  } else if (V_score < 0.7 && (L_score >= 1 || C_score >= 1)) {
+    state = 'LIMITED';
+  } else {
+    state = 'WEAK';
+  }
+
+  const leak = V_score > 2.5 && (L_score < 1 || C_score < 1);
+
+  const leak_intensity = !leak ? 'NONE' : V_score > 5 ? 'HIGH' : 'MEDIUM';
+
+  const reliability = views < 0.3 * channel_avg_views ? 'LOW'
+    : views < channel_avg_views ? 'MEDIUM'
+    : 'HIGH';
+
+  let final_state;
+  if (state === 'VIRAL' && leak === true) {
+    final_state = leak_intensity === 'HIGH' ? 'CRITICAL_LEAK' : 'LEAKING_VIRAL';
+  } else if (state === 'VIRAL' && leak === false) {
+    final_state = 'CONFIRMED_VIRAL';
+  } else if (state === 'STRONG') {
+    final_state = 'CONFIRMED_STRONG';
+  } else if (state === 'LIMITED') {
+    final_state = 'EARLY_OR_BLOCKED';
+  } else {
+    final_state = 'WEAK';
+  }
+
+  return {
+    state,
+    final_state,
+    leak,
+    leak_intensity,
+    reliability,
+    scores: { V_score, L_score, C_score },
+  };
+}
+
+export function buildPerformanceInsights(ratios, metrics, duration, ignoreCommentMetrics = false) {
   const positives = [];
   const negatives = [];
   const { viewsRatio = 1 } = ratios;
@@ -130,7 +316,7 @@ export function buildPerformanceInsights(ratios, metrics, duration) {
     positives.push({ category: 'Community', icon: '💬', title: `High comment rate: ${commentRate.toFixed(3)}%`, detail: 'This video sparked significant discussion — a strong signal to YouTube.' });
   } else if (commentRate > 0.08) {
     positives.push({ category: 'Community', icon: '🗨️', title: `Good comment activity (${commentRate.toFixed(3)}%)`, detail: 'Healthy audience conversation. The content invited viewer participation.' });
-  } else if (views > 5000 && commentRate < 0.02) {
+  } else if (!ignoreCommentMetrics && views > 5000 && commentRate < 0.02) {
     negatives.push({ category: 'Community', icon: '🔇', title: `Very low comments (${commentRate.toFixed(3)}%)`, detail: 'Minimal audience discussion. Try ending videos with a specific question to drive comments.' });
   }
 
@@ -156,15 +342,18 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
 
   const format  = classifyFormat(video);
   const isShort = format === 'short';
-  const ageH    = pub ? Math.max(1, (Date.now() - new Date(pub).getTime()) / 3_600_000) : 1;
-  const vph     = views / ageH;
+  const ageH       = pub ? Math.max(1, (Date.now() - new Date(pub).getTime()) / 3_600_000) : 1;
+  const isEarlyStage = ageH < 24;
+  const vph        = views / ageH;
 
   const likeRate    = views > 0 ? (likes    / views * 100) : 0;
   const commentRate = views > 0 ? (comments / views * 100) : 0;
   const engRate     = views > 0 ? ((likes + comments) / views * 100) : 0;
   const viewsPerSub = subscribers > 0 ? views / subscribers : 0;
 
-  const baseline = buildBaseline(channelVideos, format, video.id);
+  const baseline    = buildBaseline(channelVideos, format, video.id);
+  const baselineTier = baseline?.baselineTier ?? 'NONE';
+  const noBaseline   = baselineTier === 'NONE' || baselineTier === 'LOW';
 
   // m-values — hoisted so engagementQuality can reference them
   const mViews   = baseline?.medianViews       ?? 0;
@@ -174,8 +363,12 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
   const mEng     = baseline?.medianEngRate     ?? 0;
 
   // Step 2: base signal trust from volume
-  let signalTrust = computeSignalTrust(views, likes, comments);
-  const lowSample = views < 1000 || comments < 5 || likes < 20;
+  const commentState = getCommentState({ comments, views, ageH });
+  const ignoreCommentMetrics = commentState === 'RESTRICTED_OR_KIDS';
+  let signalTrust = computeSignalTrust(views, likes);
+  if (commentState === 'TOO_EARLY')              signalTrust *= 0.7;
+  else if (commentState === 'ANOMALY_LOW_ENGAGEMENT') signalTrust *= 0.4;
+  const lowSample = views < 1000;
 
   const viewsRatio   = mViews   > 0 ? views       / mViews   : 1;
   const likeRatio    = mLike    > 0 ? likeRate    / mLike    : 1;
@@ -185,9 +378,9 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
 
   // Signal reliability system
   const sampleLevel      = views < 500  ? 'very_low' : views < 2000 ? 'low' : 'high';
-  const lowVolume        = likes < 20 || comments < 5;
-  const strongRelative   = likeRatio > 1 && commentRatio > 1;
-  const sufficientVolume = likes >= 20 && comments >= 5;
+  const lowVolume        = likes < 20 || (!ignoreCommentMetrics && comments < 5);
+  const strongRelative   = likeRatio > 1 && (ignoreCommentMetrics || commentRatio > 1);
+  const sufficientVolume = likes >= 20 && (ignoreCommentMetrics || comments >= 5);
   const strongEngagement = strongRelative && sufficientVolume;
   const signalState      = (strongEngagement && sampleLevel === 'high') ? 'CONFIRMED'
     : strongRelative ? 'EARLY'
@@ -196,8 +389,8 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
   // Step 3: engagement quality detection
   const isLowReach        = views < 500;
   const suspiciousDensity = (likes >= 5 || comments >= 3) && isLowReach;
-  const lowDiscussion     = comments > 0 && comments < 5;
-  const passiveEngagement = likeRate > mLike && commentRate < mComment;
+  const lowDiscussion     = !ignoreCommentMetrics && comments > 0 && comments < 5;
+  const passiveEngagement = !ignoreCommentMetrics && likeRate > mLike && commentRate < mComment;
   const engagementQuality = (suspiciousDensity && (lowDiscussion || passiveEngagement))
     ? 'LOW' : 'NORMAL';
 
@@ -231,7 +424,7 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
     ), 0, 100);
   } else {
     const likeR    = clamp(likeRatio, 0, 2);
-    const commentR = clamp(commentRatio, 0, 2);
+    const commentR = ignoreCommentMetrics ? 1 : clamp(commentRatio, 0, 2);
     engagementScore = clamp(Math.round((likeR * 0.60 + commentR * 0.40) * 50), 0, 100);
   }
 
@@ -239,13 +432,18 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
   engagementScore = clamp(Math.round(engagementScore * signalTrust + 50 * (1 - signalTrust)), 0, 100);
 
   // Discussion score
-  const commentToLikeRatio = likes > 0 ? comments / likes : 0;
-  const baseCtlRatio = nicheBaseline.commentRate / Math.max(nicheBaseline.likeRate, 0.001);
-  let discussionScore = clamp(
-    Math.round((commentToLikeRatio / Math.max(baseCtlRatio, 0.001)) * 50),
-    0, 100
-  );
-  discussionScore = clamp(Math.round(discussionScore * signalTrust + 50 * (1 - signalTrust)), 0, 100);
+  let discussionScore;
+  if (ignoreCommentMetrics) {
+    discussionScore = 50;
+  } else {
+    const commentToLikeRatio = likes > 0 ? comments / likes : 0;
+    const baseCtlRatio = nicheBaseline.commentRate / Math.max(nicheBaseline.likeRate, 0.001);
+    discussionScore = clamp(
+      Math.round((commentToLikeRatio / Math.max(baseCtlRatio, 0.001)) * 50),
+      0, 100
+    );
+    discussionScore = clamp(Math.round(discussionScore * signalTrust + 50 * (1 - signalTrust)), 0, 100);
+  }
 
   // Step 7: velocity vs engagement mismatch
   const velocityHigh   = velocityScore >= 60;
@@ -265,9 +463,52 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
 
   const grade = gradeFromScore(finalScore);
 
-  const baselineConf  = baseline?.confidence || 'LOW';
-  const confidence    = mode === 'oauth' ? 'HIGH' : baselineConf;
-  const confidenceScore = confidence === 'HIGH' ? 90 : confidence === 'MEDIUM' ? 75 : 55;
+  const baselineConf = baseline?.baselineQuality || 'LOW';
+
+  // Step 8: base confidence from view volume
+  let confidence = (commentState === 'RESTRICTED_OR_KIDS' || views > 100_000) ? 'HIGH'
+    : views > 10_000 ? 'MEDIUM'
+    : 'LOW';
+  if (engagementQuality === 'LOW') confidence = 'LOW';
+
+  // Step 9: engagement authenticity detection
+  const suspiciousCaseA = velocityScore > 70 && engagementScore < 40;
+  const suspiciousCaseB = !ignoreCommentMetrics && likeRatio > 1.2 && commentRatio > 1.2 && likes < 30;
+  const suspiciousCaseC = !ignoreCommentMetrics && ((likeRatio > 1.5 && commentRatio < 0.7) || (commentRatio > 1.5 && likeRatio < 0.7));
+  const isSuspicious = suspiciousCaseA || suspiciousCaseB || suspiciousCaseC;
+
+  const engagementAuthenticity = lowSample    ? 'UNVERIFIED'
+    : isSuspicious ? 'SUSPICIOUS'
+    : 'AUTHENTIC';
+
+  const hasMismatch = mismatch === 'WEAK_CONTENT' || mismatch === 'UNDER_DISTRIBUTED';
+  const trustState  = (lowSample && !hasMismatch)            ? 'LOW_CONFIDENCE'
+    : (lowSample && hasMismatch)               ? 'EARLY_SIGNAL'
+    : (!lowSample && hasMismatch)              ? 'CONFLICTED'
+    : (!lowSample && mismatch === 'ALIGNED')   ? 'CONFIRMED'
+    : 'LOW_CONFIDENCE';
+
+  // Step 9b: authenticity + baseline tier override confidence
+  if (engagementAuthenticity === 'SUSPICIOUS') {
+    confidence = 'LOW';
+  }
+  if (baselineTier === 'NONE') {
+    confidence = 'LOW';
+  } else if (baselineTier === 'LOW' && confidence === 'HIGH') {
+    confidence = 'MEDIUM';
+  }
+
+  const explanation = buildExplanation({
+    views, likes, comments,
+    viewsRatio, likeRatio, commentRatio,
+    mViews, mLike, mComment,
+    confidence, engagementAuthenticity, signalState, mismatch,
+    engagementQuality, finalScore,
+    suspiciousCaseA, suspiciousCaseB, suspiciousCaseC,
+    noBaseline, baselineTier,
+    lowSample, trustState,
+    commentState, ignoreCommentMetrics,
+  });
 
   const { type: videoType, videoAgeDays } = classifyVideo({
     views,
@@ -280,7 +521,8 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
   const { positives, negatives } = buildPerformanceInsights(
     { viewsRatio, likeRatio, commentRatio, vphRatio, engRatio },
     { views, likeRate, commentRate },
-    duration
+    duration,
+    ignoreCommentMetrics
   );
 
   const oauthDisplay = hasOAuth ? {
@@ -292,6 +534,31 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
 
   const dimensionScores = { engagement: engagementScore, velocity: velocityScore, discussion: discussionScore };
 
+  const { final_state: rawFinalState, leak, leak_intensity, reliability } = coreScore({
+    views,
+    channel_avg_views:        mViews,
+    like_rate:                likeRate,
+    channel_avg_like_rate:    mLike,
+    comment_rate:             ignoreCommentMetrics ? mComment : commentRate,
+    channel_avg_comment_rate: mComment,
+  });
+
+  let final_state = rawFinalState;
+
+  // Strong engagement override — absolute thresholds beat ratio-based weak/blocked classification
+  if (
+    engRate >= 6 && likeRate >= 3 && comments >= 200 &&
+    rawFinalState !== 'CONFIRMED_VIRAL' && rawFinalState !== 'LEAKING_VIRAL' && rawFinalState !== 'CRITICAL_LEAK'
+  ) {
+    final_state = 'CONFIRMED_STRONG';
+  }
+
+  // Early-stage guard — respect strong signals, avoid distribution diagnosis without sufficient data
+  if (isEarlyStage && final_state !== 'CONFIRMED_STRONG') {
+    const hasStrongSignals = comments >= 200 || engRate >= 6;
+    final_state = hasStrongSignals ? 'EARLY_OR_BLOCKED' : 'INSUFFICIENT_DATA';
+  }
+
   return {
     scores: { ...dimensionScores, finalScore, grade },
     ratios: { viewsRatio, likeRatio, commentRatio, vphRatio, engRatio },
@@ -302,7 +569,8 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
       medianVph:         mVph,
       medianEngRate:     mEng,
       sampleSize:        baseline?.sampleSize ?? 0,
-      confidence:        baselineConf,
+      baselineQuality:   baselineConf,
+      baselineTier,
     },
     metrics: {
       views, likes, comments,
@@ -315,14 +583,24 @@ export function scoreVideoUnified(video, channelVideos, oauthMetrics = null, nic
     format,
     mode,
     confidence,
-    confidenceScore,
     signalTrust,
     lowSample,
     sampleLevel,
     lowVolume,
     signalState,
+    commentState,
+    ignoreCommentMetrics,
     engagementQuality,
+    engagementAuthenticity,
     mismatch,
+    hasMismatch,
+    trustState,
+    noBaseline,
+    final_state,
+    leak,
+    leak_intensity,
+    reliability,
+    explanation,
     analysis: { positives, negatives },
     channelAvg: {
       views:       mViews,

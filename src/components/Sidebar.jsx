@@ -41,6 +41,10 @@ const NAV_GROUPS = [
     desc: "Haven't posted yet? Research, build, and validate.",
     items: [
       {
+        id: 'plan', icon: '🗺️', label: 'Wizard', req: null,
+        desc: 'Step-by-step video planning: niche → script → validate — all in one place.',
+      },
+      {
         id: 'trends', icon: '🔥', label: 'Niche Trends', req: 'starter',
         desc: 'Scan trending videos in any niche — find content gaps and untapped video ideas.',
       },
@@ -51,6 +55,10 @@ const NAV_GROUPS = [
       {
         id: 'competitor', icon: '⚔️', label: 'Competitor Research', req: 'starter', needsChannel: true,
         desc: 'Benchmark your channel against competitors — gaps, strengths, and opportunities.',
+      },
+      {
+        id: 'analyze-url', icon: '🔍', label: 'Analyze Viral Video', req: null,
+        desc: 'Paste any YouTube URL — understand why a competitor video went viral.',
       },
       {
         id: 'script', icon: '✍️', label: 'Script Generator', req: 'starter',
@@ -105,10 +113,11 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
   const tierColor = TIER_COLORS[tier] || '#666';
 
   const normalizedView = {
-    search:   'dashboard',
-    channel:  'dashboard',
-    discover: 'dashboard',
-    video:    'analyze',
+    search:       'dashboard',
+    channel:      'dashboard',
+    discover:     'dashboard',
+    video:        'analyze',
+    'analyze-url': 'analyze-url',
   }[activeView] ?? activeView;
 
   const [collapsed, setCollapsed] = useState({ 'Fix My Video': false, 'Plan My Video': false });

@@ -1,25 +1,24 @@
 import { useState, useEffect, useRef } from 'react';
 import { formatNum, parseDuration } from '../utils/analysis';
 import { searchVideos } from '../api/youtube';
+import * as storage from '../utils/storage';
 
 export const LAST_CHANNEL_KEY = 'tubeintel_last_channel';
 
 export function saveLastChannel(channel, videos) {
-  try {
-    localStorage.setItem(LAST_CHANNEL_KEY, JSON.stringify({
-      channel,
-      videos: videos.slice(0, 50),
-      savedAt: Date.now(),
-    }));
-  } catch {}
+  storage.setJSON(LAST_CHANNEL_KEY, { channel, videos: videos.slice(0, 50), savedAt: Date.now() });
 }
 
+const LAST_CHANNEL_TTL = 24 * 60 * 60 * 1000; // 24 hours
+
 export function loadLastChannel() {
-  try {
-    const raw = localStorage.getItem(LAST_CHANNEL_KEY);
-    if (!raw) return null;
-    return JSON.parse(raw);
-  } catch { return null; }
+  const parsed = storage.getJSON(LAST_CHANNEL_KEY);
+  if (!parsed) return null;
+  if (Date.now() - parsed.savedAt > LAST_CHANNEL_TTL) {
+    storage.remove(LAST_CHANNEL_KEY);
+    return null;
+  }
+  return parsed;
 }
 
 function EngBadge({ rate }) {

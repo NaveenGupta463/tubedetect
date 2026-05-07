@@ -1,12 +1,11 @@
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001';
-const MODEL   = 'claude-sonnet-4-6';
+import { ROUTES, CLAUDE_MODEL } from '../config';
 
 async function callClaude(system, user, maxTokens = 1200) {
-  const res = await fetch(`${BACKEND}/api/claude`, {
+  const res = await fetch(ROUTES.claude, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
-      model: MODEL,
+      model: CLAUDE_MODEL,
       max_tokens: maxTokens,
       system,
       messages: [{ role: 'user', content: user }],
@@ -31,11 +30,11 @@ async function callClaudeVision(system, imageSource, textPrompt, maxTokens = 800
     ? { type: 'image', source: { type: 'base64', media_type: imageSource.mediaType || 'image/jpeg', data: imageSource.data } }
     : { type: 'image', source: { type: 'url', url: imageSource.data } };
 
-  const res = await fetch(`${BACKEND}/api/claude`, {
+  const res = await fetch(ROUTES.claude, {
     method:  'POST',
     headers: { 'Content-Type': 'application/json' },
     body:    JSON.stringify({
-      model: MODEL,
+      model: CLAUDE_MODEL,
       max_tokens: maxTokens,
       system,
       messages: [{ role: 'user', content: [imgBlock, { type: 'text', text: textPrompt }] }],
@@ -125,6 +124,269 @@ IMPORTANT: Respond with ONLY the JSON object above. No markdown, no backticks, n
     winFactors: [],
     stealThisFormula: null,
   };
+}
+
+export async function analyzeNiche({ topic, audience, channelName, subscriberCount, recentTitles, trendingVideos }) {
+  const system = `You are a YouTube niche research expert. Identify trends, gaps, and opportunities for a specific creator. Return valid JSON only — no markdown, no backticks, no explanation. Start with { and end with }.`;
+
+  const trendingList = trendingVideos.length
+    ? trendingVideos.map((v, i) => `${i + 1}. "${v.title}" — ${v.views} views (${v.channelTitle})`).join('\n')
+    : 'No trending data available for this query.';
+
+  const user = `Creator context:
+Channel: ${channelName}${subscriberCount ? ` (${subscriberCount} subscribers)` : ''}
+Video topic: ${topic}
+${audience ? `Target audience: ${audience}` : ''}
+${recentTitles.length ? `Their recent videos: ${recentTitles.slice(0, 5).join(' | ')}` : ''}
+
+Trending videos in this niche (last 30 days, by view count):
+${trendingList}
+
+Analyze the niche landscape and return this JSON:
+{
+  "niche": "2-4 word niche label",
+  "trends": [
+    {"angle": "trending angle or format title", "why": "1 sentence — why this is working right now", "signal": "high|medium|low"}
+  ],
+  "gaps": ["specific gap opportunity 1", "gap opportunity 2", "gap opportunity 3"],
+  "recommended_angle": "specific angle for their exact topic that is underserved but in demand",
+  "hook_idea": "a concrete opening line for their video — word-for-word suggestion"
+}
+
+Return exactly 5 trends and 3 gaps. Be specific and data-driven — no generic advice. Reference actual video titles or patterns where relevant.`;
+
+  const text = await callClaude(system, user, 1400);
+  const parsed = safeJSON(text);
+  if (!parsed?.trends) throw new Error('Could not parse niche analysis. Try again.');
+  return parsed;
+}
+
+export async function analyzeWhatWorks({ topic, niche, channelName, topVideos }) {
+  const system = `You are a YouTube viral pattern analyst. Reverse-engineer what makes top videos perform and give creators a concrete, steal-ready playbook. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+
+  const videoList = topVideos.length
+    ? topVideos.map((v, i) => `${i + 1}. "${v.title}" — ${v.views} views (${v.channelTitle})`).join('\n')
+    : 'No video data available.';
+
+  const user = `Creator context:
+Topic: ${topic}
+Niche: ${niche || 'general YouTube'}
+Channel: ${channelName}
+
+Top performing videos in this niche (by view count):
+${videoList}
+
+Analyze these videos deeply. Extract the patterns that make them win. Return this JSON:
+{
+  "hooks": [
+    {
+      "formula": "hook type name (e.g. 'Shocking claim + immediate proof')",
+      "example": "a real opening line from one of the listed videos",
+      "template": "word-for-word template with [VARIABLE] placeholders the creator can fill in"
+    }
+  ],
+  "title_patterns": [
+    {
+      "pattern": "pattern name (e.g. 'Number + Outcome + Timeframe')",
+      "example": "real title from the list",
+      "template": "fill-in template with [VARIABLE] placeholders"
+    }
+  ],
+  "thumbnail_strategy": ["insight 1 (specific, not generic)", "insight 2", "insight 3"],
+  "format_insights": "1-2 sentences about video length, pacing, or structure patterns that consistently win in this niche",
+  "steal_this": "specific, word-for-word actionable recommendation for their exact topic — what they should do differently to beat the competition"
+}
+
+Return exactly 3 hooks, 3 title patterns, 3 thumbnail insights. Reference actual video titles from the list. No generic advice.`;
+
+  const text = await callClaude(system, user, 1600);
+  const parsed = safeJSON(text);
+  if (!parsed?.hooks) throw new Error('Could not parse pattern analysis. Try again.');
+  return parsed;
+}
+
+export async function analyzeVoice({ channelName, channelDescription, topTitles, sampleDescriptions }) {
+  const system = `You are a YouTube content voice analyst. Extract a creator's unique tone, style, and patterns from their existing content so a ghostwriter could match it exactly. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+
+  const titlesBlock = topTitles.length
+    ? topTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')
+    : 'No titles available.';
+
+  const descBlock = sampleDescriptions.length
+    ? sampleDescriptions.map((d, i) => `${i + 1}. ${d}`).join('\n')
+    : '';
+
+  const user = `Channel: ${channelName}
+${channelDescription ? `About the channel: ${channelDescription}` : ''}
+
+Top videos by view count (titles):
+${titlesBlock}
+
+${descBlock ? `Sample video descriptions (first 200 chars each):\n${descBlock}` : ''}
+
+Deeply analyze this creator's voice. Return this JSON:
+{
+  "tone": "2-4 word tone descriptor (e.g. 'casual and motivational')",
+  "personality_tags": ["tag1", "tag2", "tag3"],
+  "title_style": "specific description of how they write titles — patterns, word choices, formulas they repeat",
+  "common_patterns": ["writing or structural pattern 1", "pattern 2", "pattern 3"],
+  "avoid": ["thing that would feel off-brand 1", "thing 2"],
+  "voice_summary": "2 sentences a ghostwriter could use as their style brief",
+  "script_style_guide": "4 specific bullet-point instructions for writing a script that sounds exactly like them — cover sentence length, energy level, vocabulary, and pacing"
+}`;
+
+  const text = await callClaude(system, user, 1200);
+  const parsed = safeJSON(text);
+  if (!parsed?.tone) throw new Error('Could not parse voice analysis. Try again.');
+  return parsed;
+}
+
+export async function generateScript({ topic, audience, channelName, niche, recommendedAngle, hookIdea, hookFormulas, tone, scriptStyleGuide }) {
+  const system = `You are a YouTube scriptwriter. Write in the creator's exact voice. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+
+  const contextLines = [
+    `Channel: ${channelName || 'unknown'}`,
+    `Topic: ${topic}`,
+    audience      ? `Target audience: ${audience}`             : null,
+    niche         ? `Niche: ${niche}`                          : null,
+    recommendedAngle ? `Recommended angle (from niche research): ${recommendedAngle}` : null,
+  ].filter(Boolean).join('\n');
+
+  const voiceLines = [
+    tone            ? `Tone: ${tone}`                          : null,
+    scriptStyleGuide ? `Style guide:\n${scriptStyleGuide}`    : null,
+  ].filter(Boolean).join('\n');
+
+  const hookContext = hookFormulas?.length
+    ? `Winning hook formulas in this niche:\n${hookFormulas.map(h => `- ${h.formula}: "${h.template}"`).join('\n')}`
+    : '';
+
+  const hookSuggestion = hookIdea ? `Research hook suggestion: "${hookIdea}"` : '';
+
+  const user = `${contextLines}
+
+${voiceLines ? `Voice profile:\n${voiceLines}` : ''}
+
+${hookContext}
+${hookSuggestion}
+
+Write 3 different opening hooks (word-for-word, 30 seconds when spoken), a 4-5 section chapter outline with talking points, and a closing CTA. Match the creator's voice exactly.
+
+Return this JSON:
+{
+  "hooks": [
+    {"type": "formula name (e.g. 'Shocking Claim')", "script": "full word-for-word hook — 3-5 sentences, spoken in 30 seconds"}
+  ],
+  "outline": [
+    {"section": "Section Name", "duration": "X min", "talking_points": ["point 1", "point 2", "point 3"]}
+  ],
+  "cta": "word-for-word closing CTA — 2-3 sentences, specific to this topic",
+  "opening_line": "the single strongest first sentence from the best hook"
+}
+
+Return exactly 3 hooks and 4-5 outline sections. Write hooks in the creator's voice. Make them specific to this topic, not generic templates.`;
+
+  const text = await callClaude(system, user, 2000);
+  const parsed = safeJSON(text);
+  if (!parsed?.hooks) throw new Error('Could not generate script. Try again.');
+  return parsed;
+}
+
+export async function generateTitlesAndSEO({ topic, audience, channelName, niche, recommendedAngle, titlePatterns, titleStyle, tone, openingLine }) {
+  const system = `You are a YouTube SEO and title expert. Generate high-CTR title variants and a complete SEO package. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+
+  const contextLines = [
+    `Channel: ${channelName || 'unknown'}`,
+    `Topic: ${topic}`,
+    audience          ? `Target audience: ${audience}`             : null,
+    niche             ? `Niche: ${niche}`                          : null,
+    recommendedAngle  ? `Best angle (from research): ${recommendedAngle}` : null,
+    tone              ? `Creator tone: ${tone}`                    : null,
+    titleStyle        ? `Their title style: ${titleStyle}`         : null,
+    openingLine       ? `Script hook: "${openingLine}"`            : null,
+  ].filter(Boolean).join('\n');
+
+  const patternsBlock = titlePatterns?.length
+    ? `Proven title patterns in this niche:\n${titlePatterns.map(p => `- ${p.pattern}: ${p.template}`).join('\n')}`
+    : '';
+
+  const user = `${contextLines}
+
+${patternsBlock}
+
+Generate 5 high-CTR title variants and a complete SEO package. Return this JSON:
+{
+  "titles": [
+    {
+      "title": "full video title",
+      "formula": "formula name (e.g. 'Number + Result + Timeframe')",
+      "angle": "1 sentence — what makes this title effective and why it will get clicks"
+    }
+  ],
+  "thumbnail_concept": "specific visual description — background, subject, text overlay, colors, emotion. Specific enough for a designer to execute.",
+  "primary_keyword": "main search keyword (what someone would type to find this video)",
+  "tags": ["tag1", "tag2", "tag3"],
+  "description_opening": "first 2-3 sentences of the video description — includes primary keyword naturally, hooks the reader, sets up the video"
+}
+
+Return exactly 5 title variants (use different formulas each time) and exactly 15 tags (mix of broad and long-tail). Titles must be under 70 characters. Tags must be lowercase, no #.`;
+
+  const text = await callClaude(system, user, 1600);
+  const parsed = safeJSON(text);
+  if (!parsed?.titles) throw new Error('Could not generate titles. Try again.');
+  return parsed;
+}
+
+export async function validateVideoBrief({ topic, audience, niche, recommendedAngle, chosenHook, chosenTitle, thumbnailConcept, primaryKeyword, tags, descriptionOpening, voiceTone, voiceSummary, hasScript }) {
+  const system = `You are a YouTube launch strategist. Review a creator's Video Brief and give a final go/no-go decision with a score, strengths, and specific improvements. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+
+  const sections = [
+    `Topic: ${topic}`,
+    audience         ? `Target audience: ${audience}`           : null,
+    niche            ? `Niche: ${niche}`                        : null,
+    recommendedAngle ? `Angle: ${recommendedAngle}`             : null,
+    voiceTone        ? `Creator tone: ${voiceTone}`             : null,
+    voiceSummary     ? `Voice: ${voiceSummary}`                 : null,
+    chosenHook       ? `Opening hook: "${chosenHook}"`          : null,
+    chosenTitle      ? `Title: "${chosenTitle}"`                : null,
+    thumbnailConcept ? `Thumbnail concept: ${thumbnailConcept}` : null,
+    primaryKeyword   ? `Primary keyword: ${primaryKeyword}`     : null,
+    tags?.length     ? `SEO tags: ${tags.slice(0, 10).join(', ')}` : null,
+    descriptionOpening ? `Description opening: ${descriptionOpening}` : null,
+    hasScript        ? 'Script outline: present'               : 'Script outline: not yet created',
+  ].filter(Boolean).join('\n');
+
+  const user = `Review this Video Brief and score it for launch readiness:
+
+${sections}
+
+Score across 6 dimensions (each 0-100):
+- angle: Is the topic angle specific, underserved, and compelling?
+- hook: Will the opening line stop scrollers? Is it concrete and curiosity-driven?
+- title: CTR potential — will this title get clicks in the feed?
+- seo: Keyword strategy strength — primary keyword, tag coverage, search volume potential
+- voice: Does everything feel like a consistent, authentic creator voice?
+- readiness: Does the creator have enough material to actually record this video today?
+
+Return this JSON:
+{
+  "score": 0-100,
+  "decision": "GO" | "ALMOST" | "NOT YET",
+  "decision_reason": "1 punchy sentence explaining the decision",
+  "dimension_scores": { "angle": 0-100, "hook": 0-100, "title": 0-100, "seo": 0-100, "voice": 0-100, "readiness": 0-100 },
+  "strengths": ["specific strength 1", "specific strength 2", "specific strength 3"],
+  "improvements": [
+    { "issue": "what is weak (max 6 words)", "fix": "exact action to take (1 sentence)" }
+  ],
+  "brief_summary": "2-3 sentence exec summary of the full video concept — what the video is, who it's for, and why it will perform"
+}
+
+Return 3 strengths and 2-3 improvements. Be specific — reference the actual hook/title/angle from the brief. No generic advice.`;
+
+  const text = await callClaude(system, user, 1400);
+  const parsed = safeJSON(text);
+  if (!parsed?.score) throw new Error('Could not run validation. Try again.');
+  return parsed;
 }
 
 export async function analyzeThumbnailImage(imageSource) {
@@ -427,6 +689,10 @@ export async function analyzeVideoDeep(videoData, commentsText) {
     return analyzeVideoIntelligence(videoData, commentsText);
   }
 
+  const noBaselineNote = videoData.noBaseline
+    ? '\n\nNO BASELINE: This channel has insufficient historical data for reliable comparison. Avoid ratio-based claims and comparative language. Treat all signals as directional only.'
+    : '';
+
   const lowDataNote = videoData.sampleLevel === 'very_low'
     ? '\n\nLOW DATA WARNING: This video has fewer than 500 views. All signal interpretation must be heavily hedged. Avoid definitive claims. Label all conclusions as preliminary. Do not generate strong pattern assertions.'
     : videoData.sampleLevel === 'low'
@@ -439,13 +705,43 @@ export async function analyzeVideoDeep(videoData, commentsText) {
     ? '\n\nENGAGEMENT QUALITY WARNING: Engagement signals on this video may not reflect real audience behavior. Use hedged language for all engagement-based conclusions.'
     : '';
 
-  const mismatchNote = videoData.mismatch === 'UNDER_DISTRIBUTED'
-    ? '\n\nDISTRIBUTION PATTERN: Strong engagement relative to reach. Treat this as a distribution problem — the content is working, reach is the gap.'
-    : videoData.mismatch === 'WEAK_CONTENT'
-    ? '\n\nCONTENT PATTERN: High reach but weak engagement. This indicates a content or hook failure, not a distribution problem. Focus analysis on why viewers are not connecting.'
+  const FINAL_STATE_CONTEXT = {
+    CONFIRMED_VIRAL:   'Exceptional reach AND strong engagement. Explain why the video is succeeding on both distribution and audience response.',
+    LEAKING_VIRAL:     'Exceptional reach but weak engagement. Explain the distribution success and why it is failing to convert viewers.',
+    CRITICAL_LEAK:     'Extreme reach, severe engagement failure. Explain the disconnect between distribution scale and audience response.',
+    CONFIRMED_STRONG:  'Consistent, reliable performance signals. Explain the balanced distribution and engagement and what is driving it.',
+    EARLY_OR_BLOCKED:  'Limited distribution or early stage. Explain the constrained reach and what the engagement signals indicate.',
+    WEAK:              'Poor signals across both reach and engagement. Explain what the weak performance indicates for this video.',
+    INSUFFICIENT_DATA: 'Insufficient data for reliable conclusions. Frame all analysis as preliminary and heavily hedged.',
+  };
+
+  const finalStateNote = videoData.final_state
+    ? `\n\nFINAL STATE: ${videoData.final_state} | Leak: ${videoData.leak} | Leak intensity: ${videoData.leak_intensity} | Reliability: ${videoData.reliability}\nBase your explanation STRICTLY on this state. Do not contradict it. Do not derive your own classification.\n${FINAL_STATE_CONTEXT[videoData.final_state] ?? ''}`
     : '';
 
-  const system = `You are TubeIntel's elite YouTube content analyst. You deliver deep, specific, actionable analysis across 5 key dimensions. You receive the video title, statistics, tags, and top viewer comments — you do NOT have access to the video content itself. For the structure timeline and retention curve, you must clearly frame your output as RECOMMENDATIONS and PREDICTIONS based on the title/niche/engagement data, not as descriptions of what actually happens in the video. Every insight must be specific to the video data — no generic platitudes. Always return valid JSON only.${lowDataNote}${qualityNote}${mismatchNote}`;
+  const dominantStateNote = videoData.final_state === 'CONFIRMED_VIRAL'
+    ? '\n\nDOMINANT STATE: CONFIRMED VIRAL. Emphasize distribution momentum as the primary driver. Do NOT frame lower-than-expected engagement as failure — it reflects reach scale effects, not content weakness. Avoid negative framing or optimization suggestions.'
+    : '';
+
+  const confidenceToneNote = videoData.confidence === 'LOW'
+    ? '\n\nCONFIDENCE: LOW — Avoid strong conclusions. Use cautious, conditional language throughout. Prefer: "early signal", "may indicate", "not yet reliable". Avoid: "is", "clearly", "confirmed".'
+    : videoData.confidence === 'MEDIUM'
+    ? '\n\nCONFIDENCE: MEDIUM — Use moderately hedged language. Prefer: "suggests", "likely", "appears to". Avoid: "clearly", "confirmed", "definitely".'
+    : videoData.confidence === 'HIGH'
+    ? '\n\nCONFIDENCE: HIGH — Signals are reliable. Use clear, direct language. Prefer: "is", "clearly", "confirmed". Avoid unnecessary hedging.'
+    : '';
+
+  const retentionNote = '\n\nRETENTION DATA: You do NOT have actual watch time or retention curve data. Never state retention patterns as confirmed facts. Never use "EARLY_DROP confirmed" or "retention failure". If inferring, use only "possible early drop-off (inferred from engagement patterns)" or state "no direct retention data available".';
+
+  const authenticityNote = videoData.engagementAuthenticity === 'SUSPICIOUS'
+    ? '\n\nENGAGEMENT AUTHENTICITY: SUSPICIOUS — signal mismatch detected. Highlight possible signal inconsistency. Avoid claiming strong audience validation. Suggest verifying traffic sources and audience quality.'
+    : videoData.engagementAuthenticity === 'UNVERIFIED'
+    ? '\n\nENGAGEMENT AUTHENTICITY: UNVERIFIED — insufficient data to validate signals. Treat engagement as early indicators only. Avoid strong conclusions and emphasize the need for more data.'
+    : videoData.engagementAuthenticity === 'AUTHENTIC'
+    ? '\n\nENGAGEMENT AUTHENTICITY: AUTHENTIC — signals align naturally. Safe to validate engagement strength and confidently reference audience response.'
+    : '';
+
+  const system = `You are TubeIntel's elite YouTube content analyst. You deliver deep, specific, actionable analysis across 5 key dimensions. You receive the video title, statistics, tags, and top viewer comments — you do NOT have access to the video content itself. For the structure timeline and retention curve, you must clearly frame your output as RECOMMENDATIONS and PREDICTIONS based on the title/niche/engagement data, not as descriptions of what actually happens in the video. Every insight must be specific to the video data — no generic platitudes. Always return valid JSON only.${finalStateNote}${dominantStateNote}${noBaselineNote}${lowDataNote}${qualityNote}${confidenceToneNote}${retentionNote}${authenticityNote}`;
   const user = `Analyze this YouTube video across 5 dimensions:
 
 Title: "${videoData.title}"
@@ -2022,8 +2318,50 @@ export async function analyzeVideoDiagnosis({ video, unifiedResult }) {
       pattern: deriveRetentionPattern({ dimensionScores: ds, finalScore: unifiedResult.scores.finalScore }),
     },
   };
+  const diagNoBaselineNote = unifiedResult.noBaseline
+    ? '\n\nNO BASELINE: This channel has insufficient historical data for reliable comparison. Avoid ratio-based claims and comparative language. Treat all signals as directional only.'
+    : '';
+
   const lowSampleNote = unifiedResult.lowSample
     ? '\n\nLOW DATA WARNING: This video has very few views, likes, or comments. Use conservative, hedged language throughout. Avoid strong claims.'
+    : '';
+
+  const diagConfidenceToneNote = unifiedResult.confidence === 'LOW'
+    ? '\n\nCONFIDENCE: LOW — Avoid strong conclusions. Use cautious, conditional language throughout. Prefer: "early signal", "may indicate", "not yet reliable". Avoid: "is", "clearly", "confirmed".'
+    : unifiedResult.confidence === 'MEDIUM'
+    ? '\n\nCONFIDENCE: MEDIUM — Use moderately hedged language. Prefer: "suggests", "likely", "appears to". Avoid: "clearly", "confirmed", "definitely".'
+    : unifiedResult.confidence === 'HIGH'
+    ? '\n\nCONFIDENCE: HIGH — Signals are reliable. Use clear, direct language. Prefer: "is", "clearly", "confirmed". Avoid unnecessary hedging.'
+    : '';
+
+  const DIAG_FINAL_STATE_CONTEXT = {
+    CONFIRMED_VIRAL:   'Exceptional reach AND strong engagement. Frame mechanism and verdict around distribution and engagement success.',
+    LEAKING_VIRAL:     'Exceptional reach but weak engagement. Frame analysis around the reach-engagement gap.',
+    CRITICAL_LEAK:     'Extreme reach, severe engagement failure. Frame diagnosis around the severe disconnect.',
+    CONFIRMED_STRONG:  'Consistent, reliable performance. Frame diagnosis around validated signals and what is sustaining them.',
+    EARLY_OR_BLOCKED:  'Limited distribution or early stage. Frame diagnosis around distribution constraints.',
+    WEAK:              'Poor performance signals. Frame diagnosis around root causes of underperformance.',
+    INSUFFICIENT_DATA: 'Insufficient data. Use conservative, heavily hedged diagnosis throughout.',
+  };
+
+  const diagFinalStateNote = unifiedResult.final_state
+    ? `\n\nFINAL STATE: ${unifiedResult.final_state} | Leak: ${unifiedResult.leak} | Leak intensity: ${unifiedResult.leak_intensity} | Reliability: ${unifiedResult.reliability}\nBase your explanation STRICTLY on this state. Do not contradict it. Do not derive your own classification.\n${DIAG_FINAL_STATE_CONTEXT[unifiedResult.final_state] ?? ''}`
+    : '';
+
+  const diagDominantStateNote = unifiedResult.videoType === 'LEGACY_VIRAL'
+    ? '\n\nDOMINANT STATE: LEGACY VIRAL. Do NOT suggest optimization or risk. Do NOT frame engagement patterns as failures. Treat this as post-peak resurfacing. Focus on mechanism and historical pattern only.'
+    : unifiedResult.final_state === 'CONFIRMED_VIRAL'
+    ? '\n\nDOMINANT STATE: CONFIRMED VIRAL. Emphasize distribution momentum. Do not frame lower engagement as failure — it reflects reach scale effects. Avoid negative framing or optimization suggestions.'
+    : '';
+
+  const retentionSafetyNote = '\n\nRETENTION DATA: You do NOT have actual watch time or retention curve data. Never state retention patterns as confirmed facts. Never use "EARLY_DROP confirmed" or "retention failure". If inferring, use only "possible early drop-off (inferred from engagement patterns)" or state "no direct retention data available".';
+
+  const diagAuthenticityNote = unifiedResult.engagementAuthenticity === 'SUSPICIOUS'
+    ? '\n\nENGAGEMENT AUTHENTICITY: SUSPICIOUS — signal mismatch detected. Highlight possible signal inconsistency. Avoid claiming strong audience validation. Suggest verifying traffic sources and audience quality.'
+    : unifiedResult.engagementAuthenticity === 'UNVERIFIED'
+    ? '\n\nENGAGEMENT AUTHENTICITY: UNVERIFIED — insufficient data to validate signals. Treat engagement as early indicators only. Avoid strong conclusions and emphasize the need for more data.'
+    : unifiedResult.engagementAuthenticity === 'AUTHENTIC'
+    ? '\n\nENGAGEMENT AUTHENTICITY: AUTHENTIC — signals align naturally. Safe to validate engagement strength and confidently reference audience response.'
     : '';
 
   const system = `You are a YouTube video diagnosis engine. Your only job is to interpret pre-computed signals and produce a structured, decisive diagnosis. You do NOT classify, re-score, or override any input field. You are not allowed to infer new problems or contradict the provided classification.
@@ -2132,7 +2470,7 @@ SAFETY: If signals are unclear, default to conservative diagnosis. Never halluci
 DO NOT TOUCH: Reinforce every item in do_not_touch[] inside insights.what_is_working. Never add new ones.
 TONE: Decisive, analytical. No motivational language.
 
-Return ONLY valid JSON. No markdown fences. Start with { end with }.${lowSampleNote}`;
+Return ONLY valid JSON. No markdown fences. Start with { end with }.${diagFinalStateNote}${diagDominantStateNote}${diagNoBaselineNote}${lowSampleNote}${diagConfidenceToneNote}${retentionSafetyNote}${diagAuthenticityNote}`;
 
   const outputTemplate = `{
   "mechanism": {
@@ -2185,7 +2523,7 @@ do_not_touch: ${JSON.stringify(sr.do_not_touch)}
 
 pattern layer:
   engagement quality: ${unifiedResult.engagementQuality}${unifiedResult.engagementQuality === 'LOW' ? ' (signals may not reflect real audience behavior — use hedged language)' : ''}
-  mismatch: ${unifiedResult.mismatch}${unifiedResult.mismatch === 'UNDER_DISTRIBUTED' ? ' (strong engagement, low reach — treat as distribution problem, not content failure)' : unifiedResult.mismatch === 'WEAK_CONTENT' ? ' (high reach, weak engagement — content or hook failure)' : ''}
+  engagement authenticity: ${unifiedResult.engagementAuthenticity}
 
 Return ONLY this JSON (no markdown):
 ${outputTemplate}`;

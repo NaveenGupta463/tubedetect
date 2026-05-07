@@ -1,8 +1,13 @@
 .env
 node_modules
 dist
+electron-dist
 .claude/
+.continue/
 backend/.env
 backend/db.json
 backend/tubeintel.sqlite
 backend/cache.json
+server/.env
+server/*.sqlite
+*.sqlite

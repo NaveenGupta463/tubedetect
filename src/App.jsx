@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from 'react';
 import { useTier } from './hooks/useTier';
 import { useOAuth } from './hooks/useOAuth';
+import * as storage from './utils/storage';
 
 import Sidebar from './components/Sidebar';
 import Header from './components/Header';
@@ -38,6 +39,12 @@ import PricingPage from './components/PricingPage';
 
 // Improve hub (Fix My Video + Viral Playbook standalone view)
 import ImproveHub from './components/ImproveHub';
+
+// Competitor URL analyzer
+import CompetitorAnalyzer from './components/CompetitorAnalyzer';
+
+// Plan My Video wizard
+import PlanMyVideo from './components/PlanMyVideo';
 
 // Dashboard
 import DashboardLanding from './components/DashboardLanding';
@@ -141,15 +148,25 @@ export default function App() {
       if (!s) return;
 
       if (s.view === 'video' && s.videoId) {
-        // Find video in current videos array by id
         setVideos(prev => {
           const vid = prev.find(v => v.id === s.videoId);
           if (vid) {
             setSelectedVideo(vid);
             setVideoSubView('video');
-          } else {
-            setVideoSubView('grid');
+            return prev;
           }
+          // React state gone (e.g. after page refresh) — try localStorage
+          const saved = loadLastChannel();
+          if (saved) {
+            const vid2 = saved.videos?.find(v => v.id === s.videoId);
+            if (vid2) {
+              setChannel(saved.channel);
+              setSelectedVideo(vid2);
+              setVideoSubView('video');
+              return saved.videos;
+            }
+          }
+          setVideoSubView('grid');
           return prev;
         });
         setActiveView('video');
@@ -159,7 +176,20 @@ export default function App() {
         setActiveView('video');
         if (s.scrollY != null) setTimeout(() => window.scrollTo(0, s.scrollY), 50);
       } else {
-        setActiveView(s.view || 'search');
+        const view = s.view || 'search';
+        // Always reset to grid when navigating back to a list view
+        if (view === 'analyze' || view === 'video' || view === 'discover' || view === 'channel') {
+          setVideoSubView('grid');
+          // Restore channel from localStorage if React state was lost
+          setChannel(ch => {
+            if (ch) return ch;
+            const saved = loadLastChannel();
+            if (!saved) return ch;
+            setVideos(saved.videos || []);
+            return saved.channel;
+          });
+        }
+        setActiveView(view);
       }
     }
 
@@ -197,12 +227,7 @@ export default function App() {
     const scrollY = window.scrollY;
     setSavedScrollY(scrollY);
     setSelectedVideo(video);
-    try {
-      const cached = localStorage.getItem('tubeintel_deep_' + video.id);
-      setVideoAiData(cached ? JSON.parse(cached) : null);
-    } catch {
-      setVideoAiData(null);
-    }
+    setVideoAiData(storage.getJSON('tubeintel_deep_' + video.id));
     setVideoSubView('video');
     pushNav({ view: 'video', videoId: video.id, scrollY });
     setActiveView('video');
@@ -386,6 +411,7 @@ export default function App() {
             actionType={navigationPayload?.actionType}
             insightMode={navigationPayload?.insightMode ?? videoAiData?.blueprint?.insightMode ?? null}
             videoType={navigationPayload?.videoType   ?? videoAiData?.blueprint?.videoType   ?? null}
+            contentFormat={navigationPayload?.contentFormat}
             {...aiProps}
           />
         );
@@ -522,6 +548,19 @@ export default function App() {
             onUpgrade={handleUpgrade}
           />
         );
+
+      case 'plan':
+        return (
+          <PlanMyVideo
+            channel={channel}
+            videos={videos}
+            onNavigate={handleNavigate}
+            {...aiProps}
+          />
+        );
+
+      case 'analyze-url':
+        return <CompetitorAnalyzer />;
 
       case 'pricing':
         return <PricingPage currentTier={tier} onSelectTier={handleSelectTier} />;

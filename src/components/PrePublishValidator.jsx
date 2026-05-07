@@ -3,6 +3,7 @@ import { validateVideo } from '../api/claude';
 import { fetchChannel } from '../api/youtube';
 import { meetsRequirement } from '../utils/tierConfig';
 import { formatNum } from '../utils/analysis';
+import * as storage from '../utils/storage';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function hashString(str) {
@@ -15,11 +16,11 @@ const CACHE_PREFIX  = 'tubeintel_validator_';
 const HISTORY_KEY   = 'tubeintel_validator_history';
 
 function loadHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+  return storage.getJSON(HISTORY_KEY) ?? [];
 }
 function saveHistory(item) {
   const hist = loadHistory().filter(h => h.title !== item.title).slice(0, 4);
-  try { localStorage.setItem(HISTORY_KEY, JSON.stringify([item, ...hist])); } catch {}
+  storage.setJSON(HISTORY_KEY, [item, ...hist]);
 }
 
 // ── Score helpers ─────────────────────────────────────────────────────────────
@@ -301,14 +302,14 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
       ? hashString(thumbPreview.slice(0, 600))
       : thumbInputType === 'text' ? thumbDescription.trim() : 'none';
     const cacheKey = CACHE_PREFIX + 'v13_' + hashString(form.title + contentDescription + thumbSig);
-    try {
-      const cached = localStorage.getItem(cacheKey);
+    {
+      const cached = storage.getJSON(cacheKey);
       if (cached) {
-        setResult(JSON.parse(cached));
+        setResult(cached);
         setTimeout(() => resultsRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
         return;
       }
-    } catch {}
+    }
 
     setLoading(true);
     setError('');
@@ -330,7 +331,7 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
       setProgressStep(6);
       consumeAICall();
       setResult(data);
-      try { localStorage.setItem(cacheKey, JSON.stringify(data)); } catch {}
+      storage.setJSON(cacheKey, data);
       saveHistory({ title: form.title, score: data.viralScore, grade: data.grade, date: new Date().toISOString(), result: data });
       setHistory(loadHistory());
       if ((data.viralScore ?? 0) >= 85) {

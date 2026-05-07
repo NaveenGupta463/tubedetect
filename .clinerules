@@ -1,0 +1,118 @@
+# TubeIntel — Cline AI Coding Rules
+# Stack: React + Vite + Express + Node.js + SQLite
+# Migration target: Electron desktop app (future)
+# Enforce these rules on every task — no exceptions without explicit user approval.
+
+---
+
+## 1. SERVICE-ORIENTED ARCHITECTURE
+
+- All external calls (YouTube API, Claude API, OpenAI, scoring server) must live in
+  `src/api/` service files. NEVER call `fetch()` or any HTTP client inside a JSX component.
+- Pattern: Component → Hook or event handler → `src/api/` service function → external
+- Services return plain data objects. They do not set React state, call hooks, or touch the DOM.
+- If a component needs data from an API, it calls a service function and receives the result.
+  It does not know or care how the data was fetched.
+
+## 2. NO DIRECT API CALLS IN UI COMPONENTS
+
+- Components must not import from HTTP libraries, call `fetch()`, or reference API URLs directly.
+- Existing violations (e.g. components calling localhost:3002 directly) are known tech debt —
+  do not replicate this pattern in new code.
+- The only external calls allowed in components: `import` of service functions from `src/api/`.
+
+## 3. CENTRALIZED CONFIG AND CONSTANTS
+
+- All URLs, port numbers, API base paths, and environment variables are accessed through
+  `src/config.js` (create it if it does not exist). Never hardcode `localhost:3001`,
+  `localhost:3002`, or any URL string inside a component or service file.
+- Environment values: read `import.meta.env.VITE_*` only inside `src/config.js`, not inline.
+- Constants shared across components (niche lists, tier names, score thresholds) go in
+  `src/utils/constants.js`, not inline in component files.
+
+## 4. STORAGE ABSTRACTION (OFFLINE-FIRST PREPARATION)
+
+- Never call `localStorage.getItem` or `localStorage.setItem` directly in components or services.
+- All persistence goes through `src/utils/storage.js` (create it if it does not exist).
+  It wraps localStorage now and can swap to electron-store or SQLite later without touching callers.
+- Cache TTL logic lives in `storage.js`, not scattered across API files.
+
+## 5. ELECTRON MIGRATION COMPATIBILITY — RENDERER RULES
+
+- No Node.js-only APIs (`fs`, `path`, `child_process`, `process.env`) inside `src/` files.
+  The `src/` directory is the renderer process — it must stay browser-compatible.
+- No `window.require`, `window.electron`, or Electron IPC in `src/` yet.
+  When Electron arrives, a preload bridge (`src/api/ipc.js`) will replace HTTP service calls.
+- Service functions in `src/api/` must be wrappable: the same function signature should work
+  whether the underlying transport is `fetch()` (web) or Electron IPC (desktop).
+  Achieve this by keeping services thin: accept params → return data → no side effects.
+
+## 6. ELECTRON MIGRATION COMPATIBILITY — BACKEND RULES
+
+- `server/services/` files are already structured as pure Node modules. Keep them that way.
+  No Express-specific objects (`req`, `res`) inside service functions — only routes use those.
+- Routes are thin: parse input → validate → call service → return JSON. No business logic in routes.
+- Each `server/services/` file must be importable directly (e.g. `const { buildEnsemble } = require('./ensembleScoring')`)
+  without starting an Express server. This is how Electron main process will use them.
+- SQL never appears in routes or services directly. All database access goes through `server/db/`.
+
+## 7. DATABASE ABSTRACTION LAYER
+
+- All SQLite access goes through `server/db/init.js` (`getDb()`). Never open a new Database
+  connection elsewhere.
+- Raw SQL lives only in `server/routes/` (simple queries) and `server/services/` (complex queries).
+  Prefer extracting repeated query patterns into `server/db/queries.js` if a pattern appears 3+
+  times.
+- Schema changes: add columns via migration in `server/db/init.js` `migrate()` function —
+  never via raw `ALTER TABLE` calls in scripts or services.
+- For future Electron migration: `getDb()` is already a singleton. In Electron, it will be called
+  from main process only. Do not design patterns that require calling it from renderer.
+
+## 8. AI PIPELINE MODULARITY
+
+- The scoring pipeline is: features → similarity/peers → ensemble → prediction.
+  Do not shortcut or bypass stages. New signals are added as inputs to `buildEnsemble()`.
+- Each AI service (`featureExtraction`, `similarityEngine`, `ensembleScoring`, `llmExplain`)
+  is independently callable. Do not create dependencies between these files.
+- New AI capabilities go in new service files. Do not bolt new logic onto existing services.
+- LLM calls only happen in `server/services/llmExplain.js`. `/api/analyze` is LLM-free.
+  This separation is intentional — maintain it.
+- ML prediction goes through `ml/predict.py` via stdin. Do not bypass this for performance.
+
+## 9. MINIMAL FRONTEND BUSINESS LOGIC
+
+- Components handle: rendering, user events, local UI state (open/closed, loading).
+  They do not handle: data transformation, scoring logic, API formatting, cache invalidation.
+- Data transformation (formatting views, normalizing scores, mapping API responses to display
+  objects) goes in `src/utils/` helpers, not inline in JSX.
+- If a component's render function contains more than trivial conditional logic or data mapping,
+  extract it to a hook in `src/hooks/` or a util in `src/utils/`.
+
+## 10. CODE STYLE (MATCH EXISTING PROJECT)
+
+- Single-file JSX components. Do not split unless the file exceeds ~400 lines.
+- Dark theme: black/dark gray backgrounds (#0d0d0d, #111, #1a1a1a), match existing color palette.
+- All charts and graphs use recharts. No chart.js, d3 inline rendering, or canvas drawing.
+- No comments unless the WHY is non-obvious (hidden constraint, workaround, non-obvious invariant).
+- No TypeScript. No PropTypes. No JSDoc blocks.
+- No emojis in code unless already used in that file's context (sidebar nav items use them).
+- Match existing import order: React → third-party → internal `src/` → relative.
+
+## 11. WHAT NOT TO DO
+
+- Do not add error handling for scenarios that cannot happen (internal invariants, trusted data).
+- Do not add backwards-compatibility shims or feature flags.
+- Do not create new utility files for a single-use function.
+- Do not add dependencies without explicit user approval.
+- Do not modify files outside the direct scope of the requested change.
+- Do not rewrite working code while fixing an unrelated bug.
+- Do not add loading states for synchronous operations.
+- Do not generate README files, documentation files, or changelog entries unless asked.
+- Do not summarize what you just did at the end of a response.
+
+## 12. BEFORE MAKING CHANGES
+
+- State which file(s) will be modified and what will change — before touching anything.
+- If a change affects more than one file, list all affected files first.
+- If a change requires a new dependency, ask before adding it.
+- If a requested change conflicts with these rules, flag the conflict explicitly.

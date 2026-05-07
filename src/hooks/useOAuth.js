@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
 import { loginWithGoogle, clearJWT } from '../api/auth';
+import * as storage from '../utils/storage';
 
 const TOKEN_KEY    = 'tubeintel_oauth_token';
 const EXPIRY_KEY   = 'tubeintel_oauth_expiry';
@@ -29,15 +30,11 @@ async function generateChallenge(verifier) {
 
 export function useOAuth() {
   const [token,   setToken]   = useState(() => {
-    try {
-      const expiry = parseInt(localStorage.getItem(EXPIRY_KEY) || '0');
-      if (Date.now() < expiry) return localStorage.getItem(TOKEN_KEY);
-    } catch {}
+    const expiry = parseInt(storage.get(EXPIRY_KEY) || '0');
+    if (Date.now() < expiry) return storage.get(TOKEN_KEY);
     return null;
   });
-  const [profile, setProfile] = useState(() => {
-    try { return JSON.parse(localStorage.getItem(PROFILE_KEY) || 'null'); } catch { return null; }
-  });
+  const [profile, setProfile] = useState(() => storage.getJSON(PROFILE_KEY));
 
   // ── Handle PKCE redirect: ?code=xxx ─────────────────────────────────────
   useEffect(() => {
@@ -55,18 +52,17 @@ export function useOAuth() {
     loginWithGoogle({ code, codeVerifier, redirectUri: window.location.origin })
       .then(({ accessToken, backendUser }) => {
         if (accessToken) {
-          const expiry = Date.now() + 3600 * 1000; // 1 hour
-          localStorage.setItem(TOKEN_KEY,  accessToken);
-          localStorage.setItem(EXPIRY_KEY, String(expiry));
+          storage.set(TOKEN_KEY,  accessToken);
+          storage.set(EXPIRY_KEY, String(Date.now() + 3600 * 1000));
           setToken(accessToken);
         }
         if (backendUser) {
-          localStorage.setItem('yta_tier', backendUser.tier);
+          storage.set('yta_tier', backendUser.tier);
         }
         if (accessToken) {
           fetchProfile(accessToken).then(p => {
             if (p) {
-              localStorage.setItem(PROFILE_KEY, JSON.stringify(p));
+              storage.setJSON(PROFILE_KEY, p);
               setProfile(p);
             }
           });
@@ -103,9 +99,9 @@ export function useOAuth() {
   }, []);
 
   const disconnect = useCallback(() => {
-    localStorage.removeItem(TOKEN_KEY);
-    localStorage.removeItem(EXPIRY_KEY);
-    localStorage.removeItem(PROFILE_KEY);
+    storage.remove(TOKEN_KEY);
+    storage.remove(EXPIRY_KEY);
+    storage.remove(PROFILE_KEY);
     sessionStorage.removeItem(VERIFIER_KEY);
     clearJWT();
     setToken(null);

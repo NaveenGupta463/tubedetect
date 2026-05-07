@@ -1,35 +1,26 @@
-const BASE = `${import.meta.env.VITE_BACKEND_URL || 'http://localhost:3001'}/api/youtube`;
+import { ROUTES } from '../config';
+import * as storage from '../utils/storage';
 
-// ─── Frontend cache (localStorage, 6-hour TTL) ───────────────────────────────
-const CACHE_TTL    = 30 * 60 * 1000; // 30 minutes
-const CACHE_PREFIX = 'tubeintel_yt3_'; // bumped to evict stale entries from old cache
+const CACHE_TTL    = 30 * 60 * 1000;
+const CACHE_PREFIX = 'tubeintel_yt3_';
 
-// Clear any entries from old cache prefixes
-try {
-  Object.keys(localStorage)
-    .filter(k => k.startsWith('tubeintel_yt_') || k.startsWith('tubeintel_yt2_'))
-    .forEach(k => localStorage.removeItem(k));
-} catch {}
+// Evict stale entries from old cache prefix versions
+storage.removeByPrefix('tubeintel_yt_');
+storage.removeByPrefix('tubeintel_yt2_');
 
 function cacheGet(key) {
-  try {
-    const raw = localStorage.getItem(CACHE_PREFIX + key);
-    if (!raw) return null;
-    const { ts, data } = JSON.parse(raw);
-    if (Date.now() - ts > CACHE_TTL) { localStorage.removeItem(CACHE_PREFIX + key); return null; }
-    return data;
-  } catch { return null; }
+  return storage.getCached(CACHE_PREFIX + key, CACHE_TTL);
 }
 
 function cacheSet(key, data) {
-  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+  storage.setCached(CACHE_PREFIX + key, data);
 }
 
 // In-flight deduplication: avoid firing the same request twice simultaneously
 const inflight = new Map();
 
 async function apiFetch(endpoint, params) {
-  const url = new URL(`${BASE}/${endpoint}`);
+  const url = new URL(`${ROUTES.youtube}/${endpoint}`);
   Object.entries(params).forEach(([k, v]) => url.searchParams.set(k, v));
   const key = url.toString();
 
@@ -204,30 +195,12 @@ export async function searchChannels(query, maxResults = 8) {
 }
 
 export async function fetchVideoById(id) {
-  const requestUrl = `http://localhost:3001/api/youtube/videos?id=${id}&part=snippet,statistics,contentDetails`;
-  console.log('[fetchVideoById] request URL:', requestUrl);
-  try {
-    const res = await fetch(requestUrl);
-    console.log('[fetchVideoById] response status:', res.status, res.statusText);
-
-    if (!res.ok) {
-      const text = await res.text();
-      console.error('[fetchVideoById] API error body:', text);
-      throw new Error('Failed to fetch video data');
-    }
-
-    const data = await res.json();
-    console.log('[fetchVideoById] response JSON:', data);
-
-    if (!data.items?.length) {
-      console.error('[fetchVideoById] no items in response — video not found for id:', id);
-      throw new Error('Video not found');
-    }
-    return data.items[0];
-  } catch (err) {
-    console.error('[fetchVideoById] caught error:', err);
-    throw err;
-  }
+  const data = await apiFetch('videos', {
+    part: 'snippet,statistics,contentDetails',
+    id,
+  });
+  if (!data.items?.length) throw new Error('Video not found');
+  return data.items[0];
 }
 
 export async function fetchVideoComments(videoId, maxResults = 100) {
@@ -267,6 +240,25 @@ export async function searchVideos(query, maxResults = 8) {
         contentDetails: full.contentDetails || {},
       };
     });
+  } catch {
+    return [];
+  }
+}
+
+export async function searchTopVideos(query, maxResults = 15) {
+  try {
+    const searchData = await apiFetch('search', {
+      part: 'snippet',
+      q: query,
+      type: 'video',
+      order: 'viewCount',
+      maxResults,
+    });
+    const items = searchData.items || [];
+    if (!items.length) return [];
+    const ids = items.map(i => i.id.videoId).join(',');
+    const statsData = await apiFetch('videos', { part: 'statistics,snippet,contentDetails', id: ids });
+    return statsData.items || [];
   } catch {
     return [];
   }

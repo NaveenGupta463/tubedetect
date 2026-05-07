@@ -1,6 +1,8 @@
 import { useState, useEffect, useMemo, useRef } from 'react';
 import { generateVideoImprovements } from '../api/claude';
 import { ScoreRing } from './VideoAnalysisPrimitives';
+import { getAllowedChecklistKeys } from '../utils/contentFormat';
+import * as storage from '../utils/storage';
 
 const IMPROVE_KEY = 'tubeintel_improve_v2_';
 
@@ -230,7 +232,7 @@ function DimensionPanel({ aiData, improvements, selectedTitle, selectedThumbnail
 }
 
 // ── FixChecklist ──────────────────────────────────────────────────────────────
-function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix }) {
+function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix, allowedKeys = CHECKLIST_KEYS }) {
   const gains = useMemo(() => {
     const baseOverall      = aiData?.blueprint?.viralScore ?? 0;
     const basePackagingDim = aiData?.blueprint?.scores?.packaging ?? 0;
@@ -248,16 +250,16 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
     };
   }, [improvements, aiData]);
 
-  const sortedGains       = Object.entries(gains).filter(([, g]) => g > 0).sort(([, a], [, b]) => b - a);
+  const sortedGains       = Object.entries(gains).filter(([k, g]) => g > 0 && allowedKeys.includes(k)).sort(([, a], [, b]) => b - a);
   const highestImpactKey  = sortedGains[0]?.[0] ?? null;
   const highestImpactGain = sortedGains[0]?.[1] ?? 0;
 
-  const [orderedKeys, setOrderedKeys] = useState(CHECKLIST_KEYS);
+  const [orderedKeys, setOrderedKeys] = useState(allowedKeys);
   const prevDoneRef = useRef({});
 
   const sortKeys = (currentDone) => {
-    const active    = CHECKLIST_KEYS.filter(k => !currentDone[k]).sort((a, b) => (gains[b] ?? 0) - (gains[a] ?? 0));
-    const completed = CHECKLIST_KEYS.filter(k =>  currentDone[k]);
+    const active    = allowedKeys.filter(k => !currentDone[k]).sort((a, b) => (gains[b] ?? 0) - (gains[a] ?? 0));
+    const completed = allowedKeys.filter(k =>  currentDone[k]);
     return [...active, ...completed];
   };
 
@@ -266,7 +268,7 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
   }, [improvements]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
-    const changed = CHECKLIST_KEYS.some(k => !!done[k] !== !!prevDoneRef.current[k]);
+    const changed = allowedKeys.some(k => !!done[k] !== !!prevDoneRef.current[k]);
     prevDoneRef.current = { ...done };
     if (!changed) return;
     setOrderedKeys(sortKeys(done));
@@ -283,7 +285,7 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
     return '';
   };
 
-  const completed = CHECKLIST_KEYS.filter(k => done[k]).length;
+  const completed = allowedKeys.filter(k => done[k]).length;
 
   return (
     <div style={{ background: '#0a0a0a', border: '1px solid #7c3aed22', borderRadius: 14, padding: '16px 18px' }}>
@@ -292,8 +294,8 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
           ✨ Best Fix for Your Video
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-          <div style={{ fontSize: '0.72rem', color: completed === 4 ? '#22c55e' : '#555', fontWeight: 700 }}>
-            {completed}/4 done
+          <div style={{ fontSize: '0.72rem', color: completed === allowedKeys.length ? '#22c55e' : '#555', fontWeight: 700 }}>
+            {completed}/{allowedKeys.length} done
           </div>
           <button
             onClick={onBestFix}
@@ -314,8 +316,8 @@ function FixChecklist({ improvements, done, onMark, aiData, bestCombo, onBestFix
       <div style={{ height: 3, borderRadius: 99, background: '#1a1a1a', overflow: 'hidden', marginBottom: 12 }}>
         <div style={{
           height: '100%', borderRadius: 99,
-          width: `${(completed / 4) * 100}%`,
-          background: completed === 4 ? '#22c55e' : 'linear-gradient(90deg, #7c3aed, #a78bfa)',
+          width: `${(completed / allowedKeys.length) * 100}%`,
+          background: completed === allowedKeys.length ? '#22c55e' : 'linear-gradient(90deg, #7c3aed, #a78bfa)',
           transition: 'width 0.4s ease',
         }} />
       </div>
@@ -906,7 +908,7 @@ function DiagnosticBreakdown({ video, aiData, onGoToVideo, onNavigate, insightMo
 }
 
 // ── Main component ────────────────────────────────────────────────────────────
-export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoToVideo, canUseAI, consumeAICall, actionType, insightMode, videoType }) {
+export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoToVideo, canUseAI, consumeAICall, actionType, insightMode, videoType, contentFormat }) {
   const [improvements,      setImprovements]      = useState(null);
   const [improving,         setImproving]         = useState(false);
   const [improveError,      setImproveError]      = useState('');
@@ -987,11 +989,7 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
 
   useEffect(() => {
     if (!video?.id) { setImprovements(null); autoSelectBest(null); return; }
-    let parsed = null;
-    try {
-      const raw = localStorage.getItem(IMPROVE_KEY + video.id);
-      parsed = raw ? JSON.parse(raw) : null;
-    } catch {}
+    const parsed = storage.getJSON(IMPROVE_KEY + video.id);
     setImprovements(parsed);
     autoSelectBest(parsed);
     setImproveError('');
@@ -1060,7 +1058,7 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
         if (actionType === 'TITLE_REWRITE' && result.titles?.length > 0) {
           setSelectedTitle(0);
         }
-        try { localStorage.setItem(IMPROVE_KEY + video.id, JSON.stringify(result)); } catch {}
+        storage.setJSON(IMPROVE_KEY + video.id, result);
       } else {
         setImproveError('AI returned an unexpected format. Please try again.');
       }
@@ -1070,6 +1068,8 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
       setImproving(false);
     }
   };
+
+  const allowedKeys = getAllowedChecklistKeys(contentFormat);
 
   if (insightMode === 'DIAGNOSE' || insightMode === 'CONTEXT') {
     return <DiagnosticBreakdown video={video} aiData={aiData} onGoToVideo={onGoToVideo} onNavigate={onNavigate} insightMode={insightMode} />;
@@ -1162,13 +1162,15 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
           {/* Actionable output */}
           {hasImprovements && (
             <>
-              <FixChecklist improvements={improvements} done={checkDone} onMark={handleMark} aiData={aiData} bestCombo={bestCombo} onBestFix={handleBestFix} />
-              <TitlesSection
-                titles={improvements?.titles}
-                selectedTitle={selectedTitle}
-                onSelectTitle={setSelectedTitle}
-                aiData={aiData}
-              />
+              <FixChecklist improvements={improvements} done={checkDone} onMark={handleMark} aiData={aiData} bestCombo={bestCombo} onBestFix={handleBestFix} allowedKeys={allowedKeys} />
+              {contentFormat?.type !== 'MUSIC_SEARCH' && (
+                <TitlesSection
+                  titles={improvements?.titles}
+                  selectedTitle={selectedTitle}
+                  onSelectTitle={setSelectedTitle}
+                  aiData={aiData}
+                />
+              )}
               <SEOSection
                 seoImprovements={improvements?.seo_improvements}
                 selected={selectedFixes.seo}
@@ -1181,11 +1183,13 @@ export default function ImproveHub({ video, aiData, onUpgrade, onNavigate, onGoT
                 selectedThumbnail={selectedThumbnail}
                 onSelectThumbnail={setSelectedThumbnail}
               />
-              <CTASection
-                cta={improvements?.cta}
-                selected={selectedFixes.cta}
-                onToggle={() => setSelectedFixes(p => ({ ...p, cta: !p.cta }))}
-              />
+              {contentFormat?.type !== 'MUSIC_SEARCH' && contentFormat?.type !== 'PASSIVE' && (
+                <CTASection
+                  cta={improvements?.cta}
+                  selected={selectedFixes.cta}
+                  onToggle={() => setSelectedFixes(p => ({ ...p, cta: !p.cta }))}
+                />
+              )}
               <ViralPlaybookSection playbook={improvements?.viral_playbook} />
             </>
           )}

@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { scoreTitle, battleTitles, analyzeThumbnailImage } from '../api/claude';
 import ProGate from './ProGate';
+import * as storage from '../utils/storage';
 
 const ANGLE_COLOR = { Curiosity: '#7c4dff', Emotion: '#ff4081', Clarity: '#00bcd4' };
 const LABEL_COLOR = {
@@ -80,9 +81,7 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
   const [battleResult, setBattleResult]       = useState(null);
   const [battleLoading, setBattleLoading]     = useState(false);
   const [battleRevealing, setBattleRevealing] = useState(false);
-  const [savedIdeas, setSavedIdeas]           = useState(() => {
-    try { return JSON.parse(localStorage.getItem('tubeintel_saved_ideas') || '[]'); } catch { return []; }
-  });
+  const [savedIdeas, setSavedIdeas]           = useState(() => storage.getJSON('tubeintel_saved_ideas') ?? []);
 
   const isProcessing = loading || revealing || battleLoading || battleRevealing || thumbAnalyzing;
   useEffect(() => {
@@ -211,7 +210,7 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
     setSavedIdeas(prev => {
       if (prev.includes(t)) return prev;
       const updated = [t, ...prev].slice(0, 20);
-      localStorage.setItem('tubeintel_saved_ideas', JSON.stringify(updated));
+      storage.setJSON('tubeintel_saved_ideas', updated);
       return updated;
     });
   };
@@ -219,7 +218,7 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
   const removeSaved = (t) => {
     setSavedIdeas(prev => {
       const updated = prev.filter(x => x !== t);
-      localStorage.setItem('tubeintel_saved_ideas', JSON.stringify(updated));
+      storage.setJSON('tubeintel_saved_ideas', updated);
       return updated;
     });
   };

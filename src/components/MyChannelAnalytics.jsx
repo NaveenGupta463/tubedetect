@@ -12,6 +12,7 @@ import {
   fetchImpressionsAndCTR, clearAnalyticsCache,
 } from '../api/analyticsApi';
 import { analyzeChannelOverview, analyzeChannelTab } from '../api/claude';
+import * as storage from '../utils/storage';
 
 // ── Error Boundary ─────────────────────────────────────────────────────────────
 class AnalyticsErrorBoundary extends Component {
@@ -608,7 +609,7 @@ export default function MyChannelAnalytics({
     return false;
   });
 
-  const token     = (() => { try { return localStorage.getItem('tubeintel_oauth_token'); } catch { return null; } })();
+  const token     = storage.get('tubeintel_oauth_token');
   const channelId = profile?.channelId;
   const isPro     = meetsRequirement(tier, 'pro');
 

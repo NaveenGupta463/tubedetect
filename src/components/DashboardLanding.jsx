@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import { fetchVideoById, fetchChannel, fetchChannelVideos, searchChannels } from '../api/youtube';
 import { formatNum } from '../utils/analysis';
+import * as storage from '../utils/storage';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 const YT_VIDEO_RE = /(?:youtube\.com\/watch\?.*v=|youtu\.be\/)([A-Za-z0-9_-]{11})/;
@@ -20,7 +21,7 @@ function isChannelLike(input) {
 
 const RECENT_KEY = 'tubeintel_recent_ch';
 function getRecent() {
-  try { return JSON.parse(localStorage.getItem(RECENT_KEY) || '[]'); } catch { return []; }
+  return storage.getJSON(RECENT_KEY) ?? [];
 }
 function saveRecent(ch) {
   const list = getRecent().filter(r => r.id !== ch.id).slice(0, 4);
@@ -29,17 +30,9 @@ function saveRecent(ch) {
     title: ch.snippet?.title || '',
     thumbnail: ch.snippet?.thumbnails?.default?.url || '',
   };
-  try { localStorage.setItem(RECENT_KEY, JSON.stringify([entry, ...list])); } catch {}
+  storage.setJSON(RECENT_KEY, [entry, ...list]);
 }
 
-const PLAN_STEPS = [
-  { step: 1, icon: '🔥', label: 'Research Niche',     view: 'trends',     desc: 'Find trending topics' },
-  { step: 2, icon: '🧬', label: 'Decode What Works',  view: 'viral',      desc: 'Extract viral patterns' },
-  { step: 3, icon: '✍️', label: 'Write Script',       view: 'script',     desc: 'Hook, chapters, CTA' },
-  { step: 4, icon: '⚡', label: 'Score Your Idea',    view: 'scorer',     desc: 'Title + thumbnail' },
-  { step: 5, icon: '🏷️', label: 'Optimise SEO',      view: 'seo',        desc: 'Tags & keywords' },
-  { step: 6, icon: '🚀', label: 'Validate & Launch',  view: 'validator',  desc: 'Final 8-layer gate', gate: true },
-];
 
 // ── Sub-components ────────────────────────────────────────────────────────────
 function ChannelSuggestion({ ch, onSelect, loading }) {
@@ -81,8 +74,7 @@ export default function DashboardLanding({ channel, onChannelLoad, onVideoLoad, 
   const [loadingUrl, setLoadingUrl]   = useState(false);
   const [error, setError]             = useState('');
   const [showDrop, setShowDrop]       = useState(false);
-  const [showPlan, setShowPlan]       = useState(false);
-  const [recent, setRecent]         = useState(getRecent);
+const [recent, setRecent]         = useState(getRecent);
   const [urlDetected, setUrlDetected] = useState(null);
 
   const inputRef  = useRef(null);
@@ -245,17 +237,17 @@ export default function DashboardLanding({ channel, onChannelLoad, onVideoLoad, 
 
         {/* Plan My Video */}
         <button
-          onClick={() => setShowPlan(p => !p)}
+          onClick={() => onNavigate('plan')}
           style={{
-            background: showPlan ? '#0a1a0f' : '#0d0d0d',
-            border: `1px solid ${showPlan ? '#00b89444' : '#1e1e1e'}`,
+            background: '#0d0d0d',
+            border: '1px solid #1e1e1e',
             borderTop: '3px solid #00b894',
             borderRadius: 14, padding: '24px 22px',
             textAlign: 'left', cursor: 'pointer',
             transition: 'border-color 0.15s, background 0.15s',
           }}
-          onMouseEnter={e => { if (!showPlan) { e.currentTarget.style.background = '#0a120d'; e.currentTarget.style.borderColor = '#00b89444'; }}}
-          onMouseLeave={e => { if (!showPlan) { e.currentTarget.style.background = '#0d0d0d'; e.currentTarget.style.borderColor = '#1e1e1e'; }}}
+          onMouseEnter={e => { e.currentTarget.style.background = '#0a120d'; e.currentTarget.style.borderColor = '#00b89444'; }}
+          onMouseLeave={e => { e.currentTarget.style.background = '#0d0d0d'; e.currentTarget.style.borderColor = '#1e1e1e'; }}
         >
           <div style={{ fontSize: 28, marginBottom: 12 }}>🟢</div>
           <div style={{ fontSize: 17, fontWeight: 800, color: '#fff', marginBottom: 6 }}>Plan My Video</div>
@@ -263,66 +255,10 @@ export default function DashboardLanding({ channel, onChannelLoad, onVideoLoad, 
             Haven't posted yet? Research your niche, build your script, score your idea, and validate before publishing.
           </div>
           <div style={{ fontSize: 12, fontWeight: 700, color: '#00b894' }}>
-            {showPlan ? 'Hide workflow ↑' : 'Start guided workflow →'}
+            Open 6-step wizard →
           </div>
         </button>
       </div>
-
-      {/* Plan My Video expanded workflow */}
-      {showPlan && (
-        <div style={{
-          background: '#0a120d', border: '1px solid #00b89422',
-          borderRadius: 14, padding: '20px 22px', marginBottom: 28,
-        }}>
-          <div style={{ fontSize: 12, fontWeight: 700, color: '#00b894', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 16 }}>
-            6-Step Pre-Publish Workflow
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-            {PLAN_STEPS.map((s, i) => (
-              <button
-                key={s.step}
-                onClick={() => onNavigate(s.view)}
-                style={{
-                  display: 'flex', alignItems: 'center', gap: 14,
-                  background: s.gate ? '#00b89411' : 'transparent',
-                  border: s.gate ? '1px solid #00b89433' : '1px solid transparent',
-                  borderRadius: 10, padding: '10px 14px',
-                  cursor: 'pointer', textAlign: 'left',
-                  transition: 'background 0.1s',
-                }}
-                onMouseEnter={e => e.currentTarget.style.background = s.gate ? '#00b89422' : '#ffffff08'}
-                onMouseLeave={e => e.currentTarget.style.background = s.gate ? '#00b89411' : 'transparent'}
-              >
-                <div style={{
-                  width: 28, height: 28, borderRadius: '50%', flexShrink: 0,
-                  background: s.gate ? '#00b89433' : '#1a1a1a',
-                  border: `1px solid ${s.gate ? '#00b89466' : '#2a2a2a'}`,
-                  display: 'flex', alignItems: 'center', justifyContent: 'center',
-                  fontSize: 12, fontWeight: 800,
-                  color: s.gate ? '#00b894' : '#555',
-                }}>
-                  {s.step}
-                </div>
-                <div style={{ fontSize: 16 }}>{s.icon}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: s.gate ? '#00b894' : '#ccc' }}>{s.label}</div>
-                  <div style={{ fontSize: 11, color: '#444' }}>{s.desc}</div>
-                </div>
-                {s.gate && (
-                  <span style={{
-                    fontSize: 9, fontWeight: 800, background: '#00b89433',
-                    color: '#00b894', borderRadius: 4, padding: '2px 7px', letterSpacing: 0.4,
-                  }}>GATE</span>
-                )}
-                <span style={{ fontSize: 12, color: '#333' }}>→</span>
-              </button>
-            ))}
-          </div>
-          <div style={{ marginTop: 14, fontSize: 12, color: '#2a4a35', fontStyle: 'italic' }}>
-            Each step feeds into the next. All data flows into the Pre-Publish Validator.
-          </div>
-        </div>
-      )}
 
       {/* Fix My Video search */}
       <div style={{ marginBottom: 28 }} ref={dropRef}>

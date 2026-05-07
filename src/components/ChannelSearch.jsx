@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { fetchChannel, fetchChannelVideos, searchChannels } from '../api/youtube';
 import { formatNum } from '../utils/analysis';
 import { loadLastChannel } from './VideoGrid';
+import * as storage from '../utils/storage';
 
 const HISTORY_KEY = 'tubeintel_search_history';
 
@@ -38,7 +39,7 @@ const FEATURES = [
 ];
 
 function getHistory() {
-  try { return JSON.parse(localStorage.getItem(HISTORY_KEY) || '[]'); } catch { return []; }
+  return storage.getJSON(HISTORY_KEY) ?? [];
 }
 
 function saveToHistory(channel) {
@@ -50,7 +51,7 @@ function saveToHistory(channel) {
     subscribers: channel.statistics?.subscriberCount || '0',
   };
   const hist = getHistory().filter(h => h.id !== item.id);
-  localStorage.setItem(HISTORY_KEY, JSON.stringify([item, ...hist].slice(0, 5)));
+  storage.setJSON(HISTORY_KEY, [item, ...hist].slice(0, 5));
 }
 
 export default function ChannelSearch({ onLoad }) {
