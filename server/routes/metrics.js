@@ -5,6 +5,8 @@ const { getStats: quotaStats } = require('../services/quotaGuard');
 const { getUsageStats: explainStats } = require('../services/llmExplain');
 const { getRefreshStats }   = require('../jobs/refreshCron');
 const { getLookupCounters } = require('./lookup');
+const orchestrator             = require('../pipeline/orchestrator');
+const { isNewPipelineEnabled } = require('../pipeline/flags');
 
 const router = express.Router();
 
@@ -58,6 +60,7 @@ router.get('/metrics', (_req, res) => {
     explain: explainStats(),
     refresh: getRefreshStats(),
     lookup:  lookupC,
+    ...(isNewPipelineEnabled() && { pipeline: orchestrator.getPipelineStats() }),
   });
 });
 

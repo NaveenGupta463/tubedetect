@@ -8,6 +8,8 @@ const {
   insertVideo, upsertFeatures, upsertPerformanceMetrics,
   insertPerformanceMetricsPlaceholder, insertPrediction,
 } = require('../db/queries');
+const orchestrator             = require('../pipeline/orchestrator');
+const { isNewPipelineEnabled } = require('../pipeline/flags');
 
 const router = express.Router();
 
@@ -82,6 +84,53 @@ router.post('/analyze', async (req, res) => {
     const cacheKey    = makeCacheKey(title, hook, niche);
     const cachedScore = getCached(cacheKey);
 
+    // ── NEW PIPELINE PATH (USE_NEW_PIPELINE=1) ────────────────────────────────
+    if (isNewPipelineEnabled()) {
+      if (cachedScore && cachedScore._pipeline) {
+        // Cache hit on pipeline path — result already has _pipeline shape
+        console.log('[analyze][pipeline] cache hit:', cacheKey);
+        insertPrediction(db, videoId, {
+          ml_score:         cachedScore.ml_score,
+          similarity_score: cachedScore.peer_context_score,
+          final_score:      cachedScore.final_score,
+          confidence:       cachedScore.confidence,
+          ensemble_weights: cachedScore.ensemble_weights ?? {},
+        });
+        const { ensemble_weights: _ew, ...responseFields } = cachedScore;
+        return res.json({
+          video_id: videoId,
+          ...responseFields,
+          _pipeline: { ...cachedScore._pipeline, cached: true },
+          cached: true,
+        });
+      }
+
+      // Cache miss on pipeline path
+      const result = await orchestrator.run({ videoId, title, hook, niche, features });
+      scoreCache.set(cacheKey, { data: result, ts: Date.now() });
+
+      console.log(`[analyze][pipeline] final_score=${result.final_score} confidence=${result._pipeline.confidence.state} peers=${result.peer_count}`);
+
+      insertPrediction(db, videoId, {
+        ml_score:         result.ml_score,
+        similarity_score: result.peer_context_score,
+        final_score:      result.final_score,
+        confidence:       result.confidence,
+        ensemble_weights: result.ensemble_weights ?? {},
+      });
+
+      const { ensemble_weights: _ew, ...responseFields } = result;
+      return res.json({
+        video_id: videoId,
+        ...responseFields,
+        cached: false,
+        ...(result.low_confidence && {
+          message: 'Accuracy improves as more videos are analyzed in this niche',
+        }),
+      });
+    }
+
+    // ── EXISTING PIPELINE PATH (default) ─────────────────────────────────────
     let simResult, ensemble;
 
     if (cachedScore) {
