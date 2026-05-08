@@ -49,6 +49,9 @@ import PlanMyVideo from './components/PlanMyVideo';
 // Diagnostics
 import DiagnosticsPanel from './components/DiagnosticsPanel';
 
+// Learning
+import LearningDashboard from './components/LearningDashboard';
+
 // Dashboard
 import DashboardLanding from './components/DashboardLanding';
 import DashboardLayout from './layouts/DashboardLayout';
@@ -570,6 +573,9 @@ export default function App() {
 
       case 'diagnostics':
         return <DiagnosticsPanel />;
+
+      case 'learning':
+        return <LearningDashboard />;
 
       default:
         return <DashboardLayout aiProps={aiProps} channel={channel} videos={videos} activeTab="analyze" onTabChange={handleNavigate} />;

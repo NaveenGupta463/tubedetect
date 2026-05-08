@@ -103,6 +103,10 @@ const NAV_GROUPS = [
         id: 'diagnostics', icon: '🔬', label: 'Diagnostics', req: null,
         desc: 'Runtime health, service status, SQLite stats, memory usage, and error log.',
       },
+      {
+        id: 'learning', icon: '🧠', label: 'Learning', req: null,
+        desc: 'AI-generated advisory recommendations from historical prediction outcomes — nothing is applied automatically.',
+      },
     ],
   },
 ];
