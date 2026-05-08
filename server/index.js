@@ -31,8 +31,10 @@ try {
   const explainRoute  = require('./routes/explain');
   const lookupRoute   = require('./routes/lookup');
   const metricsRoute  = require('./routes/metrics');
-  const workspacesRoute = require('./routes/workspaces');
-  const dbRoute       = require('./routes/db');
+  const workspacesRoute         = require('./routes/workspaces');
+  const dbRoute                 = require('./routes/db');
+  const predictionFeedbackRoute = require('./routes/predictionFeedback');
+  const outcomesRoute           = require('./routes/outcomes');
   const { startCron }         = require('./jobs/feedbackCron');
   const { startIngestCron }   = require('./jobs/youtubeIngest');
   const { startRefreshCron }  = require('./jobs/refreshCron');
@@ -52,6 +54,8 @@ try {
   app.use('/api', metricsRoute);
   app.use('/api', workspacesRoute);
   app.use('/api', dbRoute);
+  app.use('/api', predictionFeedbackRoute);
+  app.use('/api', outcomesRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 

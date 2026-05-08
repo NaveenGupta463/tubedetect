@@ -7,9 +7,12 @@ const { buildEnsemble }            = require('../services/ensembleScoring');
 const {
   insertVideo, upsertFeatures, upsertPerformanceMetrics,
   insertPerformanceMetricsPlaceholder, insertPrediction,
+  insertPredictionFeedbackSnapshot,
 } = require('../db/queries');
 const orchestrator             = require('../pipeline/orchestrator');
 const { isNewPipelineEnabled } = require('../pipeline/flags');
+const { capturePrediction }    = require('../services/outcomeTracker');
+const logger                   = require('../utils/logger');
 
 const router = express.Router();
 
@@ -89,16 +92,35 @@ router.post('/analyze', async (req, res) => {
       if (cachedScore && cachedScore._pipeline) {
         // Cache hit on pipeline path — result already has _pipeline shape
         console.log('[analyze][pipeline] cache hit:', cacheKey);
-        insertPrediction(db, videoId, {
+        const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
           ml_score:         cachedScore.ml_score,
           similarity_score: cachedScore.peer_context_score,
           final_score:      cachedScore.final_score,
           confidence:       cachedScore.confidence,
           ensemble_weights: cachedScore.ensemble_weights ?? {},
         });
+        setImmediate(() => {
+          try {
+            const snap = capturePrediction({
+              predictionId,
+              videoId,
+              final_score:      cachedScore.final_score,
+              confidence_state: cachedScore._pipeline.confidence.state,
+              predicted_state:  cachedScore._pipeline.recommendation?.priority ?? null,
+              degraded_mode:    cachedScore.degraded_mode ?? false,
+              warnings:         cachedScore._pipeline.confidence.warnings ?? [],
+              pipeline_version: 'pipeline_v1',
+              predicted_at:     now,
+            });
+            insertPredictionFeedbackSnapshot(db, snap);
+          } catch (e) {
+            logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+          }
+        });
         const { ensemble_weights: _ew, ...responseFields } = cachedScore;
         return res.json({
-          video_id: videoId,
+          video_id:      videoId,
+          prediction_id: predictionId,
           ...responseFields,
           _pipeline: { ...cachedScore._pipeline, cached: true },
           cached: true,
@@ -111,7 +133,7 @@ router.post('/analyze', async (req, res) => {
 
       console.log(`[analyze][pipeline] final_score=${result.final_score} confidence=${result._pipeline.confidence.state} peers=${result.peer_count}`);
 
-      insertPrediction(db, videoId, {
+      const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
         ml_score:         result.ml_score,
         similarity_score: result.peer_context_score,
         final_score:      result.final_score,
@@ -119,9 +141,29 @@ router.post('/analyze', async (req, res) => {
         ensemble_weights: result.ensemble_weights ?? {},
       });
 
+      setImmediate(() => {
+        try {
+          const snap = capturePrediction({
+            predictionId,
+            videoId,
+            final_score:      result.final_score,
+            confidence_state: result._pipeline.confidence.state,
+            predicted_state:  result._pipeline.recommendation?.priority ?? null,
+            degraded_mode:    result.degraded_mode ?? false,
+            warnings:         result._pipeline.confidence.warnings ?? [],
+            pipeline_version: 'pipeline_v1',
+            predicted_at:     now,
+          });
+          insertPredictionFeedbackSnapshot(db, snap);
+        } catch (e) {
+          logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+        }
+      });
+
       const { ensemble_weights: _ew, ...responseFields } = result;
       return res.json({
-        video_id: videoId,
+        video_id:      videoId,
+        prediction_id: predictionId,
         ...responseFields,
         cached: false,
         ...(result.low_confidence && {
@@ -164,7 +206,7 @@ router.post('/analyze', async (req, res) => {
     console.log(`[analyze] final_score=${ensemble.final_score} source=${ensemble.scoring_source} peers=${simResult.peer_count} cached=${!!cachedScore}`);
 
     // 7. Persist prediction
-    insertPrediction(db, videoId, {
+    const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
       ml_score:          ensemble.ml_score,
       similarity_score:  simResult.peer_context_score,
       final_score:       ensemble.final_score,
@@ -172,20 +214,40 @@ router.post('/analyze', async (req, res) => {
       ensemble_weights:  ensemble.ensemble_weights,
     });
 
+    setImmediate(() => {
+      try {
+        const snap = capturePrediction({
+          predictionId,
+          videoId,
+          final_score:      ensemble.final_score,
+          confidence_state: null,
+          predicted_state:  null,
+          degraded_mode:    ensemble.degraded_mode ?? false,
+          warnings:         [],
+          pipeline_version: 'legacy',
+          predicted_at:     now,
+        });
+        insertPredictionFeedbackSnapshot(db, snap);
+      } catch (e) {
+        logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+      }
+    });
+
     res.json({
-      video_id:          videoId,
-      final_score:       ensemble.final_score,
-      ml_score:          ensemble.ml_score,
-      rule_based_score:  ensemble.rule_based_score,
+      video_id:           videoId,
+      prediction_id:      predictionId,
+      final_score:        ensemble.final_score,
+      ml_score:           ensemble.ml_score,
+      rule_based_score:   ensemble.rule_based_score,
       peer_context_score: simResult.peer_context_score,
-      peer_count:        simResult.peer_count,
-      confidence:        ensemble.confidence,
-      scoring_source:    ensemble.scoring_source,
-      similar_videos:    simResult.matches,
-      data_source:       simResult.source,
-      degraded_mode:     ensemble.degraded_mode,
-      low_confidence:    simResult.low_confidence,
-      cached:            !!cachedScore,
+      peer_count:         simResult.peer_count,
+      confidence:         ensemble.confidence,
+      scoring_source:     ensemble.scoring_source,
+      similar_videos:     simResult.matches,
+      data_source:        simResult.source,
+      degraded_mode:      ensemble.degraded_mode,
+      low_confidence:     simResult.low_confidence,
+      cached:             !!cachedScore,
       ...(simResult.low_confidence && {
         message: 'Accuracy improves as more videos are analyzed in this niche',
       }),

@@ -81,7 +81,7 @@ function insertPerformanceMetricsPlaceholder(db, videoId) {
 // ── Predictions ───────────────────────────────────────────────────────────────
 
 function insertPrediction(db, videoId, { ml_score, similarity_score, final_score, confidence, ensemble_weights }) {
-  db.run(
+  return db.run(
     `INSERT INTO predictions
        (video_id, llm_score, ml_score, similarity_score, final_score, confidence, ensemble_weights)
      VALUES (?, NULL, ?, ?, ?, ?, ?)`,
@@ -186,6 +186,61 @@ function deleteWorkspace(db, id) {
   return db.run('DELETE FROM workspaces WHERE id = ?', [id]);
 }
 
+// ── Prediction feedback ────────────────────────────────────────────────────────
+
+function insertPredictionFeedbackSnapshot(db, {
+  prediction_id, video_id, predicted_score, predicted_state, confidence_state,
+  pipeline_version, warnings_json, predicted_at, degraded_mode, created_at, updated_at,
+}) {
+  return db.run(
+    `INSERT INTO prediction_feedback
+       (prediction_id, video_id, predicted_score, predicted_state, confidence_state,
+        pipeline_version, warnings_json, predicted_at, degraded_mode, created_at, updated_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      prediction_id, video_id, predicted_score, predicted_state ?? null, confidence_state ?? null,
+      pipeline_version, warnings_json ?? null, predicted_at, degraded_mode ? 1 : 0,
+      created_at, updated_at,
+    ],
+  );
+}
+
+function getSnapshotByPredictionId(db, predictionId) {
+  return db.get('SELECT * FROM prediction_feedback WHERE prediction_id = ?', [predictionId]);
+}
+
+function updatePredictionFeedbackLabel(db, id, { feedback_label, feedback_reason, user_notes, updated_at }) {
+  return db.run(
+    'UPDATE prediction_feedback SET feedback_label=?, feedback_reason=?, user_notes=?, updated_at=? WHERE id=?',
+    [feedback_label, feedback_reason ?? null, user_notes ?? null, updated_at, id],
+  );
+}
+
+function updatePredictionFeedbackOutcomes(db, id, { actual_views_24h, actual_views_7d, actual_ctr, actual_retention, updated_at }) {
+  return db.run(
+    'UPDATE prediction_feedback SET actual_views_24h=?, actual_views_7d=?, actual_ctr=?, actual_retention=?, updated_at=? WHERE id=?',
+    [actual_views_24h ?? null, actual_views_7d ?? null, actual_ctr ?? null, actual_retention ?? null, updated_at, id],
+  );
+}
+
+function getFeedbackStats(db) {
+  return db.get(`
+    SELECT
+      COUNT(*) AS total_snapshots,
+      SUM(CASE WHEN feedback_label IS NOT NULL THEN 1 ELSE 0 END)                               AS total_reviewed,
+      SUM(CASE WHEN feedback_label = 'accurate'   THEN 1 ELSE 0 END)                            AS accurate_count,
+      SUM(CASE WHEN feedback_label = 'inaccurate' THEN 1 ELSE 0 END)                            AS inaccurate_count,
+      SUM(CASE WHEN feedback_label = 'partial'    THEN 1 ELSE 0 END)                            AS partial_count,
+      SUM(CASE WHEN pipeline_version = 'legacy'      THEN 1 ELSE 0 END)                         AS legacy_count,
+      SUM(CASE WHEN pipeline_version = 'pipeline_v1' THEN 1 ELSE 0 END)                         AS pipeline_v1_count,
+      SUM(CASE WHEN degraded_mode = 1 THEN 1 ELSE 0 END)                                        AS degraded_count,
+      SUM(CASE WHEN degraded_mode = 1 AND feedback_label IS NOT NULL  THEN 1 ELSE 0 END)         AS degraded_reviewed_count,
+      SUM(CASE WHEN degraded_mode = 1 AND feedback_label = 'accurate' THEN 1 ELSE 0 END)         AS degraded_accurate_count,
+      MAX(updated_at) AS last_feedback_at
+    FROM prediction_feedback
+  `);
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -207,4 +262,9 @@ module.exports = {
   insertWorkspace,
   updateWorkspace,
   deleteWorkspace,
+  insertPredictionFeedbackSnapshot,
+  getSnapshotByPredictionId,
+  updatePredictionFeedbackLabel,
+  updatePredictionFeedbackOutcomes,
+  getFeedbackStats,
 };

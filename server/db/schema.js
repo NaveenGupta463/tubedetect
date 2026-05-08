@@ -69,6 +69,34 @@ const SCHEMA = `
     updated_at  TEXT    NOT NULL,
     data        TEXT    NOT NULL
   );
+
+  CREATE TABLE IF NOT EXISTS prediction_feedback (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    prediction_id    INTEGER,
+    video_id         INTEGER,
+    predicted_score  REAL,
+    predicted_state  TEXT,
+    confidence_state TEXT,
+    pipeline_version TEXT,
+    warnings_json    TEXT,
+    predicted_at     TEXT,
+    degraded_mode    INTEGER DEFAULT 0,
+    actual_views_24h INTEGER,
+    actual_views_7d  INTEGER,
+    actual_ctr       REAL,
+    actual_retention REAL,
+    feedback_label   TEXT,
+    feedback_reason  TEXT,
+    user_notes       TEXT,
+    resolved         INTEGER DEFAULT 0,
+    created_at       TEXT,
+    updated_at       TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_pf_prediction_id  ON prediction_feedback(prediction_id);
+  CREATE INDEX IF NOT EXISTS idx_pf_video_id       ON prediction_feedback(video_id);
+  CREATE INDEX IF NOT EXISTS idx_pf_feedback_label ON prediction_feedback(feedback_label);
+  CREATE INDEX IF NOT EXISTS idx_pf_created_at     ON prediction_feedback(created_at);
 `;
 
 module.exports = SCHEMA;

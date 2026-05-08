@@ -1,12 +1,13 @@
 const express  = require('express');
 const { getDb }             = require('../db/init');
-const { getMetricsCoverage } = require('../db/queries');
+const { getMetricsCoverage, getFeedbackStats } = require('../db/queries');
 const { getStats: quotaStats } = require('../services/quotaGuard');
 const { getUsageStats: explainStats } = require('../services/llmExplain');
 const { getRefreshStats }   = require('../jobs/refreshCron');
 const { getLookupCounters } = require('./lookup');
 const orchestrator             = require('../pipeline/orchestrator');
 const { isNewPipelineEnabled } = require('../pipeline/flags');
+const { computePredictionAccuracy } = require('../services/outcomeTracker');
 
 const router = express.Router();
 
@@ -56,10 +57,11 @@ router.get('/metrics', (_req, res) => {
       stale_count,
       by_niche: byNiche,
     },
-    quota:   quotaStats(),
-    explain: explainStats(),
-    refresh: getRefreshStats(),
-    lookup:  lookupC,
+    quota:           quotaStats(),
+    explain:         explainStats(),
+    refresh:         getRefreshStats(),
+    lookup:          lookupC,
+    feedbackMetrics: computePredictionAccuracy(getFeedbackStats(db)),
     ...(isNewPipelineEnabled() && { pipeline: orchestrator.getPipelineStats() }),
   });
 });
