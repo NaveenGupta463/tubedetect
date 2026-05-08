@@ -35,7 +35,9 @@ export const ROUTES = {
   results:    (id) => `${SCORING_URL}/api/results/${id}`,
   workspaces: `${SCORING_URL}/api/workspaces`,
   workspace:  (id) => `${SCORING_URL}/api/workspaces/${id}`,
-  dbHealth:   `${SCORING_URL}/api/db/health`,
-  dbStats:    `${SCORING_URL}/api/db/stats`,
-  dbBackup:   `${SCORING_URL}/api/db/backup`,
+  dbHealth:          `${SCORING_URL}/api/db/health`,
+  dbStats:           `${SCORING_URL}/api/db/stats`,
+  dbBackup:          `${SCORING_URL}/api/db/backup`,
+  predictionFeedback: `${SCORING_URL}/api/prediction-feedback`,
+  outcomesRefresh:    `${SCORING_URL}/api/outcomes/refresh`,
 };

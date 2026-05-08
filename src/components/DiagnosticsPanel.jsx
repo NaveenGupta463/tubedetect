@@ -154,6 +154,19 @@ export default function DiagnosticsPanel() {
         </Card>
       )}
 
+      {/* Prediction system */}
+      {data?.metrics?.feedbackMetrics && (
+        <Card title="Prediction System">
+          <Row label="Snapshots tracked" value={String(data.metrics.feedbackMetrics.totalTracked ?? 0)} />
+          <Row label="User feedback"     value={String(data.metrics.feedbackMetrics.totalFeedback ?? 0)} />
+          <Row label="Accuracy rate"     value={data.metrics.feedbackMetrics.accuracyRate != null ? `${data.metrics.feedbackMetrics.accuracyRate}%` : '—'} ok={data.metrics.feedbackMetrics.accuracyRate >= 70} />
+          <Row label="Degraded count"    value={String(data.metrics.feedbackMetrics.degradedCount ?? 0)} />
+          <Row label="Legacy snapshots"  value={String(data.metrics.feedbackMetrics.legacyCount ?? 0)} />
+          <Row label="Pipeline v1"       value={String(data.metrics.feedbackMetrics.pipelineV1Count ?? 0)} />
+          <Row label="Last feedback"     value={data.metrics.feedbackMetrics.lastFeedbackAt ? new Date(data.metrics.feedbackMetrics.lastFeedbackAt).toLocaleString() : '—'} />
+        </Card>
+      )}
+
       {/* Memory */}
       {data?.mem && (
         <Card title="Memory (JS Heap)">

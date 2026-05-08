@@ -4,6 +4,8 @@ import { fetchChannel } from '../api/youtube';
 import { meetsRequirement } from '../utils/tierConfig';
 import { formatNum } from '../utils/analysis';
 import * as storage from '../utils/storage';
+import { analyze } from '../api/scoringApi';
+import PredictionFeedback from './PredictionFeedback';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function hashString(str) {
@@ -201,6 +203,9 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
   const [showBreakdown, setShowBreakdown] = useState(false);
   const [lastThumbInputType, setLastThumbInputType] = useState('none');
   const resultsRef = useRef(null);
+  const [mlPredictionId,    setMlPredictionId]    = useState(null);
+  const [mlPredictionState, setMlPredictionState] = useState(null);
+  const [mlConfidenceState, setMlConfidenceState] = useState(null);
 
   // Auto-fill from loaded channel + recent videos
   useEffect(() => {
@@ -314,6 +319,9 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
     setLoading(true);
     setError('');
     setResult(null);
+    setMlPredictionId(null);
+    setMlPredictionState(null);
+    setMlConfidenceState(null);
     setProgressStep(1);
 
     const delays = [2200, 4500, 7500, 10500];
@@ -332,6 +340,23 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
       consumeAICall();
       setResult(data);
       storage.setJSON(cacheKey, data);
+      // Background ML prediction snapshot — non-blocking, failure is silent
+      (async () => {
+        try {
+          const scored = await analyze({
+            title:        form.title.trim(),
+            hook:         form.hook.trim() || contentDescription.slice(0, 200),
+            niche:        form.category,
+            channel_size: parseInt(form.subscribers) || 10000,
+            wing:         'pre',
+          });
+          if (scored?.prediction_id != null) {
+            setMlPredictionId(scored.prediction_id);
+            setMlPredictionState(scored._pipeline?.recommendation?.priority ?? null);
+            setMlConfidenceState(scored._pipeline?.confidence?.state ?? null);
+          }
+        } catch {}
+      })();
       saveHistory({ title: form.title, score: data.viralScore, grade: data.grade, date: new Date().toISOString(), result: data });
       setHistory(loadHistory());
       if ((data.viralScore ?? 0) >= 85) {
@@ -2023,6 +2048,12 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
               </div>
             </div>
           )}
+
+          <PredictionFeedback
+            predictionId={mlPredictionId}
+            predictionState={mlPredictionState}
+            confidenceState={mlConfidenceState}
+          />
 
           <div className="chart-card" style={{ marginBottom: 16 }}>
             <div className="chart-title-row">

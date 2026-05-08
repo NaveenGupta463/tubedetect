@@ -2,6 +2,8 @@ import { useState, useEffect, useRef } from 'react';
 import { scoreTitle, battleTitles, analyzeThumbnailImage } from '../api/claude';
 import ProGate from './ProGate';
 import * as storage from '../utils/storage';
+import { analyze } from '../api/scoringApi';
+import PredictionFeedback from './PredictionFeedback';
 
 const ANGLE_COLOR = { Curiosity: '#7c4dff', Emotion: '#ff4081', Clarity: '#00bcd4' };
 const LABEL_COLOR = {
@@ -74,6 +76,10 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
   const [thumbAnalyzing, setThumbAnalyzing] = useState(false);
   const analyzedKeyRef = useRef(null); // cache key — avoids re-analyzing same image
   const fileInputRef   = useRef(null);
+
+  const [mlPredictionId,    setMlPredictionId]    = useState(null);
+  const [mlPredictionState, setMlPredictionState] = useState(null);
+  const [mlConfidenceState, setMlConfidenceState] = useState(null);
 
   // Battle mode
   const [titleA, setTitleA]                   = useState('');
@@ -152,6 +158,9 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
     setRevealing(false);
     setError('');
     setResult(null);
+    setMlPredictionId(null);
+    setMlPredictionState(null);
+    setMlConfidenceState(null);
 
     try {
       // Run title score + optional image analysis in parallel
@@ -169,6 +178,23 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
       setLoading(false);
       setRevealing(true);
       setTimeout(() => { setResult(r); setRevealing(false); }, 400);
+      // Background ML prediction snapshot — non-blocking, failure is silent
+      (async () => {
+        try {
+          const scored = await analyze({
+            title:        t,
+            hook:         thumb.trim() || t,
+            niche:        niche.trim() || 'general',
+            channel_size: 10000,
+            wing:         'pre',
+          });
+          if (scored?.prediction_id != null) {
+            setMlPredictionId(scored.prediction_id);
+            setMlPredictionState(scored._pipeline?.recommendation?.priority ?? null);
+            setMlConfidenceState(scored._pipeline?.confidence?.state ?? null);
+          }
+        } catch {}
+      })();
     } catch (e) {
       setError(e.message);
       setLoading(false);
@@ -719,6 +745,12 @@ export default function TitleThumbnailScorer({ tier, canUseAI, consumeAICall, re
             </>
           );
         })()}
+
+        <PredictionFeedback
+          predictionId={mlPredictionId}
+          predictionState={mlPredictionState}
+          confidenceState={mlConfidenceState}
+        />
 
         {/* ── SAVED IDEAS ── */}
         {savedIdeas.length > 0 && (
