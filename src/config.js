@@ -42,4 +42,5 @@ export const ROUTES = {
   outcomesRefresh:       `${SCORING_URL}/api/outcomes/refresh`,
   outcomesPublish:       `${SCORING_URL}/api/outcomes/publish`,
   outcomesVideoRefresh:  `${SCORING_URL}/api/outcomes/video-refresh`,
+  learningReport:        `${SCORING_URL}/api/learning/report`,
 };

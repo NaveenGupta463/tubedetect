@@ -472,6 +472,46 @@ function getPredictionTrendBuckets(db) {
   );
 }
 
+// ── Learning engine queries ────────────────────────────────────────────────────
+
+function getLearningOutcomeRows(db) {
+  return db.all(
+    `SELECT
+       COALESCE(LOWER(TRIM(niche)), 'unknown')            AS niche,
+       calibration_error,
+       COALESCE(LOWER(TRIM(confidence_state)), 'unknown') AS confidence_state,
+       pipeline_version,
+       video_id
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+       AND calibration_error IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 500`,
+  );
+}
+
+function getDegradedModeRows(db) {
+  return db.all(
+    `SELECT vo.calibration_error
+     FROM prediction_feedback pf
+     JOIN video_outcomes vo ON vo.prediction_id = pf.prediction_id
+     WHERE pf.degraded_mode = 1
+       AND vo.calibration_error IS NOT NULL`,
+  );
+}
+
+function getHookTypeOutcomeRows(db) {
+  return db.all(
+    `SELECT
+       COALESCE(f.hook_type, 'unknown') AS hook_type,
+       vo.calibration_error
+     FROM video_outcomes vo
+     JOIN features f ON f.video_id = vo.video_id
+     WHERE vo.calibration_error IS NOT NULL
+       AND vo.video_id IS NOT NULL`,
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -514,4 +554,7 @@ module.exports = {
   getRecentPredictionErrors,
   getTopDriftingNiches,
   getPredictionTrendBuckets,
+  getLearningOutcomeRows,
+  getDegradedModeRows,
+  getHookTypeOutcomeRows,
 };
