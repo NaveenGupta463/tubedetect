@@ -1,5 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BACKEND_URL, SCORING_URL, ROUTES, IS_DEV } from '../config';
+import CalibrationDashboard from './CalibrationDashboard';
+import ConfidenceMatrix     from './ConfidenceMatrix';
+import NicheDriftDashboard  from './NicheDriftDashboard';
 import { logger } from '../utils/logger';
 import { getPerfReport } from '../utils/perf';
 import { isElectron, getElectronAppInfo } from '../api/ipc';
@@ -164,6 +167,24 @@ export default function DiagnosticsPanel() {
           <Row label="Legacy snapshots"  value={String(data.metrics.feedbackMetrics.legacyCount ?? 0)} />
           <Row label="Pipeline v1"       value={String(data.metrics.feedbackMetrics.pipelineV1Count ?? 0)} />
           <Row label="Last feedback"     value={data.metrics.feedbackMetrics.lastFeedbackAt ? new Date(data.metrics.feedbackMetrics.lastFeedbackAt).toLocaleString() : '—'} />
+        </Card>
+      )}
+
+      {/* Intelligence dashboards */}
+      {data?.metrics?.calibrationDashboard && (
+        <Card title="Calibration Intelligence">
+          <CalibrationDashboard
+            calibrationData={data.metrics.calibrationDashboard}
+            health={data.metrics.predictionHealth}
+          />
+        </Card>
+      )}
+      {data?.metrics?.confidenceMatrix && (
+        <ConfidenceMatrix data={data.metrics.confidenceMatrix} />
+      )}
+      {data?.metrics?.nicheDrift && (
+        <Card title="Niche Drift Intelligence">
+          <NicheDriftDashboard data={data.metrics.nicheDrift} />
         </Card>
       )}
 
