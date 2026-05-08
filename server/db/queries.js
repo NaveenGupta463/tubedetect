@@ -349,6 +349,129 @@ function getOutcomeStaleCount(db) {
   `)?.n ?? 0;
 }
 
+// ── Analytics aggregation ─────────────────────────────────────────────────────
+
+function getCalibrationTimeline(db, days) {
+  const n = parseInt(days, 10) || 90;
+  return db.all(
+    `SELECT
+       DATE(last_refreshed_at)                                           AS date,
+       COUNT(*)                                                          AS count,
+       AVG(ABS(calibration_error))                                       AS mae,
+       AVG(calibration_error)                                            AS avg_error,
+       SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)    AS accurate_count,
+       SUM(CASE WHEN calibration_error > 10       THEN 1 ELSE 0 END)    AS over_count,
+       SUM(CASE WHEN calibration_error < -10      THEN 1 ELSE 0 END)    AS under_count
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+       AND last_refreshed_at >= datetime('now', '-${n} days')
+     GROUP BY DATE(last_refreshed_at)
+     ORDER BY date ASC`,
+  );
+}
+
+function getConfidenceReliability(db) {
+  return db.all(
+    `SELECT
+       COALESCE(LOWER(TRIM(confidence_state)), 'unknown') AS confidence_bucket,
+       COUNT(*)                                            AS total,
+       SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END) AS accurate_count,
+       SUM(CASE WHEN ABS(calibration_error) > 10  THEN 1 ELSE 0 END) AS inaccurate_count,
+       AVG(ABS(calibration_error))                        AS mae,
+       AVG(actual_performance_score)                      AS avg_actual
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY confidence_bucket`,
+  );
+}
+
+function getNicheDriftMetrics(db) {
+  return db.all(
+    `SELECT
+       COALESCE(LOWER(TRIM(niche)), 'unknown') AS niche,
+       COUNT(*)                                AS count,
+       AVG(calibration_error)                  AS avg_error,
+       AVG(ABS(calibration_error))             AS mae
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY niche
+     ORDER BY mae DESC`,
+  );
+}
+
+function getPredictionAccuracySummary(db) {
+  return db.get(
+    `SELECT
+       COUNT(*)                                                           AS total,
+       AVG(ABS(calibration_error))                                        AS mae,
+       AVG(calibration_error)                                             AS avg_error,
+       SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)     AS accurate_count,
+       SUM(CASE WHEN calibration_error > 10        THEN 1 ELSE 0 END)    AS over_count,
+       SUM(CASE WHEN calibration_error < -10       THEN 1 ELSE 0 END)    AS under_count
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL`,
+  );
+}
+
+function getCalibrationDistribution(db) {
+  return db.all(
+    `SELECT calibration_band, COUNT(*) AS count
+     FROM video_outcomes
+     WHERE calibration_band IS NOT NULL
+     GROUP BY calibration_band`,
+  );
+}
+
+function getRecentPredictionErrors(db, limit) {
+  return db.all(
+    `SELECT
+       title,
+       COALESCE(LOWER(TRIM(niche)), 'unknown') AS niche,
+       calibration_error,
+       calibration_band,
+       predicted_score,
+       actual_performance_score,
+       last_refreshed_at
+     FROM video_outcomes
+     WHERE calibration_error IS NOT NULL
+     ORDER BY last_refreshed_at DESC
+     LIMIT ?`,
+    [limit ?? 10],
+  );
+}
+
+function getTopDriftingNiches(db, limit) {
+  return db.all(
+    `SELECT
+       COALESCE(LOWER(TRIM(niche)), 'unknown') AS niche,
+       COUNT(*)                                AS count,
+       AVG(calibration_error)                  AS avg_error,
+       AVG(ABS(calibration_error))             AS mae
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY niche
+     ORDER BY mae DESC
+     LIMIT ?`,
+    [limit ?? 10],
+  );
+}
+
+function getPredictionTrendBuckets(db) {
+  return db.all(
+    `SELECT
+       strftime('%Y-W%W', last_refreshed_at)                             AS week,
+       COUNT(*)                                                          AS total,
+       SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)    AS accurate_count,
+       SUM(CASE WHEN calibration_error > 10        THEN 1 ELSE 0 END)   AS over_count,
+       SUM(CASE WHEN calibration_error < -10       THEN 1 ELSE 0 END)   AS under_count
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+       AND last_refreshed_at >= datetime('now', '-90 days')
+     GROUP BY week
+     ORDER BY week ASC`,
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -383,4 +506,12 @@ module.exports = {
   getOutcomeRowsForDrift,
   getOutcomeRefreshQueueSize,
   getOutcomeStaleCount,
+  getCalibrationTimeline,
+  getConfidenceReliability,
+  getNicheDriftMetrics,
+  getPredictionAccuracySummary,
+  getCalibrationDistribution,
+  getRecentPredictionErrors,
+  getTopDriftingNiches,
+  getPredictionTrendBuckets,
 };
