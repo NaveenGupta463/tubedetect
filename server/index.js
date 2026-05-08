@@ -35,9 +35,10 @@ try {
   const dbRoute                 = require('./routes/db');
   const predictionFeedbackRoute = require('./routes/predictionFeedback');
   const outcomesRoute           = require('./routes/outcomes');
-  const { startCron }         = require('./jobs/feedbackCron');
-  const { startIngestCron }   = require('./jobs/youtubeIngest');
-  const { startRefreshCron }  = require('./jobs/refreshCron');
+  const { startCron }              = require('./jobs/feedbackCron');
+  const { startIngestCron }        = require('./jobs/youtubeIngest');
+  const { startRefreshCron }       = require('./jobs/refreshCron');
+  const { startOutcomeRefreshJob } = require('./jobs/outcomeRefreshJob');
 
   const app = express();
 
@@ -75,6 +76,7 @@ try {
         startCron();
         startIngestCron();
         startRefreshCron();
+        startOutcomeRefreshJob();
       }
     });
 

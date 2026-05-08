@@ -97,6 +97,52 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_pf_video_id       ON prediction_feedback(video_id);
   CREATE INDEX IF NOT EXISTS idx_pf_feedback_label ON prediction_feedback(feedback_label);
   CREATE INDEX IF NOT EXISTS idx_pf_created_at     ON prediction_feedback(created_at);
+
+  CREATE TABLE IF NOT EXISTS video_outcomes (
+    id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+    prediction_id            INTEGER,
+    video_id                 INTEGER,
+    youtube_video_id         TEXT,
+    pipeline_version         TEXT,
+
+    predicted_score          REAL,
+    predicted_state          TEXT,
+    confidence_state         TEXT,
+    niche                    TEXT,
+    title                    TEXT,
+    hook                     TEXT,
+
+    published_at             TEXT,
+    published_title          TEXT,
+    published_thumbnail      TEXT,
+
+    actual_views_1h          INTEGER,
+    actual_views_24h         INTEGER,
+    actual_views_7d          INTEGER,
+    actual_ctr               REAL,
+    actual_retention         REAL,
+
+    velocity_1h              REAL,
+    velocity_24h             REAL,
+    velocity_7d              REAL,
+
+    actual_performance_score REAL,
+    calibration_error        REAL,
+    calibration_band         TEXT,
+
+    outcome_state            TEXT DEFAULT 'insufficient_data',
+    drift_tags_json          TEXT,
+
+    observed_at              TEXT,
+    created_at               TEXT,
+    last_refreshed_at        TEXT,
+    refresh_count            INTEGER DEFAULT 0,
+    refresh_attempts         INTEGER DEFAULT 0
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_vo_prediction_id    ON video_outcomes(prediction_id);
+  CREATE INDEX IF NOT EXISTS idx_vo_youtube_video_id ON video_outcomes(youtube_video_id);
+  CREATE INDEX IF NOT EXISTS idx_vo_created_at       ON video_outcomes(created_at);
 `;
 
 module.exports = SCHEMA;

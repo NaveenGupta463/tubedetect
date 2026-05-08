@@ -1,25 +1,27 @@
 const express  = require('express');
 const { getDb }             = require('../db/init');
-const { getMetricsCoverage, getFeedbackStats } = require('../db/queries');
-const { getStats: quotaStats } = require('../services/quotaGuard');
-const { getUsageStats: explainStats } = require('../services/llmExplain');
-const { getRefreshStats }   = require('../jobs/refreshCron');
-const { getLookupCounters } = require('./lookup');
-const orchestrator             = require('../pipeline/orchestrator');
-const { isNewPipelineEnabled } = require('../pipeline/flags');
-const { computePredictionAccuracy } = require('../services/outcomeTracker');
+const {
+  getMetricsCoverage, getFeedbackStats,
+  getOutcomeStats, getOutcomeRowsForDrift,
+  getOutcomeRefreshQueueSize, getOutcomeStaleCount,
+}                           = require('../db/queries');
+const { getStats: quotaStats }          = require('../services/quotaGuard');
+const { getUsageStats: explainStats }   = require('../services/llmExplain');
+const { getRefreshStats }               = require('../jobs/refreshCron');
+const { getLookupCounters }             = require('./lookup');
+const orchestrator                      = require('../pipeline/orchestrator');
+const { isNewPipelineEnabled }          = require('../pipeline/flags');
+const { computePredictionAccuracy }     = require('../services/outcomeTracker');
+const { computeOutcomeMetrics }         = require('../services/outcomeCollector');
+const { computeDriftSignals }           = require('../services/driftAnalytics');
 
 const router = express.Router();
 
-/**
- * GET /api/metrics
- * Returns system health: DB coverage, quota, LLM usage, cache stats.
- */
 router.get('/metrics', (_req, res) => {
   const db = getDb();
 
   const { total_videos, training_ready, with_embeddings, with_last_updated } = getMetricsCoverage(db);
-  const { stale_count }       = db.get(`
+  const { stale_count } = db.get(`
     SELECT COUNT(*) AS stale_count FROM videos v
     JOIN performance_metrics pm ON pm.video_id = v.id
     WHERE v.youtube_video_id IS NOT NULL
@@ -43,7 +45,11 @@ router.get('/metrics', (_req, res) => {
     LIMIT 10
   `);
 
-  const lookupC = getLookupCounters();
+  const lookupC        = getLookupCounters();
+  const outcomeStats   = getOutcomeStats(db);
+  const refreshQ       = getOutcomeRefreshQueueSize(db);
+  const staleOutcomes  = getOutcomeStaleCount(db);
+  const driftRows      = getOutcomeRowsForDrift(db, 100);
 
   res.json({
     db: {
@@ -57,11 +63,13 @@ router.get('/metrics', (_req, res) => {
       stale_count,
       by_niche: byNiche,
     },
-    quota:           quotaStats(),
-    explain:         explainStats(),
-    refresh:         getRefreshStats(),
-    lookup:          lookupC,
+    quota:          quotaStats(),
+    explain:        explainStats(),
+    refresh:        getRefreshStats(),
+    lookup:         lookupC,
     feedbackMetrics: computePredictionAccuracy(getFeedbackStats(db)),
+    outcomeMetrics:  computeOutcomeMetrics(outcomeStats, refreshQ, staleOutcomes),
+    driftSignals:    computeDriftSignals(driftRows),
     ...(isNewPipelineEnabled() && { pipeline: orchestrator.getPipelineStats() }),
   });
 });

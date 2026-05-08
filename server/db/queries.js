@@ -149,7 +149,7 @@ function updateFeedback(db, videoId, correction, reason) {
 // ── Workspaces ────────────────────────────────────────────────────────────────
 
 function getDbStats(db) {
-  const tables = ['videos', 'features', 'predictions', 'performance_metrics', 'embeddings', 'workspaces'];
+  const tables = ['videos', 'features', 'predictions', 'performance_metrics', 'embeddings', 'workspaces', 'prediction_feedback', 'video_outcomes'];
   const counts = {};
   for (const t of tables) {
     try { counts[t] = db.get(`SELECT COUNT(*) as n FROM ${t}`)?.n ?? 0; }
@@ -241,6 +241,114 @@ function getFeedbackStats(db) {
   `);
 }
 
+// ── Video outcomes ─────────────────────────────────────────────────────────────
+
+function insertVideoOutcome(db, {
+  prediction_id, video_id, youtube_video_id, pipeline_version,
+  predicted_score, predicted_state, confidence_state,
+  niche, title, hook,
+  published_at, published_title, published_thumbnail,
+  outcome_state, observed_at, created_at,
+}) {
+  return db.run(
+    `INSERT INTO video_outcomes
+       (prediction_id, video_id, youtube_video_id, pipeline_version,
+        predicted_score, predicted_state, confidence_state,
+        niche, title, hook,
+        published_at, published_title, published_thumbnail,
+        outcome_state, observed_at, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      prediction_id ?? null, video_id ?? null, youtube_video_id, pipeline_version ?? 'legacy',
+      predicted_score ?? null, predicted_state ?? null, confidence_state ?? null,
+      niche ?? null, title ?? null, hook ?? null,
+      published_at ?? null, published_title ?? null, published_thumbnail ?? null,
+      outcome_state ?? 'insufficient_data', observed_at, created_at,
+    ],
+  );
+}
+
+function getVideoOutcomeByPredictionId(db, predictionId) {
+  return db.get('SELECT * FROM video_outcomes WHERE prediction_id = ?', [predictionId]);
+}
+
+function getMostRecentOutcomeByYouTubeId(db, ytId) {
+  return db.get(
+    'SELECT * FROM video_outcomes WHERE youtube_video_id = ? ORDER BY created_at DESC LIMIT 1',
+    [ytId],
+  );
+}
+
+function updateVideoOutcomeRefresh(db, id, {
+  actual_views_1h, actual_views_24h, actual_views_7d, actual_ctr, actual_retention,
+  velocity_1h, velocity_24h, velocity_7d,
+  actual_performance_score, calibration_error, calibration_band, outcome_state,
+  last_refreshed_at,
+}) {
+  return db.run(
+    `UPDATE video_outcomes SET
+       actual_views_1h=?, actual_views_24h=?, actual_views_7d=?,
+       actual_ctr=?, actual_retention=?,
+       velocity_1h=?, velocity_24h=?, velocity_7d=?,
+       actual_performance_score=?, calibration_error=?, calibration_band=?,
+       outcome_state=?, last_refreshed_at=?,
+       refresh_count = refresh_count + 1
+     WHERE id=?`,
+    [
+      actual_views_1h ?? null, actual_views_24h ?? null, actual_views_7d ?? null,
+      actual_ctr ?? null, actual_retention ?? null,
+      velocity_1h ?? null, velocity_24h ?? null, velocity_7d ?? null,
+      actual_performance_score ?? null, calibration_error ?? null, calibration_band ?? null,
+      outcome_state, last_refreshed_at, id,
+    ],
+  );
+}
+
+function getOutcomeStats(db) {
+  return db.get(`
+    SELECT
+      COUNT(*)                                                                         AS total_tracked,
+      SUM(CASE WHEN published_at IS NOT NULL THEN 1 ELSE 0 END)                       AS published_count,
+      SUM(CASE WHEN calibration_error IS NOT NULL THEN 1 ELSE 0 END)                  AS calibrated_count,
+      AVG(CASE WHEN calibration_error IS NOT NULL THEN ABS(calibration_error) END)    AS avg_abs_error,
+      SUM(CASE WHEN calibration_error > 0 THEN 1 ELSE 0 END)                         AS over_count,
+      SUM(CASE WHEN calibration_error < 0 THEN 1 ELSE 0 END)                         AS under_count,
+      SUM(CASE WHEN calibration_error IS NOT NULL
+               AND ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)                   AS accurate_count
+    FROM video_outcomes
+  `);
+}
+
+function getOutcomeRowsForDrift(db, limit) {
+  return db.all(
+    `SELECT niche, calibration_error, calibration_band, actual_ctr, actual_retention,
+            pipeline_version, outcome_state, created_at
+     FROM video_outcomes
+     WHERE calibration_error IS NOT NULL OR actual_ctr IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT ?`,
+    [limit ?? 100],
+  );
+}
+
+function getOutcomeRefreshQueueSize(db) {
+  return db.get(`
+    SELECT COUNT(*) AS n FROM video_outcomes
+    WHERE youtube_video_id IS NOT NULL AND published_at IS NOT NULL
+      AND (last_refreshed_at IS NULL
+           OR last_refreshed_at < datetime('now', '-6 hours'))
+  `)?.n ?? 0;
+}
+
+function getOutcomeStaleCount(db) {
+  return db.get(`
+    SELECT COUNT(*) AS n FROM video_outcomes
+    WHERE youtube_video_id IS NOT NULL AND published_at IS NOT NULL
+      AND (last_refreshed_at IS NULL
+           OR last_refreshed_at < datetime('now', '-24 hours'))
+  `)?.n ?? 0;
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -267,4 +375,12 @@ module.exports = {
   updatePredictionFeedbackLabel,
   updatePredictionFeedbackOutcomes,
   getFeedbackStats,
+  insertVideoOutcome,
+  getVideoOutcomeByPredictionId,
+  getMostRecentOutcomeByYouTubeId,
+  updateVideoOutcomeRefresh,
+  getOutcomeStats,
+  getOutcomeRowsForDrift,
+  getOutcomeRefreshQueueSize,
+  getOutcomeStaleCount,
 };
