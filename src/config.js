@@ -38,6 +38,8 @@ export const ROUTES = {
   dbHealth:          `${SCORING_URL}/api/db/health`,
   dbStats:           `${SCORING_URL}/api/db/stats`,
   dbBackup:          `${SCORING_URL}/api/db/backup`,
-  predictionFeedback: `${SCORING_URL}/api/prediction-feedback`,
-  outcomesRefresh:    `${SCORING_URL}/api/outcomes/refresh`,
+  predictionFeedback:    `${SCORING_URL}/api/prediction-feedback`,
+  outcomesRefresh:       `${SCORING_URL}/api/outcomes/refresh`,
+  outcomesPublish:       `${SCORING_URL}/api/outcomes/publish`,
+  outcomesVideoRefresh:  `${SCORING_URL}/api/outcomes/video-refresh`,
 };

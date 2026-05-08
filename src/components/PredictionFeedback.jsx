@@ -11,32 +11,127 @@ const REASONS = [
   { value: 'unknown',          label: 'Unknown reason' },
 ];
 
+const INPUT_STYLE = {
+  width: '100%', boxSizing: 'border-box',
+  background: '#111', color: '#ccc', border: '1px solid #333',
+  borderRadius: 6, padding: '7px 10px', fontSize: 13,
+};
+
 export default function PredictionFeedback({ predictionId, predictionState, confidenceState }) {
+  const [stage,      setStage]      = useState('feedback'); // 'feedback' | 'publish' | 'done'
   const [label,      setLabel]      = useState(null);
   const [reason,     setReason]     = useState('');
   const [notes,      setNotes]      = useState('');
-  const [submitted,  setSubmitted]  = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error,      setError]      = useState('');
+  const [ytInput,      setYtInput]      = useState('');
+  const [publishDate,  setPublishDate]  = useState('');
+  const [publishing,   setPublishing]   = useState(false);
+  const [publishError, setPublishError] = useState('');
+  const [publishTracked, setPublishTracked] = useState(false);
 
   useEffect(() => {
+    setStage('feedback');
     setLabel(null);
     setReason('');
     setNotes('');
-    setSubmitted(false);
     setError('');
+    setYtInput('');
+    setPublishDate('');
+    setPublishError('');
+    setPublishTracked(false);
   }, [predictionId]);
 
   if (!predictionId) return null;
 
-  if (submitted) {
+  if (stage === 'done') {
     return (
       <div style={{
         marginTop: 16, padding: '10px 16px',
         background: '#0a1a0a', border: '1px solid #00c85333', borderRadius: 8,
         fontSize: 13, color: '#00c853',
       }}>
-        Feedback saved — thank you for improving prediction accuracy.
+        {publishTracked
+          ? 'Feedback and publish tracked — thank you.'
+          : 'Feedback saved — thank you for improving prediction accuracy.'}
+      </div>
+    );
+  }
+
+  if (stage === 'publish') {
+    const handlePublish = async () => {
+      if (!ytInput.trim()) { setStage('done'); return; }
+      setPublishing(true);
+      setPublishError('');
+      try {
+        const res = await fetch(ROUTES.outcomesPublish, {
+          method:  'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            prediction_id:    predictionId,
+            youtube_video_id: ytInput.trim(),
+            published_at:     publishDate
+              ? new Date(publishDate).toISOString()
+              : undefined,
+          }),
+        });
+        if (!res.ok) {
+          const body = await res.json().catch(() => ({}));
+          throw new Error(body.error || `${res.status}`);
+        }
+        setPublishTracked(true);
+        setStage('done');
+      } catch (e) {
+        setPublishError(e.message || 'Could not track publish');
+      } finally {
+        setPublishing(false);
+      }
+    };
+
+    return (
+      <div style={{
+        marginTop: 20, padding: '14px 18px',
+        background: '#0d0d0d', border: '1px solid #222', borderRadius: 10,
+      }}>
+        <div style={{ fontSize: 12, color: '#555', marginBottom: 8, textTransform: 'uppercase', letterSpacing: 0.5 }}>
+          Track publish (optional)
+        </div>
+        <div style={{ fontSize: 13, color: '#666', marginBottom: 12 }}>
+          Link the published YouTube video to measure prediction accuracy over time.
+        </div>
+        <input
+          value={ytInput}
+          onChange={e => setYtInput(e.target.value)}
+          placeholder="YouTube URL or video ID (e.g. dQw4w9WgXcQ)"
+          style={{ ...INPUT_STYLE, marginBottom: 8 }}
+        />
+        <input
+          type="datetime-local"
+          value={publishDate}
+          onChange={e => setPublishDate(e.target.value)}
+          title="Published at (optional)"
+          style={{ ...INPUT_STYLE, marginBottom: 12, colorScheme: 'dark' }}
+        />
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <button
+            onClick={handlePublish}
+            disabled={publishing}
+            style={{
+              padding: '7px 20px', borderRadius: 6, border: 'none',
+              background: '#7c4dff', color: '#fff', fontSize: 13, fontWeight: 700,
+              cursor: publishing ? 'not-allowed' : 'pointer', opacity: publishing ? 0.6 : 1,
+            }}
+          >
+            {publishing ? 'Tracking…' : 'Track Publish'}
+          </button>
+          <button
+            onClick={() => setStage('done')}
+            style={{ background: 'none', border: 'none', color: '#444', fontSize: 12, cursor: 'pointer' }}
+          >
+            Skip
+          </button>
+        </div>
+        {publishError && <div style={{ marginTop: 8, fontSize: 12, color: '#ff5252' }}>{publishError}</div>}
       </div>
     );
   }
@@ -51,7 +146,7 @@ export default function PredictionFeedback({ predictionId, predictionState, conf
       const res = await fetch(ROUTES.predictionFeedback, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({
+        body: JSON.stringify({
           predictionId,
           label,
           reason: reason || undefined,
@@ -59,7 +154,7 @@ export default function PredictionFeedback({ predictionId, predictionState, conf
         }),
       });
       if (!res.ok) throw new Error(`${res.status}`);
-      setSubmitted(true);
+      setStage('publish');
     } catch {
       setError('Could not save feedback — please try again.');
     } finally {
@@ -108,10 +203,7 @@ export default function PredictionFeedback({ predictionId, predictionState, conf
           <select
             value={reason}
             onChange={e => setReason(e.target.value)}
-            style={{
-              background: '#111', color: '#ccc', border: '1px solid #333',
-              borderRadius: 6, padding: '7px 10px', fontSize: 13,
-            }}
+            style={{ background: '#111', color: '#ccc', border: '1px solid #333', borderRadius: 6, padding: '7px 10px', fontSize: 13 }}
           >
             <option value="">Select reason (optional)</option>
             {REASONS.map(r => <option key={r.value} value={r.value}>{r.label}</option>)}
@@ -122,11 +214,7 @@ export default function PredictionFeedback({ predictionId, predictionState, conf
             placeholder="Additional notes (optional)"
             maxLength={500}
             rows={2}
-            style={{
-              background: '#111', color: '#ccc', border: '1px solid #333',
-              borderRadius: 6, padding: '7px 10px', fontSize: 13,
-              resize: 'vertical', fontFamily: 'inherit',
-            }}
+            style={{ background: '#111', color: '#ccc', border: '1px solid #333', borderRadius: 6, padding: '7px 10px', fontSize: 13, resize: 'vertical', fontFamily: 'inherit' }}
           />
         </div>
       )}

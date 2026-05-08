@@ -167,6 +167,62 @@ export default function DiagnosticsPanel() {
         </Card>
       )}
 
+      {/* Outcome tracking */}
+      {data?.metrics?.outcomeMetrics && (() => {
+        const om = data.metrics.outcomeMetrics;
+        return (
+          <Card title="Outcome Tracking">
+            <Row label="Tracked videos"       value={String(om.trackedVideos ?? 0)} />
+            <Row label="Published"            value={String(om.publishedVideos ?? 0)} />
+            <Row label="Calibrated"           value={String(om.calibratedPredictions ?? 0)} />
+            <Row label="Refresh queue"        value={String(om.refreshQueueSize ?? 0)} ok={om.refreshQueueSize === 0} />
+            <Row label="Stale outcomes"       value={String(om.staleOutcomeCount ?? 0)} ok={om.staleOutcomeCount === 0} />
+          </Card>
+        );
+      })()}
+
+      {/* Calibration */}
+      {data?.metrics?.outcomeMetrics?.calibratedPredictions > 0 && (() => {
+        const om = data.metrics.outcomeMetrics;
+        const mae = om.avgCalibrationError;
+        const maeOk = mae != null ? mae < 10 : undefined;
+        const maeWarn = mae != null && mae >= 10 && mae < 20;
+        return (
+          <Card title="Calibration">
+            <Row label="Avg absolute error"   value={mae != null ? mae.toFixed(1) : '—'}         ok={maeOk && !maeWarn ? true : maeWarn ? undefined : mae != null ? false : undefined} />
+            <Row label="Accurate rate"        value={om.accurateRate    != null ? `${om.accurateRate}%`     : '—'} ok={om.accurateRate >= 70} />
+            <Row label="Overprediction rate"  value={om.overpredictionRate  != null ? `${om.overpredictionRate}%`  : '—'} ok={om.overpredictionRate  < 35} />
+            <Row label="Underprediction rate" value={om.underpredictionRate != null ? `${om.underpredictionRate}%` : '—'} ok={om.underpredictionRate < 35} />
+          </Card>
+        );
+      })()}
+
+      {/* Drift signals */}
+      {data?.metrics?.driftSignals && (() => {
+        const ds = data.metrics.driftSignals;
+        const warnCount = ds.warnings?.length ?? 0;
+        const sigCount  = ds.signals?.length ?? 0;
+        return (
+          <Card title="Drift Signals">
+            <Row label="Videos analyzed"   value={String(ds.summary?.total ?? 0)} />
+            <Row label="MAE"               value={ds.summary?.meanAbsoluteError != null ? ds.summary.meanAbsoluteError.toFixed(1) : '—'} ok={ds.summary?.meanAbsoluteError < 20} />
+            <Row label="System warnings"   value={String(warnCount)} ok={warnCount === 0} />
+            <Row label="Active signals"    value={String(sigCount)}  ok={sigCount  === 0} />
+            {warnCount > 0 && ds.warnings.map((w, i) => (
+              <div key={i} style={{
+                marginTop: 6, padding: '5px 8px', fontSize: 11, fontFamily: 'monospace',
+                background: w.severity === 'critical' ? '#2a0a0a' : '#1a1500',
+                border: `1px solid ${w.severity === 'critical' ? '#5a1a1a' : '#3a3000'}`,
+                borderRadius: 4, color: w.severity === 'critical' ? '#f87171' : '#fbbf24',
+                wordBreak: 'break-word',
+              }}>
+                {w.message}
+              </div>
+            ))}
+          </Card>
+        );
+      })()}
+
       {/* Memory */}
       {data?.mem && (
         <Card title="Memory (JS Heap)">
