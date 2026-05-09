@@ -252,6 +252,63 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_swa_version_type ON scoring_weight_audit(version_type);
   CREATE INDEX IF NOT EXISTS idx_swa_applied_at   ON scoring_weight_audit(applied_at);
+
+  CREATE TABLE IF NOT EXISTS ingested_channels (
+    id                  TEXT    PRIMARY KEY,
+    channel_id          TEXT    NOT NULL UNIQUE,
+    channel_name        TEXT,
+    niche               TEXT    NOT NULL,
+    uploads_playlist_id TEXT,
+    channel_subscribers INTEGER,
+    last_ingested_at    TEXT,
+    ingest_enabled      INTEGER NOT NULL DEFAULT 1,
+    added_by            TEXT    NOT NULL DEFAULT 'system',
+    added_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    notes               TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_ic_niche   ON ingested_channels(niche);
+  CREATE INDEX IF NOT EXISTS idx_ic_enabled ON ingested_channels(ingest_enabled);
+
+  CREATE TABLE IF NOT EXISTS ingested_videos (
+    youtube_video_id    TEXT    PRIMARY KEY,
+    channel_id          TEXT    NOT NULL,
+    niche               TEXT    NOT NULL,
+    title               TEXT    NOT NULL,
+    description         TEXT,
+    published_at        TEXT,
+    duration_seconds    INTEGER,
+    category_id         TEXT,
+    views               INTEGER,
+    likes               INTEGER,
+    comments            INTEGER,
+    channel_subscribers INTEGER,
+    ingested_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_refreshed_at   TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_iv_channel   ON ingested_videos(channel_id);
+  CREATE INDEX IF NOT EXISTS idx_iv_niche     ON ingested_videos(niche);
+  CREATE INDEX IF NOT EXISTS idx_iv_published ON ingested_videos(published_at);
+
+  CREATE TABLE IF NOT EXISTS video_growth_snapshots (
+    id                           TEXT PRIMARY KEY,
+    video_id                     TEXT NOT NULL,
+    bucket                       TEXT NOT NULL,
+    age_hours_at_snapshot        REAL NOT NULL,
+    views                        INTEGER,
+    likes                        INTEGER,
+    comments                     INTEGER,
+    views_per_hour               REAL,
+    subscriber_adjusted_velocity REAL,
+    views_to_subscriber_ratio    REAL,
+    velocity_acceleration        REAL,
+    snapshotted_at               TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(video_id, bucket)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id);
+  CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket);
 `;
 
 module.exports = SCHEMA;

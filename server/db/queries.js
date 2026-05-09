@@ -785,6 +785,130 @@ function getChannelViewHistory(db, niche) {
   );
 }
 
+// ── Ingested channels ─────────────────────────────────────────────────────────
+
+function getIngestableChannels(db) {
+  return db.all(
+    `SELECT * FROM ingested_channels WHERE ingest_enabled = 1
+     ORDER BY last_ingested_at ASC NULLS FIRST`,
+  );
+}
+
+function getAllIngestedChannels(db) {
+  return db.all('SELECT * FROM ingested_channels ORDER BY added_at DESC');
+}
+
+function upsertIngestedChannel(db, { id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes }) {
+  return db.run(
+    `INSERT INTO ingested_channels
+       (id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(channel_id) DO UPDATE SET
+       channel_name        = COALESCE(excluded.channel_name, channel_name),
+       uploads_playlist_id = COALESCE(excluded.uploads_playlist_id, uploads_playlist_id),
+       channel_subscribers = COALESCE(excluded.channel_subscribers, channel_subscribers)`,
+    [id, channel_id, channel_name ?? null, niche, uploads_playlist_id ?? null,
+     channel_subscribers ?? null, added_by ?? 'system', notes ?? null],
+  );
+}
+
+function updateChannelIngestMetadata(db, channelId, { uploadsPlaylistId, channelName, channelSubscribers }) {
+  db.run(
+    `UPDATE ingested_channels
+     SET uploads_playlist_id = ?,
+         channel_name        = COALESCE(?, channel_name),
+         channel_subscribers = COALESCE(?, channel_subscribers)
+     WHERE channel_id = ?`,
+    [uploadsPlaylistId, channelName ?? null, channelSubscribers ?? null, channelId],
+  );
+}
+
+function markChannelIngested(db, channelId) {
+  db.run(
+    "UPDATE ingested_channels SET last_ingested_at = datetime('now') WHERE channel_id = ?",
+    [channelId],
+  );
+}
+
+function setChannelEnabled(db, id, enabled) {
+  db.run('UPDATE ingested_channels SET ingest_enabled = ? WHERE id = ?', [enabled ? 1 : 0, id]);
+}
+
+// ── Ingested videos ───────────────────────────────────────────────────────────
+
+function upsertIngestedVideo(db, {
+  youtube_video_id, channel_id, niche, title, description,
+  published_at, duration_seconds, category_id,
+  views, likes, comments, channel_subscribers,
+}) {
+  db.run(
+    `INSERT INTO ingested_videos
+       (youtube_video_id, channel_id, niche, title, description, published_at,
+        duration_seconds, category_id, views, likes, comments, channel_subscribers)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(youtube_video_id) DO UPDATE SET
+       views             = excluded.views,
+       likes             = excluded.likes,
+       comments          = excluded.comments,
+       last_refreshed_at = datetime('now')`,
+    [
+      youtube_video_id, channel_id, niche, title, description ?? null,
+      published_at ?? null, duration_seconds ?? null, category_id ?? null,
+      views ?? 0, likes ?? 0, comments ?? 0, channel_subscribers ?? null,
+    ],
+  );
+}
+
+function getIngestedVideosByNiche(db, niche) {
+  return db.all(
+    'SELECT * FROM ingested_videos WHERE niche = ? ORDER BY published_at DESC',
+    [niche],
+  );
+}
+
+function getIngestedVideoCount(db) {
+  return db.get('SELECT COUNT(*) AS n FROM ingested_videos')?.n ?? 0;
+}
+
+// ── Video growth snapshots ────────────────────────────────────────────────────
+
+function insertGrowthSnapshot(db, {
+  id, video_id, bucket, age_hours_at_snapshot,
+  views, likes, comments,
+  views_per_hour, subscriber_adjusted_velocity,
+  views_to_subscriber_ratio, velocity_acceleration,
+}) {
+  db.run(
+    `INSERT OR IGNORE INTO video_growth_snapshots
+       (id, video_id, bucket, age_hours_at_snapshot, views, likes, comments,
+        views_per_hour, subscriber_adjusted_velocity, views_to_subscriber_ratio,
+        velocity_acceleration)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, video_id, bucket, age_hours_at_snapshot,
+      views ?? null, likes ?? null, comments ?? null,
+      views_per_hour ?? null, subscriber_adjusted_velocity ?? null,
+      views_to_subscriber_ratio ?? null, velocity_acceleration ?? null,
+    ],
+  );
+}
+
+function getPreviousBucketSnapshot(db, videoId, bucket) {
+  const BUCKET_ORDER = ['1d', '3d', '7d', '14d', '30d', '90d', '365d'];
+  const idx = BUCKET_ORDER.indexOf(bucket);
+  if (idx <= 0) return null;
+  return db.get(
+    'SELECT * FROM video_growth_snapshots WHERE video_id = ? AND bucket = ?',
+    [videoId, BUCKET_ORDER[idx - 1]],
+  );
+}
+
+function getSnapshotCountByBucket(db) {
+  return db.all(
+    `SELECT bucket, COUNT(*) AS n FROM video_growth_snapshots GROUP BY bucket ORDER BY bucket`,
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -852,4 +976,16 @@ module.exports = {
   upsertVideoOutcomeReality,
   getRealityRowsForLearning,
   getChannelViewHistory,
+  getIngestableChannels,
+  getAllIngestedChannels,
+  upsertIngestedChannel,
+  updateChannelIngestMetadata,
+  markChannelIngested,
+  setChannelEnabled,
+  upsertIngestedVideo,
+  getIngestedVideosByNiche,
+  getIngestedVideoCount,
+  insertGrowthSnapshot,
+  getPreviousBucketSnapshot,
+  getSnapshotCountByBucket,
 };

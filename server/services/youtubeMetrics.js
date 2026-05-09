@@ -170,4 +170,80 @@ async function fetchVideoFull(videoId) {
   };
 }
 
-module.exports = { fetchVideoMetrics, fetchVideoFull, searchVideosByKeyword, fetchVideoStatsBatch, fetchChannelStatsBatch };
+/**
+ * Fetch a channel's uploads playlist ID + subscriber count via contentDetails + statistics.
+ * Costs 1 quota unit.
+ */
+async function fetchChannelContentDetails(channelId) {
+  const url = `${YT_BASE}/channels?part=contentDetails,snippet,statistics&id=${channelId}&key=${getYtKey()}`;
+  const res  = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(`YouTube channels error: ${data?.error?.message || res.status}`);
+  const item = data.items?.[0];
+  if (!item) throw new Error(`Channel not found: ${channelId}`);
+  return {
+    channelName:       item.snippet?.title ?? '',
+    uploadsPlaylistId: item.contentDetails?.relatedPlaylists?.uploads ?? null,
+    subscriberCount:   parseInt(item.statistics?.subscriberCount ?? '0', 10),
+  };
+}
+
+/**
+ * Fetch one page of video IDs from a uploads playlist.
+ * Returns { videoIds, nextPageToken }.
+ * Costs 1 quota unit per call.
+ */
+async function fetchPlaylistItems(playlistId, pageToken = null, maxResults = 50) {
+  let url = `${YT_BASE}/playlistItems?part=contentDetails&playlistId=${playlistId}`
+    + `&maxResults=${Math.min(maxResults, 50)}&key=${getYtKey()}`;
+  if (pageToken) url += `&pageToken=${pageToken}`;
+  const res  = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(`YouTube playlistItems error: ${data?.error?.message || res.status}`);
+  return {
+    videoIds:      (data.items ?? []).map(i => i.contentDetails?.videoId).filter(Boolean),
+    nextPageToken: data.nextPageToken ?? null,
+  };
+}
+
+/**
+ * Batch-fetch full video data (snippet + statistics + contentDetails) for up to 50 video IDs.
+ * Returns Map<videoId, { title, description, published_at, channel_id, category_id,
+ *                        duration_seconds, views, likes, comments }>.
+ * Costs 1 quota unit per call.
+ */
+async function fetchVideoFullBatch(videoIds) {
+  if (!videoIds.length) return new Map();
+  const ids = videoIds.slice(0, 50).join(',');
+  const url = `${YT_BASE}/videos?part=snippet,statistics,contentDetails&id=${ids}&key=${getYtKey()}`;
+  const res  = await fetch(url);
+  const data = await res.json();
+  if (!res.ok) throw new Error(`YouTube videos error: ${data?.error?.message || res.status}`);
+
+  const map = new Map();
+  for (const item of (data.items ?? [])) {
+    const raw = item.contentDetails?.duration ?? '';
+    const m   = raw.match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+    const duration_seconds = m
+      ? (parseInt(m[1] ?? 0) * 3600 + parseInt(m[2] ?? 0) * 60 + parseInt(m[3] ?? 0))
+      : null;
+    map.set(item.id, {
+      title:           item.snippet?.title          ?? '',
+      description:     item.snippet?.description    ?? '',
+      published_at:    item.snippet?.publishedAt    ?? null,
+      channel_id:      item.snippet?.channelId      ?? '',
+      category_id:     item.snippet?.categoryId     ?? null,
+      duration_seconds,
+      views:           parseInt(item.statistics?.viewCount    ?? '0', 10),
+      likes:           parseInt(item.statistics?.likeCount    ?? '0', 10),
+      comments:        parseInt(item.statistics?.commentCount ?? '0', 10),
+    });
+  }
+  return map;
+}
+
+module.exports = {
+  fetchVideoMetrics, fetchVideoFull, searchVideosByKeyword,
+  fetchVideoStatsBatch, fetchChannelStatsBatch,
+  fetchChannelContentDetails, fetchPlaylistItems, fetchVideoFullBatch,
+};

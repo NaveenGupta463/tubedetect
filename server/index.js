@@ -38,10 +38,11 @@ try {
   const learningRoute           = require('./routes/learning');
   const experimentsRoute        = require('./routes/experiments');
   const adminRoute              = require('./routes/admin');
-  const { startCron }              = require('./jobs/feedbackCron');
-  const { startIngestCron }        = require('./jobs/youtubeIngest');
-  const { startRefreshCron }       = require('./jobs/refreshCron');
-  const { startOutcomeRefreshJob } = require('./jobs/outcomeRefreshJob');
+  const { startCron }                    = require('./jobs/feedbackCron');
+  const { startIngestCron }              = require('./jobs/youtubeIngest');
+  const { startRefreshCron }             = require('./jobs/refreshCron');
+  const { startOutcomeRefreshJob }       = require('./jobs/outcomeRefreshJob');
+  const { startHistoricalIngestCron }    = require('./jobs/historicalIngest');
 
   const app = express();
 
@@ -83,6 +84,7 @@ try {
         startIngestCron();
         startRefreshCron();
         startOutcomeRefreshJob();
+        startHistoricalIngestCron();
       }
     });
 
