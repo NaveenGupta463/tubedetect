@@ -36,7 +36,8 @@ const NEW_METRICS_COLS = [
 ];
 
 const NEW_VIDEOS_COLS = [
-  ['last_updated_at', 'TEXT'],
+  ['last_updated_at',  'TEXT'],
+  ['duration_seconds', 'INTEGER'],
 ];
 
 const NEW_PREDICTION_COLS = [

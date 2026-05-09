@@ -3,12 +3,12 @@
 
 // ── Videos ────────────────────────────────────────────────────────────────────
 
-function insertVideo(db, { title, hook, niche, channel_size, upload_date, prediction_date, wing, youtube_video_id, last_updated_at }) {
+function insertVideo(db, { title, hook, niche, channel_size, upload_date, prediction_date, wing, youtube_video_id, last_updated_at, duration_seconds }) {
   return db.run(
     `INSERT INTO videos
-       (title, hook, niche, channel_size, upload_date, prediction_date, wing, youtube_video_id, last_updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [title, hook, niche, channel_size, upload_date ?? null, prediction_date, wing, youtube_video_id ?? null, last_updated_at ?? null],
+       (title, hook, niche, channel_size, upload_date, prediction_date, wing, youtube_video_id, last_updated_at, duration_seconds)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [title, hook, niche, channel_size, upload_date ?? null, prediction_date, wing, youtube_video_id ?? null, last_updated_at ?? null, duration_seconds ?? null],
   );
 }
 
@@ -512,6 +512,55 @@ function getHookTypeOutcomeRows(db) {
   );
 }
 
+// ── Scoring weight audit ──────────────────────────────────────────────────────
+
+function getActiveScoringVersionByType(db, versionType) {
+  return db.get(
+    'SELECT * FROM scoring_versions WHERE active = 1 AND version_type = ? ORDER BY created_at DESC LIMIT 1',
+    [versionType],
+  );
+}
+
+function activateScoringVersion(db, versionId, versionType) {
+  db.run('UPDATE scoring_versions SET active = 0 WHERE version_type = ?', [versionType]);
+  db.run('UPDATE scoring_versions SET active = 1 WHERE id = ?', [versionId]);
+}
+
+function insertScoringWeightAudit(db, { id, version_type, old_version_id, new_version_id, old_weights_json, new_weights_json, trigger_reason, experiment_id, applied_by, rollback_of_audit_id }) {
+  return db.run(
+    `INSERT INTO scoring_weight_audit
+       (id, version_type, old_version_id, new_version_id, old_weights_json, new_weights_json,
+        trigger_reason, experiment_id, applied_by, applied_at, rollback_of_audit_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, version_type,
+      old_version_id ?? null,
+      new_version_id,
+      old_weights_json != null ? (typeof old_weights_json === 'string' ? old_weights_json : JSON.stringify(old_weights_json)) : null,
+      typeof new_weights_json === 'string' ? new_weights_json : JSON.stringify(new_weights_json),
+      trigger_reason,
+      experiment_id ?? null,
+      applied_by ?? 'system',
+      new Date().toISOString(),
+      rollback_of_audit_id ?? null,
+    ],
+  );
+}
+
+function getScoringWeightAuditLog(db, limit) {
+  return db.all(
+    'SELECT * FROM scoring_weight_audit ORDER BY applied_at DESC LIMIT ?',
+    [limit ?? 50],
+  );
+}
+
+function getMostRecentAuditForType(db, versionType) {
+  return db.get(
+    'SELECT * FROM scoring_weight_audit WHERE version_type = ? ORDER BY applied_at DESC LIMIT 1',
+    [versionType],
+  );
+}
+
 // ── Scoring versions ──────────────────────────────────────────────────────────
 
 function insertScoringVersion(db, { id, version_name, version_type, weights_json, thresholds_json, confidence_rules_json, created_by, notes }) {
@@ -781,6 +830,11 @@ module.exports = {
   getLearningOutcomeRows,
   getDegradedModeRows,
   getHookTypeOutcomeRows,
+  getActiveScoringVersionByType,
+  activateScoringVersion,
+  insertScoringWeightAudit,
+  getScoringWeightAuditLog,
+  getMostRecentAuditForType,
   insertScoringVersion,
   getActiveScoringVersion,
   getScoringVersionById,

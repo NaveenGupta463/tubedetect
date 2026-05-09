@@ -9,7 +9,8 @@ const SCHEMA = `
     upload_date       TEXT,
     prediction_date   TEXT    NOT NULL,
     wing              TEXT    NOT NULL CHECK(wing IN ('pre', 'post')),
-    youtube_video_id  TEXT
+    youtube_video_id  TEXT,
+    duration_seconds  INTEGER
   );
 
   CREATE TABLE IF NOT EXISTS features (
@@ -234,6 +235,23 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_vor_youtube_id     ON video_outcomes_reality(youtube_video_id);
   CREATE INDEX IF NOT EXISTS idx_vor_signal_quality ON video_outcomes_reality(signal_quality);
+
+  CREATE TABLE IF NOT EXISTS scoring_weight_audit (
+    id                   TEXT    PRIMARY KEY,
+    version_type         TEXT    NOT NULL,
+    old_version_id       TEXT,
+    new_version_id       TEXT    NOT NULL,
+    old_weights_json     TEXT,
+    new_weights_json     TEXT    NOT NULL DEFAULT '{}',
+    trigger_reason       TEXT    NOT NULL,
+    experiment_id        TEXT,
+    applied_by           TEXT,
+    applied_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+    rollback_of_audit_id TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_swa_version_type ON scoring_weight_audit(version_type);
+  CREATE INDEX IF NOT EXISTS idx_swa_applied_at   ON scoring_weight_audit(applied_at);
 `;
 
 module.exports = SCHEMA;
