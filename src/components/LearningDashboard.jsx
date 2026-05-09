@@ -32,6 +32,20 @@ const CONF_LABELS = {
 };
 const EXPECTED = { high: '80%', medium: '60%', low: '40%', degraded: '30%', unknown: '—' };
 
+const FAILURE_TYPE_LABELS = {
+  false_positive:          'False Positive',
+  false_negative:          'False Negative',
+  velocity_decay_with_match: 'Velocity Decay',
+};
+
+const VELOCITY_COLOR = {
+  explosive:    '#22c55e',
+  accelerating: '#60a5fa',
+  stable:       '#888',
+  decaying:     '#f59e0b',
+  dead:         '#ef4444',
+};
+
 const EXP_STATUS_COLOR = {
   draft: '#555', running: '#60a5fa', completed: '#22c55e', aborted: '#ef4444',
 };
@@ -474,6 +488,96 @@ export default function LearningDashboard() {
         {!report?.patternFailures?.length
           ? <EmptyState msg="No recurring failure patterns detected — system is performing as expected." />
           : report.patternFailures.map(r => <RecCard key={r.id} rec={r} />)
+        }
+      </div>
+
+      {/* ── REALITY FAILURES ──────────────────────────────────────────────────── */}
+      <div style={{ background: '#111', border: '1px solid #222', borderRadius: 8, padding: '14px 18px', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 }}>
+          <span style={{ fontSize: 11, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: 1 }}>
+            Reality Failures
+            {report?.realityFailures?.length > 0 && (
+              <span style={{ fontSize: 11, color: '#ef444488', background: '#1a0a0a', border: '1px solid #3a1a1a', borderRadius: 10, padding: '1px 8px', marginLeft: 8 }}>
+                {report.realityFailures.length}
+              </span>
+            )}
+          </span>
+          <span style={{ fontSize: 10, color: '#333', textTransform: 'uppercase', letterSpacing: 0.5 }}>Post-publish behavior vs predictions</span>
+        </div>
+        {!report?.realityFailures?.length
+          ? <EmptyState msg="No reality failures detected — publish videos to YouTube and run the cron to populate this section." />
+          : report.realityFailures.map(f => {
+              const typeLabel   = FAILURE_TYPE_LABELS[f.failure_type] ?? f.failure_type;
+              const sevColor    = SEV_COLOR[f.severity] ?? '#555';
+              const velColor    = VELOCITY_COLOR[f.velocity_state] ?? '#555';
+              return (
+                <div key={f.id} style={{
+                  background: '#0d0d0d', border: `1px solid ${sevColor}33`, borderRadius: 8,
+                  padding: '12px 16px', marginBottom: 8,
+                }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 6, marginBottom: 8 }}>
+                    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span style={{
+                        fontSize: 9, fontWeight: 800, textTransform: 'uppercase', letterSpacing: 0.5,
+                        padding: '2px 7px', borderRadius: 4,
+                        background: sevColor + '22', color: sevColor, border: `1px solid ${sevColor}44`,
+                      }}>
+                        {typeLabel}
+                      </span>
+                      {f.niche && (
+                        <span style={{ fontSize: 11, fontWeight: 700, color: '#a78bfa', background: '#a78bfa11', border: '1px solid #a78bfa33', borderRadius: 4, padding: '1px 7px' }}>
+                          {f.niche}
+                        </span>
+                      )}
+                      {f.velocity_state && (
+                        <span style={{ fontSize: 11, color: velColor, fontFamily: 'monospace', fontWeight: 700 }}>
+                          {f.velocity_state}
+                        </span>
+                      )}
+                      {f.severity && <SevBadge severity={f.severity} />}
+                    </div>
+                    {f.signal_quality && (
+                      <span style={{ fontSize: 10, color: f.signal_quality === 'strong' ? '#22c55e' : f.signal_quality === 'weak' ? '#f59e0b' : '#555', textTransform: 'uppercase', letterSpacing: 0.5 }}>
+                        {f.signal_quality} signal
+                      </span>
+                    )}
+                  </div>
+
+                  {f.title && (
+                    <div style={{ fontSize: 12, color: '#777', marginBottom: 6, fontStyle: 'italic', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      "{f.title}"
+                    </div>
+                  )}
+
+                  <div style={{ fontSize: 13, color: '#ccc', fontWeight: 600, marginBottom: 4 }}>
+                    {f.recommendation}
+                  </div>
+                  <div style={{ fontSize: 12, color: '#555', lineHeight: 1.5, marginBottom: 8 }}>
+                    {f.rationale}
+                  </div>
+
+                  <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', fontSize: 11, color: '#444' }}>
+                    {f.predicted_score != null && (
+                      <span>Predicted: <span style={{ fontFamily: 'monospace', color: '#888' }}>{f.predicted_score}</span></span>
+                    )}
+                    {f.views_72h != null && (
+                      <span>Views 72h: <span style={{ fontFamily: 'monospace', color: '#888' }}>{f.views_72h.toLocaleString()}</span></span>
+                    )}
+                    {f.breakout_multiplier != null && (
+                      <span>Breakout: <span style={{ fontFamily: 'monospace', color: '#22c55e' }}>{f.breakout_multiplier}x</span></span>
+                    )}
+                    {f.calibration_error != null && (
+                      <span>Cal error: <span style={{ fontFamily: 'monospace', color: Math.abs(f.calibration_error) > 10 ? '#f59e0b' : '#888' }}>
+                        {f.calibration_error > 0 ? '+' : ''}{f.calibration_error?.toFixed(1)}
+                      </span></span>
+                    )}
+                    {f.algorithm_push_score != null && (
+                      <span>Algo push: <span style={{ fontFamily: 'monospace', color: '#888' }}>{f.algorithm_push_score}</span></span>
+                    )}
+                  </div>
+                </div>
+              );
+            })
         }
       </div>
 
