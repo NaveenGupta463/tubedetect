@@ -52,4 +52,11 @@ export const ROUTES = {
   experimentsRun:        `${SCORING_URL}/api/experiments/run`,
   outcomesReality:       `${SCORING_URL}/api/outcomes/reality`,
   outcomesRealityById:   (ytId) => `${SCORING_URL}/api/outcomes/reality/${ytId}`,
+  experimentsApply:      (id) => `${SCORING_URL}/api/experiments/${id}/apply`,
+  adminAutoCalibrate:    `${SCORING_URL}/api/admin/learning/auto-calibrate`,
+  adminScoringRollback:  `${SCORING_URL}/api/admin/scoring/rollback`,
+  adminScoringActive:    `${SCORING_URL}/api/admin/scoring/active`,
+  adminScoringVersions:  `${SCORING_URL}/api/admin/scoring/versions`,
+  adminScoringAuditLog:  `${SCORING_URL}/api/admin/scoring/audit-log`,
+  adminCacheStats:       `${SCORING_URL}/api/admin/cache/stats`,
 };

@@ -4,6 +4,7 @@ const { getDb } = require('../db/init');
 const {
   insertScoringVersion,
   getActiveScoringVersion,
+  getActiveScoringVersionByType,
   getScoringVersionById,
   getScoringVersions,
   insertExperiment,
@@ -15,9 +16,12 @@ const {
   updateRecommendationActionExperiment,
   getSimulationRowsEnsemble,
   getSimulationRowsNicheBias,
+  activateScoringVersion,
+  insertScoringWeightAudit,
 } = require('../db/queries');
-const { runSimulation }      = require('../services/simulationEngine');
-const { compareVersions }    = require('../services/comparisonAnalytics');
+const { runSimulation }   = require('../services/simulationEngine');
+const { compareVersions } = require('../services/comparisonAnalytics');
+const scoreCache          = require('../services/scoreCache');
 
 const router = express.Router();
 
@@ -205,6 +209,47 @@ router.post('/experiments/run', (req, res) => {
     });
 
     res.json({ ok: true, status: 'completed', winner, result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/experiments/:id/apply — promote winning candidate to active production version
+router.post('/experiments/:id/apply', (req, res) => {
+  try {
+    const db  = getDb();
+    const exp = getExperiment(db, req.params.id);
+    if (!exp) return res.status(404).json({ error: 'experiment not found' });
+    if (exp.status !== 'completed') {
+      return res.status(409).json({ error: `experiment status is "${exp.status}" — only completed experiments can be applied` });
+    }
+    if (exp.winner !== 'candidate') {
+      return res.status(409).json({ error: `winner is "${exp.winner}" — only candidate-wins experiments can be applied` });
+    }
+
+    const candidate = getScoringVersionById(db, exp.candidate_version);
+    if (!candidate) return res.status(400).json({ error: 'candidate scoring version not found' });
+
+    const currentActive = getActiveScoringVersionByType(db, candidate.version_type);
+
+    activateScoringVersion(db, candidate.id, candidate.version_type);
+
+    const auditId = crypto.randomUUID();
+    insertScoringWeightAudit(db, {
+      id:               auditId,
+      version_type:     candidate.version_type,
+      old_version_id:   currentActive?.id ?? null,
+      new_version_id:   candidate.id,
+      old_weights_json: currentActive?.weights_json ?? null,
+      new_weights_json: candidate.weights_json,
+      trigger_reason:   `experiment_apply:${exp.id}`,
+      experiment_id:    exp.id,
+      applied_by:       req.body?.applied_by ?? 'user',
+    });
+
+    scoreCache.bumpVersionStamp();
+
+    res.json({ ok: true, audit_id: auditId, activated_version_id: candidate.id, version_type: candidate.version_type });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
