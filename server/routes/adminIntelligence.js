@@ -6,6 +6,7 @@ const {
   getAllIngestedChannels,
   upsertIngestedChannel,
   setChannelEnabled,
+  deleteIngestedChannel,
   updateChannelQuality,
   getIngestedVideoCount,
   getSnapshotCountByBucket,
@@ -182,6 +183,17 @@ router.patch('/admin/intelligence/channels/:id', (req, res) => {
     if (trust_score != null || weight_multiplier != null || ignore_from_benchmarks != null) {
       updateChannelQuality(db, req.params.id, { trust_score, weight_multiplier, ignore_from_benchmarks });
     }
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/admin/intelligence/channels/:id
+router.delete('/admin/intelligence/channels/:id', (req, res) => {
+  try {
+    const db = getDb();
+    deleteIngestedChannel(db, req.params.id);
     res.json({ ok: true });
   } catch (e) {
     res.status(500).json({ error: e.message });

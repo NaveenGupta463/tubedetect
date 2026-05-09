@@ -62,6 +62,7 @@ export const ROUTES = {
   adminIntelChannels:        `${SCORING_URL}/api/admin/intelligence/channels`,
   adminIntelChannelsBulk:    `${SCORING_URL}/api/admin/intelligence/channels/bulk`,
   adminIntelChannelPatch:    (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}`,
+  adminIntelChannelDelete:   (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}`,
   adminIntelIngestTrigger:   `${SCORING_URL}/api/admin/intelligence/ingest/trigger`,
   adminIntelSnapshotTrigger: `${SCORING_URL}/api/admin/intelligence/snapshot/trigger`,
   adminIntelPatternsRecompute: `${SCORING_URL}/api/admin/intelligence/patterns/recompute`,

@@ -149,6 +149,14 @@ function ChannelsTab({ token, channels, onRefresh }) {
     } catch (e) { setErr(e.message); }
   }
 
+  async function deleteChannel(ch) {
+    if (!window.confirm(`Delete "${ch.channel_name || ch.channel_id}"? This cannot be undone.`)) return;
+    try {
+      await apiFetch(ROUTES.adminIntelChannelDelete(ch.id), token, { method: 'DELETE' });
+      onRefresh();
+    } catch (e) { setErr(e.message); }
+  }
+
   return (
     <div>
       {/* Add single */}
@@ -204,7 +212,7 @@ function ChannelsTab({ token, channels, onRefresh }) {
           <table style={S.table}>
             <thead>
               <tr>
-                {['Channel', 'Niche', 'Last Ingested', 'Subs', 'Status'].map(h => (
+                {['Channel', 'Niche', 'Last Ingested', 'Subs', 'Status', ''].map(h => (
                   <th key={h} style={S.th}>{h}</th>
                 ))}
               </tr>
@@ -238,6 +246,15 @@ function ChannelsTab({ token, channels, onRefresh }) {
                         {ch.ignore_from_benchmarks ? 'excluded' : 'included'}
                       </button>
                     </div>
+                  </td>
+                  <td style={S.td}>
+                    <button
+                      onClick={() => deleteChannel(ch)}
+                      style={{ background: 'none', border: '1px solid #3a1a1a', borderRadius: 4, color: '#f87171', padding: '2px 8px', cursor: 'pointer', fontSize: '0.68rem', fontFamily: 'monospace' }}
+                      title="Delete channel"
+                    >
+                      delete
+                    </button>
                   </td>
                 </tr>
               ))}

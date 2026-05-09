@@ -1013,6 +1013,10 @@ function getAggregatableCombinations(db, minSample) {
   );
 }
 
+function deleteIngestedChannel(db, id) {
+  db.run('DELETE FROM ingested_channels WHERE id = ?', [id]);
+}
+
 function updateChannelQuality(db, id, { trust_score, weight_multiplier, ignore_from_benchmarks }) {
   const fields = [];
   const vals   = [];
@@ -1110,5 +1114,6 @@ module.exports = {
   getNicheBenchmarksByNiche,
   getSnapshotRowsForAggregation,
   getAggregatableCombinations,
+  deleteIngestedChannel,
   updateChannelQuality,
 };
