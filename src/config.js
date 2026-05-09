@@ -68,4 +68,6 @@ export const ROUTES = {
   adminIntelStatus:          `${SCORING_URL}/api/admin/intelligence/status`,
   adminIntelPatterns:        `${SCORING_URL}/api/admin/intelligence/patterns`,
   adminIntelQuota:           `${SCORING_URL}/api/admin/intelligence/quota`,
+  adminIntelResolve:         `${SCORING_URL}/api/admin/intelligence/channels/resolve`,
+  adminIntelCalibrateTrigger: `${SCORING_URL}/api/admin/intelligence/calibrate/trigger`,
 };

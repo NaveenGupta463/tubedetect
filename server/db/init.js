@@ -45,6 +45,12 @@ const NEW_PREDICTION_COLS = [
   ['correction_reason', 'TEXT'],
 ];
 
+const NEW_INGESTED_CHANNEL_COLS = [
+  ['trust_score',              'REAL DEFAULT 1.0'],
+  ['weight_multiplier',        'REAL DEFAULT 1.0'],
+  ['ignore_from_benchmarks',   'INTEGER DEFAULT 0'],
+];
+
 function migrate(database) {
   const featureCols = database.all("PRAGMA table_info(features)").map(r => r.name);
   for (const [col, def] of NEW_FEATURE_COLS) {
@@ -77,6 +83,16 @@ function migrate(database) {
       console.log(`[DB] Added column: predictions.${col}`);
     }
   }
+
+  try {
+    const icCols = database.all("PRAGMA table_info(ingested_channels)").map(r => r.name);
+    for (const [col, def] of NEW_INGESTED_CHANNEL_COLS) {
+      if (!icCols.includes(col)) {
+        database.exec(`ALTER TABLE ingested_channels ADD COLUMN ${col} ${def}`);
+        console.log(`[DB] Added column: ingested_channels.${col}`);
+      }
+    }
+  } catch (_) {}
 }
 
 function backfillNewFeatures(database) {

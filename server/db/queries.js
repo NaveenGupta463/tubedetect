@@ -997,17 +997,31 @@ function getSnapshotRowsForAggregation(db, niche, bucket) {
 }
 
 // Distinct (niche, bucket) pairs that have enough rows to aggregate.
+// Excludes channels flagged ignore_from_benchmarks=1.
 function getAggregatableCombinations(db, minSample) {
   return db.all(
     `SELECT iv.niche, vgs.bucket, COUNT(*) AS n
      FROM video_growth_snapshots vgs
      JOIN ingested_videos iv ON iv.youtube_video_id = vgs.video_id
+     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
      WHERE vgs.views IS NOT NULL
+       AND ic.ignore_from_benchmarks = 0
      GROUP BY iv.niche, vgs.bucket
      HAVING COUNT(*) >= ?
      ORDER BY iv.niche, vgs.bucket`,
     [minSample ?? 5],
   );
+}
+
+function updateChannelQuality(db, id, { trust_score, weight_multiplier, ignore_from_benchmarks }) {
+  const fields = [];
+  const vals   = [];
+  if (trust_score            != null) { fields.push('trust_score = ?');            vals.push(trust_score); }
+  if (weight_multiplier      != null) { fields.push('weight_multiplier = ?');      vals.push(weight_multiplier); }
+  if (ignore_from_benchmarks != null) { fields.push('ignore_from_benchmarks = ?'); vals.push(ignore_from_benchmarks ? 1 : 0); }
+  if (!fields.length) return;
+  vals.push(id);
+  db.run(`UPDATE ingested_channels SET ${fields.join(', ')} WHERE id = ?`, vals);
 }
 
 module.exports = {
@@ -1096,4 +1110,5 @@ module.exports = {
   getNicheBenchmarksByNiche,
   getSnapshotRowsForAggregation,
   getAggregatableCombinations,
+  updateChannelQuality,
 };

@@ -260,11 +260,14 @@ const SCHEMA = `
     niche               TEXT    NOT NULL,
     uploads_playlist_id TEXT,
     channel_subscribers INTEGER,
-    last_ingested_at    TEXT,
-    ingest_enabled      INTEGER NOT NULL DEFAULT 1,
-    added_by            TEXT    NOT NULL DEFAULT 'system',
-    added_at            TEXT    NOT NULL DEFAULT (datetime('now')),
-    notes               TEXT
+    last_ingested_at         TEXT,
+    ingest_enabled           INTEGER NOT NULL DEFAULT 1,
+    trust_score              REAL    NOT NULL DEFAULT 1.0,
+    weight_multiplier        REAL    NOT NULL DEFAULT 1.0,
+    ignore_from_benchmarks   INTEGER NOT NULL DEFAULT 0,
+    added_by                 TEXT    NOT NULL DEFAULT 'system',
+    added_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+    notes                    TEXT
   );
 
   CREATE INDEX IF NOT EXISTS idx_ic_niche   ON ingested_channels(niche);

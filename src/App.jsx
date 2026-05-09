@@ -50,7 +50,8 @@ import PlanMyVideo from './components/PlanMyVideo';
 import DiagnosticsPanel from './components/DiagnosticsPanel';
 
 // Learning
-import LearningDashboard from './components/LearningDashboard';
+import LearningDashboard    from './components/LearningDashboard';
+import AdminIntelligence   from './components/AdminIntelligence';
 
 // Dashboard
 import DashboardLanding from './components/DashboardLanding';
@@ -84,6 +85,13 @@ export default function App() {
     const action = params.get('action');
     const id     = params.get('id');
     const q      = params.get('q');
+
+    // Hidden operator route — ?admin=1 or hash #admin-1
+    if (params.get('admin') === '1' || window.location.hash === '#admin-1') {
+      window.history.replaceState(null, '', window.location.pathname);
+      setActiveView('admin_intelligence');
+      return;
+    }
 
     if (!action) return;
 
@@ -576,6 +584,9 @@ export default function App() {
 
       case 'learning':
         return <LearningDashboard />;
+
+      case 'admin_intelligence':
+        return <AdminIntelligence />;
 
       default:
         return <DashboardLayout aiProps={aiProps} channel={channel} videos={videos} activeTab="analyze" onTabChange={handleNavigate} />;
