@@ -9,6 +9,10 @@ process.on('unhandledRejection', (err) => {
 try {
   require('dotenv').config({ path: __dirname + '/.env' });
 
+  const logger  = require('./utils/logger');
+  const express = require('express');
+  const cors    = require('cors');
+
   logger.info('STARTUP', `TubeIntel Scoring Server — Node ${process.version} — PID ${process.pid}`);
   logger.info('STARTUP', `OPENAI_API_KEY   : ${process.env.OPENAI_API_KEY    ? '✓ loaded' : '✗ missing — embeddings disabled'}`);
   logger.info('STARTUP', `ANTHROPIC_API_KEY: ${process.env.ANTHROPIC_API_KEY ? '✓ loaded' : '✗ missing — explain uses rule-based fallback'}`);
@@ -21,9 +25,6 @@ try {
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY)
     logger.warn('STARTUP', 'Feedback cron and YouTube ingestion will not run');
 
-  const express = require('express');
-  const cors    = require('cors');
-  const logger        = require('./utils/logger');
   const { getDb }     = require('./db/init');
   const analyzeRoute  = require('./routes/analyze');
   const resultsRoute  = require('./routes/results');
