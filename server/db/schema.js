@@ -309,6 +309,28 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id);
   CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket);
+
+  CREATE TABLE IF NOT EXISTS niche_benchmarks (
+    id              TEXT    PRIMARY KEY,
+    niche           TEXT    NOT NULL,
+    bucket          TEXT    NOT NULL,
+    duration_bucket TEXT    NOT NULL,
+    sample_size     INTEGER NOT NULL DEFAULT 0,
+    median_views    REAL,
+    p75_views       REAL,
+    p90_views       REAL,
+    median_vph      REAL,
+    p75_vph         REAL,
+    p90_vph         REAL,
+    median_sav      REAL,
+    median_vsr      REAL,
+    median_accel    REAL,
+    computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(niche, bucket, duration_bucket)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_nb_niche  ON niche_benchmarks(niche);
+  CREATE INDEX IF NOT EXISTS idx_nb_bucket ON niche_benchmarks(bucket);
 `;
 
 module.exports = SCHEMA;

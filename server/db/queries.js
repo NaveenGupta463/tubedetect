@@ -909,6 +909,107 @@ function getSnapshotCountByBucket(db) {
   );
 }
 
+// Returns all ingested videos joined with their channel subscriber count,
+// used by snapshot cron to determine newly eligible buckets and refresh stats.
+function getAllIngestedVideosForSnapshot(db) {
+  return db.all(`
+    SELECT iv.youtube_video_id, iv.channel_id, iv.niche, iv.published_at,
+           iv.duration_seconds, iv.views, iv.likes, iv.comments,
+           ic.channel_subscribers
+    FROM ingested_videos iv
+    JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+    WHERE iv.published_at IS NOT NULL
+    ORDER BY iv.published_at DESC
+  `);
+}
+
+// Returns buckets already filled for a video (to determine which are new).
+function getExistingBucketsForVideo(db, videoId) {
+  const rows = db.all(
+    'SELECT bucket FROM video_growth_snapshots WHERE video_id = ?',
+    [videoId],
+  );
+  return new Set(rows.map(r => r.bucket));
+}
+
+// ── Niche benchmarks ──────────────────────────────────────────────────────────
+
+function upsertNicheBenchmark(db, {
+  id, niche, bucket, duration_bucket, sample_size,
+  median_views, p75_views, p90_views,
+  median_vph, p75_vph, p90_vph,
+  median_sav, median_vsr, median_accel,
+}) {
+  db.run(
+    `INSERT INTO niche_benchmarks
+       (id, niche, bucket, duration_bucket, sample_size,
+        median_views, p75_views, p90_views,
+        median_vph, p75_vph, p90_vph,
+        median_sav, median_vsr, median_accel, computed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(niche, bucket, duration_bucket) DO UPDATE SET
+       sample_size   = excluded.sample_size,
+       median_views  = excluded.median_views,
+       p75_views     = excluded.p75_views,
+       p90_views     = excluded.p90_views,
+       median_vph    = excluded.median_vph,
+       p75_vph       = excluded.p75_vph,
+       p90_vph       = excluded.p90_vph,
+       median_sav    = excluded.median_sav,
+       median_vsr    = excluded.median_vsr,
+       median_accel  = excluded.median_accel,
+       computed_at   = datetime('now')`,
+    [
+      id, niche, bucket, duration_bucket, sample_size,
+      median_views ?? null, p75_views ?? null, p90_views ?? null,
+      median_vph ?? null, p75_vph ?? null, p90_vph ?? null,
+      median_sav ?? null, median_vsr ?? null, median_accel ?? null,
+    ],
+  );
+}
+
+function getAllNicheBenchmarks(db) {
+  return db.all(
+    `SELECT * FROM niche_benchmarks ORDER BY niche, bucket, duration_bucket`,
+  );
+}
+
+function getNicheBenchmarksByNiche(db, niche) {
+  return db.all(
+    `SELECT * FROM niche_benchmarks WHERE niche = ? ORDER BY bucket, duration_bucket`,
+    [niche],
+  );
+}
+
+// Raw snapshot rows for a given niche + bucket — used by patternMiner.
+function getSnapshotRowsForAggregation(db, niche, bucket) {
+  return db.all(
+    `SELECT vgs.views, vgs.views_per_hour, vgs.subscriber_adjusted_velocity,
+            vgs.views_to_subscriber_ratio, vgs.velocity_acceleration,
+            iv.duration_seconds
+     FROM video_growth_snapshots vgs
+     JOIN ingested_videos iv ON iv.youtube_video_id = vgs.video_id
+     WHERE iv.niche = ? AND vgs.bucket = ?
+       AND vgs.views IS NOT NULL
+     ORDER BY vgs.views DESC`,
+    [niche, bucket],
+  );
+}
+
+// Distinct (niche, bucket) pairs that have enough rows to aggregate.
+function getAggregatableCombinations(db, minSample) {
+  return db.all(
+    `SELECT iv.niche, vgs.bucket, COUNT(*) AS n
+     FROM video_growth_snapshots vgs
+     JOIN ingested_videos iv ON iv.youtube_video_id = vgs.video_id
+     WHERE vgs.views IS NOT NULL
+     GROUP BY iv.niche, vgs.bucket
+     HAVING COUNT(*) >= ?
+     ORDER BY iv.niche, vgs.bucket`,
+    [minSample ?? 5],
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -988,4 +1089,11 @@ module.exports = {
   insertGrowthSnapshot,
   getPreviousBucketSnapshot,
   getSnapshotCountByBucket,
+  getAllIngestedVideosForSnapshot,
+  getExistingBucketsForVideo,
+  upsertNicheBenchmark,
+  getAllNicheBenchmarks,
+  getNicheBenchmarksByNiche,
+  getSnapshotRowsForAggregation,
+  getAggregatableCombinations,
 };

@@ -43,6 +43,7 @@ try {
   const { startRefreshCron }             = require('./jobs/refreshCron');
   const { startOutcomeRefreshJob }       = require('./jobs/outcomeRefreshJob');
   const { startHistoricalIngestCron }    = require('./jobs/historicalIngest');
+  const { startSnapshotCron }            = require('./jobs/snapshotCron');
 
   const app = express();
 
@@ -85,6 +86,7 @@ try {
         startRefreshCron();
         startOutcomeRefreshJob();
         startHistoricalIngestCron();
+        startSnapshotCron();
       }
     });
 
