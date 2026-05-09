@@ -59,4 +59,13 @@ export const ROUTES = {
   adminScoringVersions:  `${SCORING_URL}/api/admin/scoring/versions`,
   adminScoringAuditLog:  `${SCORING_URL}/api/admin/scoring/audit-log`,
   adminCacheStats:       `${SCORING_URL}/api/admin/cache/stats`,
+  adminIntelChannels:        `${SCORING_URL}/api/admin/intelligence/channels`,
+  adminIntelChannelsBulk:    `${SCORING_URL}/api/admin/intelligence/channels/bulk`,
+  adminIntelChannelPatch:    (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}`,
+  adminIntelIngestTrigger:   `${SCORING_URL}/api/admin/intelligence/ingest/trigger`,
+  adminIntelSnapshotTrigger: `${SCORING_URL}/api/admin/intelligence/snapshot/trigger`,
+  adminIntelPatternsRecompute: `${SCORING_URL}/api/admin/intelligence/patterns/recompute`,
+  adminIntelStatus:          `${SCORING_URL}/api/admin/intelligence/status`,
+  adminIntelPatterns:        `${SCORING_URL}/api/admin/intelligence/patterns`,
+  adminIntelQuota:           `${SCORING_URL}/api/admin/intelligence/quota`,
 };

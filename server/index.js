@@ -38,6 +38,7 @@ try {
   const learningRoute           = require('./routes/learning');
   const experimentsRoute        = require('./routes/experiments');
   const adminRoute              = require('./routes/admin');
+  const adminIntelligenceRoute  = require('./routes/adminIntelligence');
   const { startCron }                    = require('./jobs/feedbackCron');
   const { startIngestCron }              = require('./jobs/youtubeIngest');
   const { startRefreshCron }             = require('./jobs/refreshCron');
@@ -65,6 +66,7 @@ try {
   app.use('/api', learningRoute);
   app.use('/api', experimentsRoute);
   app.use('/api', adminRoute);
+  app.use('/api', adminIntelligenceRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
