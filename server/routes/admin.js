@@ -12,7 +12,8 @@ const {
   getScoringWeightAuditLog,
   getMostRecentAuditForType,
 } = require('../db/queries');
-const { computeCalibrationRecommendations } = require('../services/learningEngine');
+const { computeCalibrationRecommendations, computeObservationalRecommendations } = require('../services/learningEngine');
+const { loadBenchmarkMap } = require('../services/patternMiner');
 const scoreCache = require('../services/scoreCache');
 
 const router = express.Router();
@@ -38,8 +39,26 @@ router.use(adminAuth);
 router.post('/admin/learning/auto-calibrate', (req, res) => {
   try {
     const db   = getDb();
-    const rows = getLearningOutcomeRows(db);
-    const recs = computeCalibrationRecommendations(rows);
+
+    // Signal 1: Prediction-based calibration (our own prediction errors)
+    const outcomeRows      = getLearningOutcomeRows(db);
+    const predictionRecs   = computeCalibrationRecommendations(outcomeRows);
+
+    // Signal 2: Observational benchmarks (market behavior from ingested videos)
+    let obsRecs = [];
+    try {
+      const benchmarkMap = loadBenchmarkMap(db);
+      obsRecs = computeObservationalRecommendations(benchmarkMap);
+    } catch (_) {}
+
+    // Merge: prediction-based wins if present for a niche; observational fills gaps
+    const predNiches = new Set(predictionRecs.map(r => r.niche));
+    const mergedRecs = [
+      ...predictionRecs,
+      ...obsRecs.filter(r => !predNiches.has(r.niche)),
+    ];
+
+    const recs = mergedRecs;
 
     const qualifying = recs.filter(r =>
       r.sample_size   >= AUTO_CALIBRATE_SAMPLE_MIN     &&
@@ -98,6 +117,8 @@ router.post('/admin/learning/auto-calibrate', (req, res) => {
       new_version_id:   newVersionId,
       audit_id:         auditId,
       qualifying_count: qualifying.length,
+      prediction_signal_count:    qualifying.filter(r => r.type === 'score_bias').length,
+      observational_signal_count: qualifying.filter(r => r.type === 'observational_niche_signal').length,
       weights,
     });
   } catch (e) {

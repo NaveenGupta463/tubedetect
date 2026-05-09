@@ -304,10 +304,84 @@ function computeLearningHealth(allRecs, outcomeRows) {
   return { status, dataPoints, recommendationCount, avgConfidence, topDriftNiche, lastAnalyzed: nowIso() };
 }
 
+// ── Observational benchmark recommendations ───────────────────────────────────
+// Separate signal from prediction calibration — uses niche_benchmarks derived
+// from ingested historical videos, NOT from our own prediction errors.
+// Detects niches that systematically outperform or underperform market median.
+
+const OBS_MIN_SAMPLE        = 10;  // higher bar than prediction-based
+const OBS_REFERENCE_BUCKET  = '30d';
+const OBS_REFERENCE_DUR     = 'medium';
+const OBS_SAV_DEVIATION_MIN = 0.20; // 20% deviation from cross-niche median to qualify
+const OBS_MAX_ADJUSTMENT    = 8;    // bounded lower than prediction-based max
+
+/**
+ * @param {Object} benchmarkMap  Nested map from loadBenchmarkMap(): { niche: { bucket: { dur_bucket: row } } }
+ * @returns {Array} Observational calibration recommendations, type='observational_niche_signal'
+ */
+function computeObservationalRecommendations(benchmarkMap) {
+  if (!benchmarkMap || !Object.keys(benchmarkMap).length) return [];
+
+  // Collect per-niche SAV reference — prefer 30d/medium, fall back to other dur buckets
+  const nicheSAVs = [];
+  for (const [niche, buckets] of Object.entries(benchmarkMap)) {
+    const refBucket = buckets[OBS_REFERENCE_BUCKET];
+    if (!refBucket) continue;
+    const row = refBucket[OBS_REFERENCE_DUR]
+      ?? refBucket['short']
+      ?? refBucket['long']
+      ?? refBucket['unknown'];
+    if (!row || row.sample_size < OBS_MIN_SAMPLE || row.median_sav == null) continue;
+    nicheSAVs.push({ niche, sav: row.median_sav, sample_size: row.sample_size });
+  }
+
+  if (nicheSAVs.length < 2) return []; // need at least two niches for a reference
+
+  // Cross-niche median SAV (sample-weighted centroid)
+  const totalWeight  = nicheSAVs.reduce((s, r) => s + r.sample_size, 0);
+  const weightedMean = nicheSAVs.reduce((s, r) => s + r.sav * r.sample_size, 0) / totalWeight;
+  if (weightedMean <= 0) return [];
+
+  const recs = [];
+  for (const { niche, sav, sample_size } of nicheSAVs) {
+    const deviation = (sav - weightedMean) / weightedMean;
+    if (Math.abs(deviation) < OBS_SAV_DEVIATION_MIN) continue;
+
+    // Scale to adjustment: ±OBS_MAX_ADJUSTMENT at 100% deviation
+    const raw_adjustment = deviation * OBS_MAX_ADJUSTMENT;
+    const suggested_adjustment = Math.max(-OBS_MAX_ADJUSTMENT, Math.min(OBS_MAX_ADJUSTMENT,
+      parseFloat(raw_adjustment.toFixed(1)),
+    ));
+    if (suggested_adjustment === 0) continue;
+
+    const issue      = deviation > 0 ? 'market_outperformer' : 'market_underperformer';
+    const confidence = bayesConf(sample_size);
+
+    recs.push({
+      id:                   recId('observational_niche_signal', niche, issue),
+      type:                 'observational_niche_signal',
+      niche,
+      issue,
+      recommendation:       `Observational data suggests "${niche}" ${deviation > 0 ? 'outperforms' : 'underperforms'} market median — apply ${suggested_adjustment > 0 ? '+' : ''}${suggested_adjustment} point bias`,
+      rationale:            `Subscriber-adjusted velocity ${Math.abs(deviation * 100).toFixed(0)}% ${deviation > 0 ? 'above' : 'below'} cross-niche median across ${sample_size} videos`,
+      sav_ratio:            parseFloat((sav / weightedMean).toFixed(3)),
+      deviation_pct:        parseFloat((deviation * 100).toFixed(1)),
+      suggested_adjustment,
+      confidence,
+      sample_size,
+      created_at:           nowIso(),
+      status:               'pending',
+    });
+  }
+
+  return recs.sort((a, b) => Math.abs(b.suggested_adjustment) - Math.abs(a.suggested_adjustment));
+}
+
 module.exports = {
   computeCalibrationRecommendations,
   computeConfidenceReliability,
   computeNicheLearning,
   computePatternFailures,
   computeLearningHealth,
+  computeObservationalRecommendations,
 };
