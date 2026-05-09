@@ -4,6 +4,7 @@ const {
   getLearningOutcomeRows,
   getDegradedModeRows,
   getHookTypeOutcomeRows,
+  getRealityRowsForLearning,
 }                                  = require('../db/queries');
 const {
   computeCalibrationRecommendations,
@@ -12,6 +13,7 @@ const {
   computePatternFailures,
   computeLearningHealth,
 }                                  = require('../services/learningEngine');
+const { computeRealityFailures }   = require('../services/realityLearningEngine');
 
 const router = express.Router();
 
@@ -29,10 +31,12 @@ router.get('/learning/report', (_req, res) => {
     const degradedRows = getDegradedModeRows(db);
     const hookRows     = getHookTypeOutcomeRows(db);
 
+    const realityRows                = getRealityRowsForLearning(db);
     const calibrationRecommendations = computeCalibrationRecommendations(outcomeRows);
     const confidenceReliability      = computeConfidenceReliability(outcomeRows);
     const nicheLearning              = computeNicheLearning(outcomeRows);
     const patternFailures            = computePatternFailures(outcomeRows, degradedRows, hookRows);
+    const realityFailures            = computeRealityFailures(realityRows);
 
     const allRecs = [...calibrationRecommendations, ...nicheLearning, ...patternFailures];
     const learningHealth = computeLearningHealth(allRecs, outcomeRows);
@@ -43,6 +47,7 @@ router.get('/learning/report', (_req, res) => {
       nicheLearning,
       patternFailures,
       learningHealth,
+      realityFailures,
     };
 
     _cache  = report;

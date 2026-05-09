@@ -50,4 +50,6 @@ export const ROUTES = {
   experiment:            (id) => `${SCORING_URL}/api/experiments/${id}`,
   experimentsCreate:     `${SCORING_URL}/api/experiments/create`,
   experimentsRun:        `${SCORING_URL}/api/experiments/run`,
+  outcomesReality:       `${SCORING_URL}/api/outcomes/reality`,
+  outcomesRealityById:   (ytId) => `${SCORING_URL}/api/outcomes/reality/${ytId}`,
 };
