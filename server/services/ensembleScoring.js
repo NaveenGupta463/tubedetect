@@ -65,7 +65,7 @@ function ruleBasedScore(features) {
  * @param {object}      p.features
  * @returns {{ final_score, ml_score, rule_based_score, confidence, ensemble_weights, scoring_source, degraded_mode }}
  */
-async function buildEnsemble({ peer_context_score, matches_count, features }) {
+async function buildEnsemble({ peer_context_score, matches_count, features, activeWeights }) {
   const ml_score = modelExists() ? runMLPredict(features) : null;
   const rb_score = ruleBasedScore(features);
 
@@ -75,8 +75,10 @@ async function buildEnsemble({ peer_context_score, matches_count, features }) {
   let final_score, ensemble_weights, scoring_source;
 
   if (ml_score !== null && peer_context_score !== null) {
-    final_score      = ml_score * 0.6 + peer_context_score * 0.4;
-    ensemble_weights = { ml: 0.6, peer_context: 0.4 };
+    const mlW        = activeWeights?.ml          ?? 0.6;
+    const pcW        = activeWeights?.peer_context ?? 0.4;
+    final_score      = ml_score * mlW + peer_context_score * pcW;
+    ensemble_weights = { ml: mlW, peer_context: pcW };
     scoring_source   = 'ml_and_peers';
   } else if (ml_score !== null) {
     final_score      = ml_score * 0.8;

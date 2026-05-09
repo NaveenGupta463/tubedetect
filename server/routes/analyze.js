@@ -1,5 +1,4 @@
 const express  = require('express');
-const crypto   = require('crypto');
 const { getDb }                    = require('../db/init');
 const { extractFeatures }          = require('../services/featureExtraction');
 const { processEmbeddingAndSearch } = require('../services/similarityEngine');
@@ -8,27 +7,27 @@ const {
   insertVideo, upsertFeatures, upsertPerformanceMetrics,
   insertPerformanceMetricsPlaceholder, insertPrediction,
   insertPredictionFeedbackSnapshot,
+  getActiveScoringVersionByType,
 } = require('../db/queries');
 const orchestrator             = require('../pipeline/orchestrator');
 const { isNewPipelineEnabled } = require('../pipeline/flags');
 const { capturePrediction }    = require('../services/outcomeTracker');
+const scoreCache               = require('../services/scoreCache');
 const logger                   = require('../utils/logger');
 
 const router = express.Router();
 
-// In-memory score cache: key → { data, ts }
-const scoreCache = new Map();
-const CACHE_TTL  = 60 * 60 * 1000; // 1 hour
-
-function makeCacheKey(title, hook, niche) {
-  return crypto.createHash('md5').update(`${title}|${hook}|${niche}`).digest('hex');
-}
-
-function getCached(key) {
-  const entry = scoreCache.get(key);
-  if (!entry) return null;
-  if (Date.now() - entry.ts > CACHE_TTL) { scoreCache.delete(key); return null; }
-  return entry.data;
+function readActiveWeights(db) {
+  try {
+    const ensembleVersion  = getActiveScoringVersionByType(db, 'ensemble_weights');
+    const nicheBiasVersion = getActiveScoringVersionByType(db, 'niche_bias');
+    return {
+      activeEnsembleWeights:  ensembleVersion  ? JSON.parse(ensembleVersion.weights_json)  : null,
+      activeNicheBiasWeights: nicheBiasVersion ? JSON.parse(nicheBiasVersion.weights_json) : null,
+    };
+  } catch {
+    return { activeEnsembleWeights: null, activeNicheBiasWeights: null };
+  }
 }
 
 /**
@@ -47,6 +46,7 @@ router.post('/analyze', async (req, res) => {
       title, hook, niche, channel_size, wing,
       youtube_video_id, last_upload_date,
       views, likes, upload_age_days,
+      duration_seconds,
     } = req.body;
 
     if (!title || !hook || !niche || !channel_size || !wing) {
@@ -59,20 +59,24 @@ router.post('/analyze', async (req, res) => {
     const db = getDb();
     const now = new Date().toISOString();
 
-    // 1. Insert video row
+    // 1. Read adaptive scoring weights (before cache key construction)
+    const { activeEnsembleWeights, activeNicheBiasWeights } = readActiveWeights(db);
+
+    // 2. Insert video row
     const { lastInsertRowid: videoId } = insertVideo(db, {
       title, hook, niche, channel_size,
       upload_date:     wing === 'post' ? now : null,
       prediction_date: now,
       wing,
       youtube_video_id,
+      duration_seconds: duration_seconds ?? null,
     });
 
-    // 2. Extract and store features
+    // 3. Extract and store features
     const features = extractFeatures({ title, hook, niche, lastUploadDate: last_upload_date });
     upsertFeatures(db, videoId, features);
 
-    // 3. Performance metrics row
+    // 4. Performance metrics row
     const hasPerformanceData = views != null && upload_age_days != null && upload_age_days > 0;
 
     if (hasPerformanceData) {
@@ -83,9 +87,9 @@ router.post('/analyze', async (req, res) => {
       insertPerformanceMetricsPlaceholder(db, videoId);
     }
 
-    // 4. Check score cache (keyed by content — same title/hook/niche gets same score)
-    const cacheKey    = makeCacheKey(title, hook, niche);
-    const cachedScore = getCached(cacheKey);
+    // 5. Check score cache — version-stamped key auto-invalidates on weight changes
+    const cacheKey    = scoreCache.makeKey(title, hook, niche);
+    const cachedScore = scoreCache.get(cacheKey);
 
     // ── NEW PIPELINE PATH (USE_NEW_PIPELINE=1) ────────────────────────────────
     if (isNewPipelineEnabled()) {
@@ -128,8 +132,8 @@ router.post('/analyze', async (req, res) => {
       }
 
       // Cache miss on pipeline path
-      const result = await orchestrator.run({ videoId, title, hook, niche, features });
-      scoreCache.set(cacheKey, { data: result, ts: Date.now() });
+      const result = await orchestrator.run({ videoId, title, hook, niche, features, activeEnsembleWeights, activeNicheBiasWeights });
+      scoreCache.set(cacheKey, result);
 
       console.log(`[analyze][pipeline] final_score=${result.final_score} confidence=${result._pipeline.confidence.state} peers=${result.peer_count}`);
 
@@ -180,7 +184,7 @@ router.post('/analyze', async (req, res) => {
       ensemble  = cachedScore.ensemble;
       console.log('[analyze] cache hit:', cacheKey);
     } else {
-      // 5. Similarity + performance peer search
+      // 6. Similarity + performance peer search
       simResult = { matches: [], peer_context_score: null, peer_count: 0, source: 'none', low_confidence: true };
       try {
         simResult = await processEmbeddingAndSearch(videoId, title, hook, niche);
@@ -188,19 +192,31 @@ router.post('/analyze', async (req, res) => {
         console.warn('[analyze] Similarity search failed:', e.message);
       }
 
-      // 6. Ensemble scoring (no LLM)
+      // 7. Ensemble scoring with active DB weights
       ensemble = { final_score: 50, ml_score: null, rule_based_score: 50, confidence: 0, ensemble_weights: {}, scoring_source: 'rule_based', degraded_mode: true };
       try {
         ensemble = await buildEnsemble({
           peer_context_score: simResult.peer_context_score,
           matches_count:      simResult.matches.length,
           features,
+          activeWeights: activeEnsembleWeights,
         });
       } catch (e) {
         console.warn('[analyze] Ensemble failed:', e.message);
       }
 
-      scoreCache.set(cacheKey, { data: { simResult, ensemble }, ts: Date.now() });
+      // 8. Apply niche bias (legacy path — calibration.js is orchestrator-only)
+      if (activeNicheBiasWeights && niche) {
+        const bias = activeNicheBiasWeights[(niche ?? '').toLowerCase().trim()] ?? 0;
+        if (bias !== 0) {
+          ensemble = {
+            ...ensemble,
+            final_score: parseFloat(Math.max(0, Math.min(100, ensemble.final_score + bias)).toFixed(2)),
+          };
+        }
+      }
+
+      scoreCache.set(cacheKey, { simResult, ensemble });
     }
 
     console.log(`[analyze] final_score=${ensemble.final_score} source=${ensemble.scoring_source} peers=${simResult.peer_count} cached=${!!cachedScore}`);

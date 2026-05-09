@@ -21,7 +21,7 @@ const _stats = {
  * @param {{ videoId, title, hook, niche, features }} params
  * @returns {Promise<Object>} Same scoring fields analyze.js assembles, plus _pipeline metadata.
  */
-async function run({ videoId, title, hook, niche, features }) {
+async function run({ videoId, title, hook, niche, features, activeEnsembleWeights, activeNicheBiasWeights }) {
   const requestId = `${videoId}-${Date.now()}`;
   const trace     = createTrace(requestId);
   const pipelineStart = Date.now();
@@ -47,6 +47,7 @@ async function run({ videoId, title, hook, niche, features }) {
       peer_context_score: simResult.peer_context_score,
       matches_count:      simResult.matches.length,
       features,
+      activeWeights: activeEnsembleWeights,
     });
     trace.endStage('ensemble', { finalScore: ensemble.final_score, source: ensemble.scoring_source });
   } catch (e) {
@@ -68,7 +69,7 @@ async function run({ videoId, title, hook, niche, features }) {
 
   // ── Stage 4: Calibration (stub) ────────────────────────────────────────────
   trace.startStage('calibration');
-  const calibration = calibrateScore(ensemble.final_score, { niche, confidence });
+  const calibration = calibrateScore(ensemble.final_score, { niche, confidence, nicheBiasWeights: activeNicheBiasWeights });
   trace.endStage('calibration', { version: calibration.calibrationVersion });
 
   // ── Stage 5: Recommendation ────────────────────────────────────────────────
