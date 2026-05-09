@@ -43,4 +43,11 @@ export const ROUTES = {
   outcomesPublish:       `${SCORING_URL}/api/outcomes/publish`,
   outcomesVideoRefresh:  `${SCORING_URL}/api/outcomes/video-refresh`,
   learningReport:        `${SCORING_URL}/api/learning/report`,
+  recommendationActions: `${SCORING_URL}/api/recommendations/actions`,
+  recommendationApprove: (id) => `${SCORING_URL}/api/recommendations/${id}/approve`,
+  recommendationReject:  (id) => `${SCORING_URL}/api/recommendations/${id}/reject`,
+  experiments:           `${SCORING_URL}/api/experiments`,
+  experiment:            (id) => `${SCORING_URL}/api/experiments/${id}`,
+  experimentsCreate:     `${SCORING_URL}/api/experiments/create`,
+  experimentsRun:        `${SCORING_URL}/api/experiments/run`,
 };

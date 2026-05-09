@@ -512,6 +512,230 @@ function getHookTypeOutcomeRows(db) {
   );
 }
 
+// ── Scoring versions ──────────────────────────────────────────────────────────
+
+function insertScoringVersion(db, { id, version_name, version_type, weights_json, thresholds_json, confidence_rules_json, created_by, notes }) {
+  return db.run(
+    `INSERT INTO scoring_versions
+       (id, version_name, version_type, weights_json, thresholds_json, confidence_rules_json, active, created_at, created_by, notes)
+     VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)`,
+    [
+      id, version_name, version_type ?? 'ensemble_weights',
+      typeof weights_json === 'string' ? weights_json : JSON.stringify(weights_json),
+      thresholds_json ? JSON.stringify(thresholds_json) : null,
+      confidence_rules_json ? JSON.stringify(confidence_rules_json) : null,
+      new Date().toISOString(), created_by ?? 'user', notes ?? null,
+    ],
+  );
+}
+
+function getActiveScoringVersion(db) {
+  return db.get('SELECT * FROM scoring_versions WHERE active = 1 ORDER BY created_at DESC LIMIT 1');
+}
+
+function getScoringVersionById(db, id) {
+  return db.get('SELECT * FROM scoring_versions WHERE id = ?', [id]);
+}
+
+function getScoringVersions(db) {
+  return db.all('SELECT id, version_name, version_type, active, created_at, created_by, notes FROM scoring_versions ORDER BY created_at DESC');
+}
+
+// ── Experiments ───────────────────────────────────────────────────────────────
+
+function insertExperiment(db, { id, name, description, experiment_type, baseline_version, candidate_version }) {
+  return db.run(
+    `INSERT INTO experiments (id, name, description, experiment_type, baseline_version, candidate_version, status, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, 'draft', ?)`,
+    [id, name, description ?? null, experiment_type, baseline_version, candidate_version, new Date().toISOString()],
+  );
+}
+
+function getExperiment(db, id) {
+  return db.get('SELECT * FROM experiments WHERE id = ?', [id]);
+}
+
+function getExperiments(db) {
+  return db.all(
+    'SELECT id, name, description, experiment_type, baseline_version, candidate_version, status, winner, started_at, completed_at, created_at FROM experiments ORDER BY created_at DESC',
+  );
+}
+
+function updateExperimentRun(db, id, { status, started_at, completed_at, result_summary, winner }) {
+  return db.run(
+    `UPDATE experiments SET status=?, started_at=?, completed_at=?, result_summary=?, winner=? WHERE id=?`,
+    [
+      status,
+      started_at ?? null,
+      completed_at ?? null,
+      result_summary ? (typeof result_summary === 'string' ? result_summary : JSON.stringify(result_summary)) : null,
+      winner ?? null,
+      id,
+    ],
+  );
+}
+
+// ── Recommendation actions ────────────────────────────────────────────────────
+
+function insertRecommendationAction(db, { id, recommendation_id, recommendation_type, status, approved_by, approved_at, rejected_reason, experiment_id, recommendation_snapshot }) {
+  return db.run(
+    `INSERT INTO recommendation_actions
+       (id, recommendation_id, recommendation_type, status, approved_by, approved_at, rejected_reason, experiment_id, recommendation_snapshot_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, recommendation_id, recommendation_type ?? null,
+      status, approved_by ?? 'user', approved_at ?? null,
+      rejected_reason ?? null, experiment_id ?? null,
+      recommendation_snapshot ? JSON.stringify(recommendation_snapshot) : null,
+      new Date().toISOString(),
+    ],
+  );
+}
+
+function getRecommendationActions(db) {
+  return db.all('SELECT * FROM recommendation_actions ORDER BY created_at DESC');
+}
+
+function updateRecommendationActionExperiment(db, id, experimentId) {
+  return db.run('UPDATE recommendation_actions SET experiment_id=? WHERE id=?', [experimentId, id]);
+}
+
+// ── Simulation row fetchers ───────────────────────────────────────────────────
+
+function getSimulationRowsEnsemble(db) {
+  return db.all(
+    `SELECT
+       p.ml_score, p.similarity_score,
+       vo.actual_performance_score, vo.calibration_error,
+       COALESCE(LOWER(TRIM(vo.niche)), 'unknown') AS niche
+     FROM predictions p
+     JOIN video_outcomes vo ON vo.video_id = p.video_id
+     WHERE p.ml_score IS NOT NULL
+       AND p.similarity_score IS NOT NULL
+       AND vo.actual_performance_score IS NOT NULL
+       AND vo.calibration_error IS NOT NULL
+     ORDER BY vo.created_at DESC
+     LIMIT 500`,
+  );
+}
+
+function getSimulationRowsNicheBias(db) {
+  return db.all(
+    `SELECT
+       predicted_score, actual_performance_score, calibration_error,
+       COALESCE(LOWER(TRIM(niche)), 'unknown') AS niche
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+       AND calibration_error IS NOT NULL
+       AND predicted_score IS NOT NULL
+     ORDER BY created_at DESC
+     LIMIT 500`,
+  );
+}
+
+// ── Video outcomes reality ────────────────────────────────────────────────────
+
+function getVideoOutcomeRealityByYouTubeId(db, ytId) {
+  return db.get('SELECT * FROM video_outcomes_reality WHERE youtube_video_id = ?', [ytId]);
+}
+
+function upsertVideoOutcomeReality(db, youtubeVideoId, data) {
+  const toN = v => v != null ? Number(v) : null;
+  return db.run(
+    `INSERT INTO video_outcomes_reality
+       (youtube_video_id, video_id, niche,
+        views_1h, views_6h, views_24h, views_72h,
+        like_rate, comment_rate, share_rate,
+        impression_velocity, ctr, avg_view_duration, avg_retention_pct, sub_conversion_rate,
+        velocity_state, algorithm_push_score, viral_outcome, breakout_multiplier,
+        is_false_positive, is_false_negative, false_positive_reason, false_negative_reason,
+        signal_quality, has_oauth_data, snapshot_created_at, last_refreshed_at, refresh_count)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), ?, 1)
+     ON CONFLICT(youtube_video_id) DO UPDATE SET
+       video_id             = COALESCE(excluded.video_id, video_id),
+       niche                = COALESCE(excluded.niche, niche),
+       views_1h  = CASE WHEN views_1h  IS NULL AND excluded.views_1h  IS NOT NULL THEN excluded.views_1h  ELSE views_1h  END,
+       views_6h  = CASE WHEN views_6h  IS NULL AND excluded.views_6h  IS NOT NULL THEN excluded.views_6h  ELSE views_6h  END,
+       views_24h = CASE WHEN views_24h IS NULL AND excluded.views_24h IS NOT NULL THEN excluded.views_24h ELSE views_24h END,
+       views_72h = CASE WHEN views_72h IS NULL AND excluded.views_72h IS NOT NULL THEN excluded.views_72h ELSE views_72h END,
+       like_rate             = COALESCE(excluded.like_rate, like_rate),
+       comment_rate          = COALESCE(excluded.comment_rate, comment_rate),
+       share_rate            = COALESCE(excluded.share_rate, share_rate),
+       impression_velocity   = COALESCE(excluded.impression_velocity, impression_velocity),
+       ctr                   = COALESCE(excluded.ctr, ctr),
+       avg_view_duration     = COALESCE(excluded.avg_view_duration, avg_view_duration),
+       avg_retention_pct     = COALESCE(excluded.avg_retention_pct, avg_retention_pct),
+       sub_conversion_rate   = COALESCE(excluded.sub_conversion_rate, sub_conversion_rate),
+       has_oauth_data        = MAX(has_oauth_data, excluded.has_oauth_data),
+       velocity_state        = excluded.velocity_state,
+       algorithm_push_score  = excluded.algorithm_push_score,
+       viral_outcome         = excluded.viral_outcome,
+       breakout_multiplier   = excluded.breakout_multiplier,
+       is_false_positive     = excluded.is_false_positive,
+       is_false_negative     = excluded.is_false_negative,
+       false_positive_reason = excluded.false_positive_reason,
+       false_negative_reason = excluded.false_negative_reason,
+       signal_quality        = excluded.signal_quality,
+       last_refreshed_at     = excluded.last_refreshed_at,
+       refresh_count         = refresh_count + 1`,
+    [
+      youtubeVideoId,
+      data.video_id ?? null,
+      data.niche ?? null,
+      toN(data.views_1h), toN(data.views_6h), toN(data.views_24h), toN(data.views_72h),
+      toN(data.like_rate), toN(data.comment_rate), toN(data.share_rate),
+      toN(data.impression_velocity), toN(data.ctr), toN(data.avg_view_duration),
+      toN(data.avg_retention_pct), toN(data.sub_conversion_rate),
+      data.velocity_state ?? null,
+      toN(data.algorithm_push_score),
+      data.viral_outcome ? 1 : 0,
+      toN(data.breakout_multiplier),
+      data.is_false_positive ? 1 : 0,
+      data.is_false_negative ? 1 : 0,
+      data.false_positive_reason ?? null,
+      data.false_negative_reason ?? null,
+      data.signal_quality ?? null,
+      data.has_oauth_data ? 1 : 0,
+      data.last_refreshed_at ?? new Date().toISOString(),
+    ],
+  );
+}
+
+function getRealityRowsForLearning(db) {
+  return db.all(
+    `SELECT
+       vr.youtube_video_id, vr.views_1h, vr.views_6h, vr.views_24h, vr.views_72h,
+       vr.like_rate, vr.comment_rate, vr.ctr, vr.avg_retention_pct,
+       vr.velocity_state, vr.algorithm_push_score,
+       vr.viral_outcome, vr.breakout_multiplier,
+       vr.is_false_positive, vr.is_false_negative,
+       vr.false_positive_reason, vr.false_negative_reason,
+       vr.signal_quality, vr.has_oauth_data,
+       vr.created_at AS reality_created_at,
+       vo.predicted_score, vo.calibration_error,
+       COALESCE(LOWER(TRIM(vo.niche)), 'unknown') AS niche,
+       vo.title
+     FROM video_outcomes_reality vr
+     JOIN video_outcomes vo ON vo.youtube_video_id = vr.youtube_video_id
+     WHERE vr.signal_quality != 'insufficient'
+     ORDER BY vr.last_refreshed_at DESC
+     LIMIT 200`,
+  );
+}
+
+function getChannelViewHistory(db, niche) {
+  return db.all(
+    `SELECT actual_views_24h
+     FROM video_outcomes
+     WHERE actual_views_24h IS NOT NULL
+       AND actual_views_24h > 0
+       AND COALESCE(LOWER(TRIM(niche)), 'unknown') = ?
+     ORDER BY actual_views_24h ASC
+     LIMIT 100`,
+    [(niche ?? 'unknown').toLowerCase().trim()],
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -557,4 +781,21 @@ module.exports = {
   getLearningOutcomeRows,
   getDegradedModeRows,
   getHookTypeOutcomeRows,
+  insertScoringVersion,
+  getActiveScoringVersion,
+  getScoringVersionById,
+  getScoringVersions,
+  insertExperiment,
+  getExperiment,
+  getExperiments,
+  updateExperimentRun,
+  insertRecommendationAction,
+  getRecommendationActions,
+  updateRecommendationActionExperiment,
+  getSimulationRowsEnsemble,
+  getSimulationRowsNicheBias,
+  getVideoOutcomeRealityByYouTubeId,
+  upsertVideoOutcomeReality,
+  getRealityRowsForLearning,
+  getChannelViewHistory,
 };

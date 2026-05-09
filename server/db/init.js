@@ -1,6 +1,7 @@
 const { Database } = require('node-sqlite3-wasm');
-const path = require('path');
-const fs   = require('fs');
+const path   = require('path');
+const fs     = require('fs');
+const crypto = require('crypto');
 const SCHEMA = require('./schema');
 const { extractFeatures } = require('../services/featureExtraction');
 
@@ -117,8 +118,37 @@ function getDb() {
 
   migrate(db);
   backfillNewFeatures(db);
+  seedDefaultScoringVersion(db);
 
   return db;
+}
+
+function seedDefaultScoringVersion(db) {
+  try {
+    const existing = db.get('SELECT COUNT(*) AS n FROM scoring_versions WHERE active = 1');
+    if ((existing?.n ?? 0) > 0) return;
+
+    db.run(
+      `INSERT INTO scoring_versions
+         (id, version_name, version_type, weights_json, thresholds_json,
+          confidence_rules_json, active, created_at, created_by, notes)
+       VALUES (?, ?, ?, ?, ?, ?, 1, ?, ?, ?)`,
+      [
+        crypto.randomUUID(),
+        'v1.0.0',
+        'ensemble_weights',
+        JSON.stringify({ ml: 0.6, peer_context: 0.4 }),
+        JSON.stringify({ low: 0.4, medium: 0.7 }),
+        JSON.stringify({ degraded_on_zero_peers: true, degraded_on_degraded_mode: true }),
+        new Date().toISOString(),
+        'system',
+        'Auto-seeded baseline — production ensemble weights (ml:0.6, peer_context:0.4)',
+      ],
+    );
+    console.log('[DB] Seeded scoring baseline v1.0.0');
+  } catch (e) {
+    console.warn('[DB] Could not seed scoring version:', e.message);
+  }
 }
 
 module.exports = { getDb };

@@ -143,6 +143,97 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_vo_prediction_id    ON video_outcomes(prediction_id);
   CREATE INDEX IF NOT EXISTS idx_vo_youtube_video_id ON video_outcomes(youtube_video_id);
   CREATE INDEX IF NOT EXISTS idx_vo_created_at       ON video_outcomes(created_at);
+
+  CREATE TABLE IF NOT EXISTS recommendation_actions (
+    id                           TEXT    PRIMARY KEY,
+    recommendation_id            TEXT    NOT NULL,
+    recommendation_type          TEXT,
+    status                       TEXT    NOT NULL DEFAULT 'pending',
+    approved_by                  TEXT,
+    approved_at                  TEXT,
+    rejected_reason              TEXT,
+    experiment_id                TEXT,
+    recommendation_snapshot_json TEXT,
+    created_at                   TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_ra_rec_id ON recommendation_actions(recommendation_id);
+  CREATE INDEX IF NOT EXISTS idx_ra_status ON recommendation_actions(status);
+
+  CREATE TABLE IF NOT EXISTS experiments (
+    id                TEXT    PRIMARY KEY,
+    name              TEXT    NOT NULL,
+    description       TEXT,
+    experiment_type   TEXT    NOT NULL,
+    baseline_version  TEXT    NOT NULL,
+    candidate_version TEXT    NOT NULL,
+    status            TEXT    NOT NULL DEFAULT 'draft',
+    started_at        TEXT,
+    completed_at      TEXT,
+    result_summary    TEXT,
+    winner            TEXT,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_exp_status ON experiments(status);
+
+  CREATE TABLE IF NOT EXISTS scoring_versions (
+    id                    TEXT    PRIMARY KEY,
+    version_name          TEXT    NOT NULL,
+    version_type          TEXT    NOT NULL DEFAULT 'ensemble_weights',
+    weights_json          TEXT    NOT NULL,
+    thresholds_json       TEXT,
+    confidence_rules_json TEXT,
+    active                INTEGER NOT NULL DEFAULT 0,
+    created_at            TEXT    NOT NULL DEFAULT (datetime('now')),
+    created_by            TEXT,
+    notes                 TEXT
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_sv_active ON scoring_versions(active);
+
+  CREATE TABLE IF NOT EXISTS video_outcomes_reality (
+    id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+    youtube_video_id       TEXT    NOT NULL,
+    video_id               INTEGER,
+    niche                  TEXT,
+
+    views_1h               INTEGER,
+    views_6h               INTEGER,
+    views_24h              INTEGER,
+    views_72h              INTEGER,
+
+    like_rate              REAL,
+    comment_rate           REAL,
+    share_rate             REAL,
+
+    impression_velocity    REAL,
+    ctr                    REAL,
+    avg_view_duration      REAL,
+    avg_retention_pct      REAL,
+    audience_retention_json TEXT,
+    sub_conversion_rate    REAL,
+
+    velocity_state         TEXT,
+    algorithm_push_score   REAL,
+    viral_outcome          INTEGER DEFAULT 0,
+    breakout_multiplier    REAL,
+    is_false_positive      INTEGER DEFAULT 0,
+    is_false_negative      INTEGER DEFAULT 0,
+    false_positive_reason  TEXT,
+    false_negative_reason  TEXT,
+    signal_quality         TEXT,
+    has_oauth_data         INTEGER DEFAULT 0,
+
+    snapshot_created_at    TEXT,
+    last_refreshed_at      TEXT,
+    refresh_count          INTEGER DEFAULT 0,
+
+    UNIQUE(youtube_video_id)
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_vor_youtube_id     ON video_outcomes_reality(youtube_video_id);
+  CREATE INDEX IF NOT EXISTS idx_vor_signal_quality ON video_outcomes_reality(signal_quality);
 `;
 
 module.exports = SCHEMA;
