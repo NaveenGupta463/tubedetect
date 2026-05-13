@@ -6,6 +6,7 @@ import { formatNum } from '../utils/analysis';
 import * as storage from '../utils/storage';
 import { analyze } from '../api/scoringApi';
 import PredictionFeedback from './PredictionFeedback';
+import { ROUTES } from '../config';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 function hashString(str) {
@@ -155,6 +156,121 @@ function ProGate({ onUpgrade }) {
   );
 }
 
+// ── Stage 3: Semantic Neighborhood Panel ──────────────────────────────────────
+// Shows cluster benchmark if confidence > 0.35 and sample_size > 20
+function SemanticNeighborhoodPanel({ semanticData }) {
+  const cluster    = semanticData?.scored_cluster   ?? semanticData?.cluster ?? null;
+  const benchmark  = semanticData?.scored_benchmark ?? null;
+  const confidence = semanticData?.scored_confidence ?? 0;
+
+  if (!cluster || !benchmark || confidence < 0.35 || (benchmark.sample_size ?? 0) < 20) return null;
+
+  const trendColor = benchmark.trend === 'rising' ? '#00c853' : benchmark.trend === 'declining' ? '#ff1744' : '#888';
+  const trendIcon  = benchmark.trend === 'rising' ? '↑' : benchmark.trend === 'declining' ? '↓' : '→';
+
+  return (
+    <div className="chart-card" style={{ marginBottom: 16, borderTop: '3px solid #7c4dff' }}>
+      <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#9c6dff', marginBottom: 12 }}>
+        Semantic Archetype — Corpus Benchmark
+      </div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 10 }}>
+        <div style={{ background: '#0f0f0f', borderRadius: 8, padding: '8px 14px', border: '1px solid #7c4dff33', flex: '1 1 110px' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>Archetype</div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: '#c084fc' }}>{cluster.replace(/_/g, ' ')}</div>
+        </div>
+        <div style={{ background: '#0f0f0f', borderRadius: 8, padding: '8px 14px', border: '1px solid #2a2a2a', flex: '1 1 110px' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>Cluster Avg VPH</div>
+          <div style={{ fontSize: 18, fontWeight: 900, color: '#fff' }}>{benchmark.avg_vph?.toFixed(1) ?? '—'}</div>
+        </div>
+        <div style={{ background: '#0f0f0f', borderRadius: 8, padding: '8px 14px', border: '1px solid #2a2a2a', flex: '1 1 100px' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>Trend</div>
+          <div style={{ fontSize: 13, fontWeight: 800, color: trendColor }}>{trendIcon} {benchmark.trend ?? 'stable'}</div>
+        </div>
+        <div style={{ background: '#0f0f0f', borderRadius: 8, padding: '8px 14px', border: '1px solid #2a2a2a', flex: '1 1 90px' }}>
+          <div style={{ fontSize: 9, fontWeight: 700, color: '#555', textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 3 }}>Sample Size</div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: '#aaa' }}>{benchmark.sample_size} videos</div>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: '#444', lineHeight: 1.5 }}>
+        Your title correlates with the <strong style={{ color: '#9c6dff' }}>{cluster.replace(/_/g, ' ')}</strong> semantic archetype. The benchmark above reflects observational patterns from the corpus — not a prediction of your video's performance. Confidence: {Math.round(confidence * 100)}%.
+      </div>
+    </div>
+  );
+}
+
+const TIER_STYLE = {
+  top:        { color: '#00c853', label: 'top',        weight: '1.0×', border: '#00c85322' },
+  borderline: { color: '#ff9100', label: 'borderline', weight: '0.5×', border: '#ff910022' },
+  outlier:    { color: '#f44336', label: 'outlier',    weight: '0.2×', border: '#f4433622' },
+};
+
+function deriveTier(n) {
+  if (n.semantic_tier) return n.semantic_tier;
+  const sim = n.similarity ?? 0;
+  if (sim >= 0.82) return 'top';
+  if (sim >= 0.68) return 'borderline';
+  return 'outlier';
+}
+
+// ── Stage 4: Semantic Comps Panel ─────────────────────────────────────────────
+// Shows nearest high-performing neighbors (similarity > 0.68) with tier badges
+function SemanticCompsPanel({ semanticData }) {
+  const neighbors = (semanticData?.neighbors ?? []).filter(n => (n.similarity ?? 0) >= 0.68 && n.title);
+  if (neighbors.length === 0) return null;
+
+  return (
+    <div className="chart-card" style={{ marginBottom: 16, borderTop: '3px solid #00bcd4' }}>
+      <div style={{ fontSize: '0.62rem', fontWeight: 700, letterSpacing: '0.14em', textTransform: 'uppercase', color: '#4dd0e1', marginBottom: 12 }}>
+        Semantic Comps — Structurally Similar Titles
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {neighbors.slice(0, 5).map((n, i) => {
+          const simPct   = Math.round((n.similarity ?? 0) * 100);
+          const tier     = deriveTier(n);
+          const ts       = TIER_STYLE[tier] ?? TIER_STYLE.outlier;
+          const simColor = simPct >= 82 ? '#00c853' : simPct >= 68 ? '#ff9100' : '#f44336';
+          return (
+            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: '#0f0f0f', borderRadius: 8, padding: '8px 12px', border: `1px solid ${ts.border}` }}>
+              <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, flexShrink: 0, marginTop: 1 }}>
+                <div style={{ fontSize: 10, fontWeight: 900, color: simColor, background: simColor + '18', borderRadius: 4, padding: '2px 7px' }}>
+                  {simPct}%
+                </div>
+                <div style={{ fontSize: 9, fontWeight: 700, color: ts.color, background: ts.color + '18', borderRadius: 3, padding: '1px 5px', letterSpacing: '0.05em' }}>
+                  {ts.label}
+                </div>
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 12, color: tier === 'top' ? '#ccc' : tier === 'borderline' ? '#999' : '#777', lineHeight: 1.4, fontStyle: 'italic' }}>
+                  "{n.title}"
+                </div>
+                {(n.semantic_cluster || n.niche) && (
+                  <div style={{ fontSize: 10, color: '#555', marginTop: 3 }}>
+                    {n.semantic_cluster && <span style={{ marginRight: 8 }}>archetype: {n.semantic_cluster.replace(/_/g, ' ')}</span>}
+                    {n.niche && <span>niche: {n.niche}</span>}
+                  </div>
+                )}
+                {tier !== 'top' && (
+                  <div style={{ fontSize: 9, color: '#3a3a3a', marginTop: 3 }}>
+                    {tier === 'borderline'
+                      ? 'Partial structural match — use as loose inspiration only'
+                      : n.outlier_reason ?? 'Weak structural match — high uncertainty'}
+                  </div>
+                )}
+              </div>
+              <div style={{ flexShrink: 0, fontSize: 9, color: '#333', fontFamily: 'monospace', alignSelf: 'center' }}>
+                trust {ts.weight}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ fontSize: 10, color: '#333', lineHeight: 1.5, marginTop: 10 }}>
+        Structural similarity based on semantic patterns — not topic match. Top-tier matches (≥82%) carry full trust weight. Borderline and outlier matches are weaker signals. Do not replicate these titles directly.
+      </div>
+    </div>
+  );
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // MAIN COMPONENT
 // ─────────────────────────────────────────────────────────────────────────────
@@ -206,6 +322,7 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
   const [mlPredictionId,    setMlPredictionId]    = useState(null);
   const [mlPredictionState, setMlPredictionState] = useState(null);
   const [mlConfidenceState, setMlConfidenceState] = useState(null);
+  const [semanticData,      setSemanticData]      = useState(null);
 
   // Auto-fill from loaded channel + recent videos
   useEffect(() => {
@@ -322,24 +439,48 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
     setMlPredictionId(null);
     setMlPredictionState(null);
     setMlConfidenceState(null);
+    setSemanticData(null);
     setProgressStep(1);
 
     const delays = [2200, 4500, 7500, 10500];
     const timers = delays.map((d, i) => setTimeout(() => setProgressStep(i + 2), d));
 
     try {
+      // Fetch semantic neighbors (Stage 1 — inject into Claude prompt; Stage 3/4 — display panels)
+      let semanticNeighbors = [];
+      let fetchedSemanticData = null;
+      try {
+        const ac = new AbortController();
+        const tid = setTimeout(() => ac.abort(), 2000);
+        const semRes = await fetch(ROUTES.semanticNearest, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ title: form.title, limit: 8, useCache: true }),
+          signal: ac.signal,
+        });
+        clearTimeout(tid);
+        if (semRes.ok) {
+          const semJson = await semRes.json();
+          semanticNeighbors = semJson.neighbors ?? [];
+          fetchedSemanticData = semJson;
+        }
+      } catch {}
+
       const data = await validateVideo({
         ...form,
         contentDescription,
         hasThumbnail: !!thumbPreview,
         thumbDescription: thumbPreview ? '' : thumbDescription.trim(),
         thumbInputType,
+        semanticNeighbors,
       }, thumbPreview || null);
       timers.forEach(clearTimeout);
       setProgressStep(6);
       consumeAICall();
       setResult(data);
       storage.setJSON(cacheKey, data);
+      // Set semantic state for panels (Stage 3 & 4)
+      if (fetchedSemanticData) setSemanticData(fetchedSemanticData);
       // Background ML prediction snapshot — non-blocking, failure is silent
       (async () => {
         try {
@@ -354,6 +495,10 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
             setMlPredictionId(scored.prediction_id);
             setMlPredictionState(scored._pipeline?.recommendation?.priority ?? null);
             setMlConfidenceState(scored._pipeline?.confidence?.state ?? null);
+          }
+          // Merge cluster benchmark from scored result into semanticData if we have it
+          if (scored?.semantic_cluster && scored?.semantic_benchmark) {
+            setSemanticData(prev => prev ? { ...prev, scored_cluster: scored.semantic_cluster, scored_benchmark: scored.semantic_benchmark, scored_confidence: scored.semantic_confidence } : prev);
           }
         } catch {}
       })();
@@ -1993,6 +2138,12 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
               </div>
             );
           })()}
+
+          {/* Stage 3 — Semantic Neighborhood Panel */}
+          {semanticData && <SemanticNeighborhoodPanel semanticData={semanticData} />}
+
+          {/* Stage 4 — Semantic Comps Panel */}
+          {semanticData && <SemanticCompsPanel semanticData={semanticData} />}
 
           {/* P — Pre-Publish Checklist */}
           <div className="chart-card" style={{ marginBottom: 16 }}>

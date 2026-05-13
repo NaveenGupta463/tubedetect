@@ -1,8 +1,34 @@
 import { useState, useEffect, useCallback } from 'react';
+import { motion } from 'framer-motion';
+import {
+  LineChart, Line, BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip,
+  CartesianGrid, ResponsiveContainer, Cell, Legend,
+} from 'recharts';
 import { ROUTES } from '../config';
+import SemanticIntelligenceTab  from './SemanticIntelligenceTab';
+import StrategyIntelligenceTab from './StrategyIntelligenceTab';
+import { spring } from '../motion/spring';
 
-const NICHES = ['finance', 'productivity', 'ai_tools', 'creator_growth'];
-const TABS   = ['Channels', 'Ingest Status', 'Quota', 'Cron Health', 'Patterns', 'Controls'];
+const NICHES = [
+  'technology', 'business', 'education', 'entertainment', 'gaming',
+  'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
+  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty', 'other',
+];
+
+const FORMAT_TYPES    = ['tutorial','vlog','review','documentary','interview','podcast','livestream','compilation','essay','shorts','other'];
+const AUDIENCE_STYLES = ['general','beginner','intermediate','expert','children','teens','professional'];
+const BEHAVIOR_TAGS   = [
+  'storytelling','comparison','review_based','analytical','educational',
+  'personality_driven','debate','news_reaction','motivational','authority_driven',
+  'commentary','case_study','deep_dive','explainer','viral_short_form',
+  'cinematic','satirical','listicle','reaction_based','live_stream_style','opinion_based',
+];
+const ARCHETYPES = [
+  'authority_educator','storyteller','analyst','reviewer',
+  'entertainer','commentator','debater','interviewer',
+  'personality_host','investigative_creator',
+];
+const TABS   = ['Channels', 'Ingest Status', 'Quota', 'Cron Health', 'Patterns', 'Controls', 'Evolution', 'Discovery', 'Learning', 'Semantic', 'Strategy'];
 const BUCKET_LABELS = ['1d', '3d', '7d', '14d', '30d', '90d', '365d'];
 
 const S = {
@@ -81,14 +107,370 @@ function TriggerButton({ label, url, token, onDone, style = S.btn }) {
 }
 
 // ── Tab: Channels ─────────────────────────────────────────────────────────────
+// ── Identity display helpers ──────────────────────────────────────────────────
+
+function identityStrengthLabel(strength) {
+  if (strength == null) return null;
+  if (strength >= 0.7) return { label: 'Strong Identity', color: '#4ade80' };
+  if (strength >= 0.4) return { label: 'Mixed Identity',  color: '#facc15' };
+  return                      { label: 'Hybrid Identity', color: '#f97316' };
+}
+
+function parseJsonArr(raw) {
+  if (Array.isArray(raw)) return raw;
+  try { return JSON.parse(raw || '[]'); } catch { return []; }
+}
+
+// Badge colors per semantic layer
+const B = {
+  niche:    { bg: '#0d1526', border: '#1a3060', color: '#7aadff' },
+  topic:    { bg: '#041a1a', border: '#0a3030', color: '#2dd4bf' },
+  behavior: { bg: '#140d26', border: '#2a1a50', color: '#a78bfa' },
+  archetype:{ bg: '#1a1200', border: '#3a2800', color: '#fbbf24' },
+};
+
+function LayerBadge({ text, layer, style }) {
+  const c = B[layer] ?? B.niche;
+  return (
+    <span style={{ ...S.tag, background: c.bg, borderColor: c.border, color: c.color, ...style }}>
+      {text}
+    </span>
+  );
+}
+
+function IdentityBadges({ ch }) {
+  const behaviorTags  = parseJsonArr(ch.behavior_tags);
+  const inferredTopics = parseJsonArr(ch.inferred_topics);
+  const sl   = identityStrengthLabel(ch.identity_strength);
+  const conf = ch.identity_confidence != null ? `${Math.round(ch.identity_confidence * 100)}%` : null;
+
+  const tooltipLines = [
+    sl   ? sl.label                         : null,
+    conf ? `Confidence: ${conf}`            : null,
+    ch.content_archetype ? `Archetype: ${ch.content_archetype}` : null,
+    ch.identity_source   ? `Source: ${ch.identity_source}`     : null,
+    ch.identity_reasoning ? ch.identity_reasoning               : null,
+  ].filter(Boolean).join('\n');
+
+  if (!ch.primary_niche) {
+    return <span style={{ color: '#2a2a3a', fontSize: '0.65rem' }}>no identity</span>;
+  }
+
+  return (
+    <div style={{ display: 'flex', flexWrap: 'wrap', gap: 3 }} title={tooltipLines}>
+      {/* Layer 1 — benchmark niche (blue) */}
+      <LayerBadge text={ch.primary_niche} layer="niche" />
+      {ch.secondary_niche && (
+        <LayerBadge text={ch.secondary_niche} layer="niche" style={{ opacity: 0.65 }} />
+      )}
+
+      {/* Layer 2 — inferred topics (teal), max 2 shown */}
+      {inferredTopics.slice(0, 2).map(t => (
+        <LayerBadge key={t} text={t} layer="topic" />
+      ))}
+      {inferredTopics.length > 2 && (
+        <span style={{ ...S.tag, color: '#2dd4bf44', borderColor: '#0a3030' }}>+{inferredTopics.length - 2}</span>
+      )}
+
+      {/* Layer 3 — behavior tags (purple), max 2 shown */}
+      {behaviorTags.slice(0, 2).map(t => (
+        <LayerBadge key={t} text={t} layer="behavior" />
+      ))}
+      {behaviorTags.length > 2 && (
+        <span style={{ ...S.tag, color: '#a78bfa44', borderColor: '#2a1a50' }}>+{behaviorTags.length - 2}</span>
+      )}
+
+      {/* Layer 4 — archetype (amber) */}
+      {ch.content_archetype && (
+        <LayerBadge text={ch.content_archetype} layer="archetype" />
+      )}
+
+      {/* Confidence pill */}
+      {sl && conf && (
+        <span style={{ ...S.tag, color: sl.color, borderColor: sl.color + '44', background: 'transparent' }}>
+          {conf}
+        </span>
+      )}
+    </div>
+  );
+}
+
+// ── Free-form chip input for inferred_topics ──────────────────────────────────
+
+function TopicChipInput({ topics, onChange }) {
+  const [draft, setDraft] = useState('');
+
+  function addTopic() {
+    const val = draft.toLowerCase().trim();
+    if (!val || topics.includes(val) || topics.length >= 6) return;
+    onChange([...topics, val]);
+    setDraft('');
+  }
+
+  function removeTopic(t) {
+    onChange(topics.filter(x => x !== t));
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 6 }}>
+        {topics.map(t => (
+          <span
+            key={t}
+            style={{ ...S.tag, background: B.topic.bg, borderColor: B.topic.border, color: B.topic.color, cursor: 'default' }}
+          >
+            {t}
+            <span
+              onClick={() => removeTopic(t)}
+              style={{ marginLeft: 5, cursor: 'pointer', opacity: 0.6, fontSize: '0.75rem' }}
+            >×</span>
+          </span>
+        ))}
+        {topics.length === 0 && (
+          <span style={{ color: '#2a2a3a', fontSize: '0.68rem' }}>none yet</span>
+        )}
+      </div>
+      {topics.length < 6 && (
+        <div style={{ display: 'flex', gap: 6 }}>
+          <input
+            style={{ ...S.input, flex: 1, padding: '5px 8px', fontSize: '0.72rem' }}
+            placeholder="type topic, press Enter"
+            value={draft}
+            onChange={e => setDraft(e.target.value)}
+            onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); addTopic(); } }}
+          />
+          <button
+            style={{ ...S.btn, padding: '5px 10px', fontSize: '0.68rem' }}
+            onClick={addTopic}
+            disabled={!draft.trim()}
+          >+</button>
+        </div>
+      )}
+      <div style={{ fontSize: '0.6rem', color: '#333', marginTop: 3 }}>
+        What the content discusses · free-form · max 6
+      </div>
+    </div>
+  );
+}
+
+// ── Identity Panel ────────────────────────────────────────────────────────────
+
+function IdentityPanel({ ch, token, onSaved }) {
+  const [result,    setResult]    = useState(null);
+  const [detecting, setDetecting] = useState(false);
+  const [saving,    setSaving]    = useState(false);
+  const [err,       setErr]       = useState('');
+  const [edited,    setEdited]    = useState(null);
+
+  const data = edited ?? result;
+  const sl   = data ? identityStrengthLabel(data.identity_strength) : null;
+
+  async function detect() {
+    setDetecting(true); setErr(''); setResult(null); setEdited(null);
+    try {
+      const r = await apiFetch(ROUTES.adminIntelDetectIdentity(ch.id), token, { method: 'POST' });
+      const normalized = {
+        ...r,
+        inferred_topics: parseJsonArr(r.inferred_topics),
+        behavior_tags:   parseJsonArr(r.behavior_tags),
+      };
+      setResult(normalized);
+      setEdited({ ...normalized });
+    } catch (e) { setErr(e.message); }
+    finally { setDetecting(false); }
+  }
+
+  async function save(source) {
+    if (!data) return;
+    setSaving(true); setErr('');
+    try {
+      const url = source === 'manual'
+        ? ROUTES.adminIntelSaveIdentityManual(ch.id)
+        : ROUTES.adminIntelSaveIdentity(ch.id);
+      await apiFetch(url, token, { method: 'POST', body: JSON.stringify(data) });
+      onSaved?.();
+    } catch (e) { setErr(e.message); }
+    finally { setSaving(false); }
+  }
+
+  function toggleBehaviorTag(tag) {
+    if (!edited) return;
+    const tags = edited.behavior_tags ?? [];
+    setEdited(p => ({
+      ...p,
+      behavior_tags: tags.includes(tag) ? tags.filter(t => t !== tag) : [...tags, tag],
+    }));
+  }
+
+  function sectionLabel(text, tooltip) {
+    return (
+      <div style={{ ...S.label, cursor: 'help' }} title={tooltip}>{text}</div>
+    );
+  }
+
+  return (
+    <div style={{ background: '#08080f', border: '1px solid #1a1a30', borderRadius: 8, padding: 14, marginTop: 8 }}>
+      {/* Action bar */}
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: 10, flexWrap: 'wrap' }}>
+        <button style={{ ...S.btn, fontSize: '0.72rem', padding: '5px 12px' }} onClick={detect} disabled={detecting}>
+          {detecting ? 'Detecting…' : 'Detect with AI'}
+        </button>
+        {data && (
+          <>
+            <button style={{ ...S.btnGreen, fontSize: '0.72rem', padding: '5px 12px' }} onClick={() => save('ai')} disabled={saving}>
+              {saving ? 'Saving…' : 'Save (AI detected)'}
+            </button>
+            <button style={{ ...S.btn, fontSize: '0.72rem', padding: '5px 12px' }} onClick={() => save('manual')} disabled={saving}>
+              Save as manual
+            </button>
+          </>
+        )}
+      </div>
+      {err && <div style={S.err}>{err}</div>}
+
+      {data && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          {/* Strength indicator */}
+          {sl && (
+            <div style={{ fontSize: '0.7rem', color: sl.color, fontWeight: 700 }}>
+              {sl.label} · {Math.round((data.identity_confidence ?? 0) * 100)}% confidence
+            </div>
+          )}
+
+          {/* Layer 1 — benchmark niches */}
+          <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', paddingBottom: 10, borderBottom: '1px solid #111' }}>
+            <div>
+              {sectionLabel('Primary Niche (blue — benchmark bucket)', 'Umbrella category used for benchmark routing and scoring')}
+              <select
+                style={{ ...S.select, fontSize: '0.72rem', padding: '5px 8px' }}
+                value={edited?.primary_niche ?? ''}
+                onChange={e => setEdited(p => ({ ...p, primary_niche: e.target.value }))}
+              >
+                {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              {sectionLabel('Secondary Niche', 'Optional secondary benchmark bucket')}
+              <select
+                style={{ ...S.select, fontSize: '0.72rem', padding: '5px 8px' }}
+                value={edited?.secondary_niche ?? ''}
+                onChange={e => setEdited(p => ({ ...p, secondary_niche: e.target.value || null }))}
+              >
+                <option value="">none</option>
+                {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
+              </select>
+            </div>
+            <div>
+              {sectionLabel('Format Type', 'Primary structural shell of the video format')}
+              <select
+                style={{ ...S.select, fontSize: '0.72rem', padding: '5px 8px' }}
+                value={edited?.format_type ?? ''}
+                onChange={e => setEdited(p => ({ ...p, format_type: e.target.value || null }))}
+              >
+                <option value="">—</option>
+                {FORMAT_TYPES.map(f => <option key={f} value={f}>{f}</option>)}
+              </select>
+            </div>
+            <div>
+              {sectionLabel('Audience', 'Target audience sophistication')}
+              <select
+                style={{ ...S.select, fontSize: '0.72rem', padding: '5px 8px' }}
+                value={edited?.audience_style ?? ''}
+                onChange={e => setEdited(p => ({ ...p, audience_style: e.target.value || null }))}
+              >
+                <option value="">—</option>
+                {AUDIENCE_STYLES.map(a => <option key={a} value={a}>{a}</option>)}
+              </select>
+            </div>
+          </div>
+
+          {/* Layer 2 — inferred topics (teal, free-form) */}
+          <div style={{ paddingBottom: 10, borderBottom: '1px solid #111' }}>
+            {sectionLabel('Inferred Topics (teal) — What the content discusses', 'Free-form semantic descriptors. Powers future clustering and embedding similarity.')}
+            <TopicChipInput
+              topics={edited?.inferred_topics ?? []}
+              onChange={topics => setEdited(p => ({ ...p, inferred_topics: topics }))}
+            />
+          </div>
+
+          {/* Layer 3 — behavior tags (purple, controlled) */}
+          <div style={{ paddingBottom: 10, borderBottom: '1px solid #111' }}>
+            {sectionLabel('Behavior Tags (purple) — How content is packaged', 'Structural mechanics and production patterns. Controlled vocabulary.')}
+            <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4 }}>
+              {BEHAVIOR_TAGS.map(tag => {
+                const active = (edited?.behavior_tags ?? []).includes(tag);
+                return (
+                  <span
+                    key={tag}
+                    onClick={() => toggleBehaviorTag(tag)}
+                    style={{
+                      ...S.tag,
+                      cursor: 'pointer',
+                      ...(active
+                        ? { background: B.behavior.bg, borderColor: B.behavior.border, color: B.behavior.color }
+                        : {}),
+                    }}
+                  >
+                    {tag}
+                  </span>
+                );
+              })}
+            </div>
+          </div>
+
+          {/* Layer 4 — creator archetype (amber) */}
+          <div>
+            {sectionLabel('Creator Archetype (amber) — Psychological content persona', "The creator's communication style and psychological identity")}
+            <select
+              style={{ ...S.select, fontSize: '0.72rem', padding: '5px 8px' }}
+              value={edited?.content_archetype ?? ''}
+              onChange={e => setEdited(p => ({ ...p, content_archetype: e.target.value || null }))}
+            >
+              <option value="">—</option>
+              {ARCHETYPES.map(a => <option key={a} value={a}>{a}</option>)}
+            </select>
+          </div>
+
+          {/* Reasoning */}
+          {data.identity_reasoning && (
+            <div style={{ fontSize: '0.7rem', color: '#556', fontStyle: 'italic', borderLeft: '2px solid #1a1a30', paddingLeft: 8, marginTop: 2 }}>
+              {data.identity_reasoning}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ChannelsTab({ token, channels, onRefresh }) {
-  const [singleRaw,   setSingleRaw]   = useState('');
-  const [singleNiche, setSingleNiche] = useState('finance');
-  const [bulkText,    setBulkText]    = useState('');
-  const [bulkNiche,   setBulkNiche]   = useState('finance');
-  const [msg,         setMsg]         = useState('');
-  const [err,         setErr]         = useState('');
-  const [busy,        setBusy]        = useState(false);
+  const [singleRaw,     setSingleRaw]     = useState('');
+  const [singleNiche,   setSingleNiche]   = useState('technology');
+  const [bulkText,      setBulkText]      = useState('');
+  const [bulkNiche,     setBulkNiche]     = useState('technology');
+  const [msg,           setMsg]           = useState('');
+  const [err,           setErr]           = useState('');
+  const [busy,          setBusy]          = useState(false);
+  const [detectBusy,    setDetectBusy]    = useState(false);
+  const [detectResult,  setDetectResult]  = useState(null);
+  const [editingNiche,  setEditingNiche]  = useState({});
+  const [identityOpen,  setIdentityOpen]  = useState({});
+
+  const undetectedCount = channels.filter(ch => !ch.identity_last_detected_at).length;
+
+  async function runBulkDetect() {
+    setDetectBusy(true);
+    setDetectResult(null);
+    try {
+      const data = await apiFetch(ROUTES.adminIntelBulkDetectIdentity, token, { method: 'POST', body: '{}' });
+      setDetectResult(data);
+      onRefresh();
+    } catch (e) {
+      setDetectResult({ ok: false, error: e.message });
+    } finally {
+      setDetectBusy(false);
+    }
+  }
 
   function clearFeedback() { setMsg(''); setErr(''); }
 
@@ -96,7 +478,6 @@ function ChannelsTab({ token, channels, onRefresh }) {
     if (!singleRaw.trim()) return;
     setBusy(true); clearFeedback();
     try {
-      // Resolve then add
       const resolved = await apiFetch(ROUTES.adminIntelResolve, token, {
         method: 'POST', body: JSON.stringify({ inputs: [singleRaw.trim()] }),
       });
@@ -129,6 +510,18 @@ function ChannelsTab({ token, channels, onRefresh }) {
       onRefresh();
     } catch (e) { setErr(e.message); }
     finally { setBusy(false); }
+  }
+
+  async function saveNiche(ch) {
+    const niche = editingNiche[ch.id];
+    if (!niche || niche === ch.niche) { setEditingNiche(p => ({ ...p, [ch.id]: undefined })); return; }
+    try {
+      await apiFetch(ROUTES.adminIntelChannelPatch(ch.id), token, {
+        method: 'PATCH', body: JSON.stringify({ niche }),
+      });
+      setEditingNiche(p => ({ ...p, [ch.id]: undefined }));
+      onRefresh();
+    } catch (e) { setErr(e.message); }
   }
 
   async function toggleEnabled(ch) {
@@ -201,6 +594,55 @@ function ChannelsTab({ token, channels, onRefresh }) {
         </div>
       </div>
 
+      {/* Auto Bulk Niche Detection */}
+      <div style={S.card}>
+        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 6 }}>Auto Bulk Niche Detection</div>
+        <div style={{ fontSize: '0.7rem', color: '#333', marginBottom: 12 }}>
+          Uses AI (OpenAI) to auto-detect niche, format, and identity for channels that have never been detected.
+          Only runs on new channels — already-detected channels are skipped. Does not call the YouTube API.
+          Channels with no locally ingested titles yet will be skipped (run ingest first).
+        </div>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <button
+            style={undetectedCount > 0 ? S.btnGreen : { ...S.btn, opacity: 0.5, cursor: 'default' }}
+            onClick={undetectedCount > 0 ? runBulkDetect : undefined}
+            disabled={detectBusy || undetectedCount === 0}
+          >
+            {detectBusy
+              ? 'Detecting…'
+              : undetectedCount > 0
+                ? `Auto-Detect ${undetectedCount} Undetected Channel${undetectedCount !== 1 ? 's' : ''}`
+                : 'All Channels Detected'}
+          </button>
+          {detectBusy && (
+            <span style={{ fontSize: '0.68rem', color: '#fbbf24' }}>
+              Running — this may take a minute for large batches…
+            </span>
+          )}
+        </div>
+        {detectResult && (
+          <div style={{ marginTop: 10 }}>
+            {detectResult.ok === false ? (
+              <div style={S.err}>Error: {detectResult.error}</div>
+            ) : (
+              <div style={{ fontSize: '0.72rem', color: '#4ade80' }}>
+                Done — {detectResult.detected} detected, {detectResult.failed} failed
+                {detectResult.message ? ` · ${detectResult.message}` : ''}
+              </div>
+            )}
+            {(detectResult.errors ?? []).length > 0 && (
+              <div style={{ marginTop: 6 }}>
+                {detectResult.errors.map((e, i) => (
+                  <div key={i} style={{ fontSize: '0.65rem', color: '#f87171', marginTop: 2 }}>
+                    {e.channel_name || e.channel_id}: {e.reason}
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
       {/* Channel list */}
       <div style={S.card}>
         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 12 }}>
@@ -209,57 +651,88 @@ function ChannelsTab({ token, channels, onRefresh }) {
         {!channels.length ? (
           <div style={{ color: '#333', fontSize: '0.78rem' }}>No channels seeded yet.</div>
         ) : (
-          <table style={S.table}>
-            <thead>
-              <tr>
-                {['Channel', 'Niche', 'Last Ingested', 'Subs', 'Status', ''].map(h => (
-                  <th key={h} style={S.th}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {channels.map(ch => (
-                <tr key={ch.id}>
-                  <td style={S.td}>
-                    <div style={{ color: '#ccc', fontWeight: 600 }}>{ch.channel_name || ch.channel_id}</div>
-                    <div style={{ fontSize: '0.65rem', color: '#333' }}>{ch.channel_id}</div>
-                  </td>
-                  <td style={S.td}><span style={S.tag}>{ch.niche}</span></td>
-                  <td style={S.td} title={ch.last_ingested_at}>
-                    {ch.last_ingested_at ? ch.last_ingested_at.slice(0, 10) : <span style={{ color: '#333' }}>never</span>}
-                  </td>
-                  <td style={S.td}>{ch.channel_subscribers?.toLocaleString() ?? '—'}</td>
-                  <td style={S.td}>
-                    <div style={S.row}>
-                      <button
-                        style={ch.ingest_enabled ? S.tagGreen : S.tagRed}
-                        onClick={() => toggleEnabled(ch)}
-                        title="Toggle ingest"
-                      >
-                        {ch.ingest_enabled ? 'enabled' : 'disabled'}
-                      </button>
-                      <button
-                        style={ch.ignore_from_benchmarks ? S.tagRed : S.tag}
-                        onClick={() => toggleIgnore(ch)}
-                        title="Toggle benchmark inclusion"
-                      >
-                        {ch.ignore_from_benchmarks ? 'excluded' : 'included'}
-                      </button>
+          <div>
+            {channels.map(ch => (
+              <div key={ch.id} style={{ borderBottom: '1px solid #111', paddingBottom: 10, marginBottom: 10 }}>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+                  {/* Channel name */}
+                  <div style={{ minWidth: 180, flex: 2 }}>
+                    <div style={{ color: '#ccc', fontWeight: 600, fontSize: '0.8rem' }}>{ch.channel_name || ch.channel_id}</div>
+                    <div style={{ fontSize: '0.62rem', color: '#333' }}>{ch.channel_id}</div>
+                    <div style={{ marginTop: 5 }}>
+                      <IdentityBadges ch={ch} />
                     </div>
-                  </td>
-                  <td style={S.td}>
+                  </div>
+
+                  {/* Niche editor */}
+                  <div style={{ flex: 1, minWidth: 120 }}>
+                    {editingNiche[ch.id] !== undefined ? (
+                      <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
+                        <select
+                          style={{ ...S.select, fontSize: '0.7rem', padding: '4px 8px' }}
+                          value={editingNiche[ch.id]}
+                          onChange={e => setEditingNiche(p => ({ ...p, [ch.id]: e.target.value }))}
+                        >
+                          {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
+                        </select>
+                        <button style={{ ...S.btnGreen, padding: '3px 8px', fontSize: '0.68rem' }} onClick={() => saveNiche(ch)}>✓</button>
+                        <button style={{ ...S.btn, padding: '3px 8px', fontSize: '0.68rem' }} onClick={() => setEditingNiche(p => ({ ...p, [ch.id]: undefined }))}>✕</button>
+                      </div>
+                    ) : (
+                      <span
+                        style={{ ...S.tag, cursor: 'pointer' }}
+                        title="Click to change benchmark niche"
+                        onClick={() => setEditingNiche(p => ({ ...p, [ch.id]: ch.niche }))}
+                      >
+                        {ch.niche} ✎
+                      </span>
+                    )}
+                    <div style={{ fontSize: '0.6rem', color: '#2a2a3a', marginTop: 3 }}>
+                      {ch.last_ingested_at ? ch.last_ingested_at.slice(0, 10) : 'never ingested'}
+                    </div>
+                  </div>
+
+                  {/* Controls */}
+                  <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap', alignItems: 'center' }}>
+                    <button
+                      style={ch.ingest_enabled ? S.tagGreen : S.tagRed}
+                      onClick={() => toggleEnabled(ch)}
+                      title="Toggle ingest"
+                    >
+                      {ch.ingest_enabled ? 'enabled' : 'disabled'}
+                    </button>
+                    <button
+                      style={ch.ignore_from_benchmarks ? S.tagRed : S.tag}
+                      onClick={() => toggleIgnore(ch)}
+                      title="Toggle benchmark inclusion"
+                    >
+                      {ch.ignore_from_benchmarks ? 'excluded' : 'included'}
+                    </button>
+                    <button
+                      style={{ ...S.btn, fontSize: '0.68rem', padding: '3px 8px' }}
+                      onClick={() => setIdentityOpen(p => ({ ...p, [ch.id]: !p[ch.id] }))}
+                    >
+                      {identityOpen[ch.id] ? 'close identity' : 'identity'}
+                    </button>
                     <button
                       onClick={() => deleteChannel(ch)}
-                      style={{ background: 'none', border: '1px solid #3a1a1a', borderRadius: 4, color: '#f87171', padding: '2px 8px', cursor: 'pointer', fontSize: '0.68rem', fontFamily: 'monospace' }}
-                      title="Delete channel"
+                      style={{ background: 'none', border: '1px solid #3a1a1a', borderRadius: 4, color: '#f87171', padding: '3px 8px', cursor: 'pointer', fontSize: '0.68rem', fontFamily: 'monospace' }}
                     >
                       delete
                     </button>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+                  </div>
+                </div>
+
+                {identityOpen[ch.id] && (
+                  <IdentityPanel
+                    ch={ch}
+                    token={token}
+                    onSaved={() => { onRefresh(); setIdentityOpen(p => ({ ...p, [ch.id]: false })); }}
+                  />
+                )}
+              </div>
+            ))}
+          </div>
         )}
       </div>
     </div>
@@ -376,52 +849,82 @@ function QuotaTab({ status }) {
 }
 
 // ── Tab: Cron Health ──────────────────────────────────────────────────────────
-function CronHealthTab({ status, channels }) {
-  const q = status?.quota;
-  const lastIngested = channels.reduce((latest, ch) => {
-    if (!ch.last_ingested_at) return latest;
-    return !latest || ch.last_ingested_at > latest ? ch.last_ingested_at : latest;
-  }, null);
+function fmtTs(iso) {
+  if (!iso) return null;
+  return iso.slice(0, 19).replace('T', ' ') + ' UTC';
+}
 
-  const snapshots     = status?.snapshots?.by_bucket ?? [];
-  const hasSnapshots  = snapshots.some(r => r.n > 0);
+function hoursAgo(iso) {
+  if (!iso) return null;
+  const diff = (Date.now() - new Date(iso).getTime()) / 3_600_000;
+  if (diff < 1)    return `${Math.round(diff * 60)}m ago`;
+  if (diff < 24)   return `${Math.round(diff)}h ago`;
+  return `${Math.round(diff / 24)}d ago`;
+}
+
+function CronHealthTab({ status }) {
+  const ts  = status?.job_last_run ?? {};
 
   const rows = [
-    { job: 'Historical Ingest',  schedule: 'Daily 03:00 UTC', proxy: 'last_ingested_at',  health: lastIngested, note: 'Most recent channel ingest' },
-    { job: 'Snapshot Cron',      schedule: 'Daily 04:00 UTC', proxy: 'snapshot_counts',   health: hasSnapshots ? 'snapshots present' : null, note: 'Bucket fill activity' },
-    { job: 'Pattern Miner',      schedule: 'After snapshot',  proxy: 'niche_benchmarks',  health: status?.videos?.ingested > 0 ? 'triggered via snapshot' : null, note: 'Runs within snapshotCron' },
-    { job: 'Feedback Cron',      schedule: 'Configured',      proxy: 'n/a',               health: null, note: 'Prediction feedback collection' },
-    { job: 'Outcome Refresh',    schedule: 'Configured',      proxy: 'n/a',               health: null, note: 'Reality outcome tracking' },
+    {
+      job:      'Historical Ingest',
+      schedule: 'Daily 03:00 UTC',
+      ts:       ts.historical_ingest,
+      note:     'Fetches new videos from ingested channels',
+    },
+    {
+      job:      'Snapshot Refresh',
+      schedule: 'Daily 04:00 UTC',
+      ts:       ts.snapshot_refresh,
+      note:     'Captures view/like growth snapshots (7d, 30d…)',
+    },
+    {
+      job:      'Recompute Patterns',
+      schedule: 'After snapshot',
+      ts:       ts.recompute_patterns,
+      note:     'Rebuilds niche VPH benchmarks from snapshots',
+    },
+    {
+      job:      'Auto Calibrate',
+      schedule: 'On demand / trigger',
+      ts:       ts.auto_calibrate,
+      note:     'Applies niche bias corrections from calibration data',
+    },
   ];
 
   return (
     <div style={S.card}>
-      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 12 }}>
-        Cron Job Health (proxy view)
-      </div>
-      <div style={{ fontSize: '0.7rem', color: '#333', marginBottom: 14 }}>
-        Full cron persistence not yet implemented — health inferred from data activity.
+      <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#aaa', marginBottom: 16 }}>
+        Job Last Run
       </div>
       <table style={S.table}>
         <thead>
           <tr>
-            {['Job', 'Schedule', 'Last Activity', 'Signal', 'Note'].map(h => <th key={h} style={S.th}>{h}</th>)}
+            {['Job', 'Schedule', 'Last Run (UTC)', 'Age', 'Purpose'].map(h => (
+              <th key={h} style={S.th}>{h}</th>
+            ))}
           </tr>
         </thead>
         <tbody>
-          {rows.map(r => (
-            <tr key={r.job}>
-              <td style={{ ...S.td, color: '#ccc', fontWeight: 600 }}>{r.job}</td>
-              <td style={S.td}><span style={{ color: '#555' }}>{r.schedule}</span></td>
-              <td style={S.td}>
-                {r.health
-                  ? <span style={{ color: '#4ade80' }}>{typeof r.health === 'string' ? r.health : r.health.slice(0, 19).replace('T', ' ')}</span>
-                  : <span style={{ color: '#333' }}>unknown</span>}
-              </td>
-              <td style={S.td}><span style={{ color: '#444', fontSize: '0.65rem' }}>{r.proxy}</span></td>
-              <td style={S.td}><span style={{ color: '#333', fontSize: '0.7rem' }}>{r.note}</span></td>
-            </tr>
-          ))}
+          {rows.map(r => {
+            const ago   = hoursAgo(r.ts);
+            const stale = r.ts ? (Date.now() - new Date(r.ts).getTime()) / 3_600_000 > 48 : true;
+            return (
+              <tr key={r.job}>
+                <td style={{ ...S.td, color: '#ccc', fontWeight: 600 }}>{r.job}</td>
+                <td style={{ ...S.td, color: '#555', fontSize: '0.68rem' }}>{r.schedule}</td>
+                <td style={S.td}>
+                  {r.ts
+                    ? <span style={{ color: stale ? '#f97316' : '#4ade80', fontFamily: 'monospace', fontSize: '0.72rem' }}>{fmtTs(r.ts)}</span>
+                    : <span style={{ color: '#444', fontSize: '0.72rem' }}>never run</span>}
+                </td>
+                <td style={{ ...S.td, color: stale ? '#f97316' : '#888', fontSize: '0.72rem' }}>
+                  {ago ?? '—'}
+                </td>
+                <td style={{ ...S.td, color: '#444', fontSize: '0.68rem' }}>{r.note}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
@@ -526,6 +1029,2065 @@ function ControlsTab({ token, onRefresh }) {
   );
 }
 
+// ── Evolution helpers ─────────────────────────────────────────────────────────
+
+const VEL_COLOR = { Stable: '#4ade80', Improving: '#60a5fa', Volatile: '#f87171', Drifting: '#fbbf24' };
+const WARN_COLOR = { red: '#f87171', amber: '#fbbf24', none: '#444' };
+
+function EvoSection({ title, children, right }) {
+  return (
+    <div style={{ marginBottom: 24 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px solid #1a1a2e', paddingBottom: 6, marginBottom: 14 }}>
+        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#555', letterSpacing: '0.12em', textTransform: 'uppercase' }}>{title}</div>
+        {right}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function InsufficientData({ msg }) {
+  return (
+    <div style={{ fontSize: '0.72rem', color: '#444', fontStyle: 'italic', padding: '12px 0' }}>
+      {msg ?? 'Accumulating intelligence data — insufficient historical prediction samples'}
+    </div>
+  );
+}
+
+function DeltaIndicator({ value, unit = '%', invert = false }) {
+  if (value == null) return <span style={{ color: '#333' }}>—</span>;
+  const isPositive = invert ? value < 0 : value > 0;
+  const color = isPositive ? '#4ade80' : value === 0 ? '#555' : '#f87171';
+  const arrow = value > 0 ? '▲' : value < 0 ? '▼' : '–';
+  return <span style={{ color, fontWeight: 700 }}>{arrow} {Math.abs(value).toFixed(1)}{unit}</span>;
+}
+
+function WarnBadge({ level, children }) {
+  const c = { red: '#f87171', amber: '#fbbf24', none: '#444' };
+  const bg = { red: '#1f0a0a', amber: '#1f1700', none: '#0d0d12' };
+  const bd = { red: '#4a1a1a', amber: '#3a2800', none: '#1a1a2e' };
+  return (
+    <span style={{ display: 'inline-block', background: bg[level] ?? bg.none, border: `1px solid ${bd[level] ?? bd.none}`, borderRadius: 4, padding: '2px 8px', fontSize: '0.68rem', color: c[level] ?? c.none }}>
+      {children}
+    </span>
+  );
+}
+
+// ── Evolution: Health Score ───────────────────────────────────────────────────
+function HealthSection({ data }) {
+  if (!data) return <InsufficientData />;
+  const { health_score, components, learning_velocity, velocity_inputs, history } = data;
+  const velColor = VEL_COLOR[learning_velocity] ?? '#888';
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 16 }}>
+        {/* Big score */}
+        <div style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 10, padding: '20px 28px', minWidth: 160 }}>
+          <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 6 }}>Intelligence Health</div>
+          <div style={{ fontSize: '2.6rem', fontWeight: 700, color: health_score >= 70 ? '#4ade80' : health_score >= 40 ? '#fbbf24' : '#f87171', lineHeight: 1 }}>
+            {health_score}
+          </div>
+          <div style={{ fontSize: '0.65rem', color: '#333', marginTop: 4 }}>/ 100</div>
+        </div>
+        {/* Velocity */}
+        <div style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 10, padding: '20px 24px' }}>
+          <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 8 }}>Learning Velocity</div>
+          <div style={{ fontSize: '1.4rem', fontWeight: 700, color: velColor }}>{learning_velocity ?? '—'}</div>
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {velocity_inputs && Object.entries(velocity_inputs).map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', gap: 8, fontSize: '0.65rem' }}>
+                <span style={{ color: '#333', width: 130 }}>{k.replace(/_/g, ' ')}</span>
+                <span style={{ color: '#666' }}>{typeof v === 'number' ? v.toFixed(4) : v}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+        {/* Component breakdown */}
+        <div style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 10, padding: '16px 20px', minWidth: 200 }}>
+          <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 10 }}>Score Components</div>
+          {components && [
+            ['Accuracy ×0.40',    components.accuracy_score],
+            ['Calibration ×0.20', components.calibration_score],
+            ['Stability ×0.25',   components.stability_score],
+            ['Drift ×0.15',       components.drift_score],
+          ].map(([label, val]) => (
+            <div key={label} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 6, gap: 12 }}>
+              <span style={{ fontSize: '0.7rem', color: '#555' }}>{label}</span>
+              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: val >= 70 ? '#4ade80' : val >= 40 ? '#fbbf24' : '#f87171' }}>{val}</span>
+            </div>
+          ))}
+        </div>
+      </div>
+      {/* Health score history */}
+      {history?.length >= 2 && (
+        <div style={{ height: 100 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={history} margin={{ top: 4, right: 8, left: -30, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#111" />
+              <XAxis dataKey="created_at" hide />
+              <YAxis domain={[0, 100]} tick={{ fill: '#333', fontSize: 10 }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem' }} formatter={v => [v, 'health']} labelFormatter={() => ''} />
+              <Line type="monotone" dataKey="health_score" stroke="#8888ff" dot={false} strokeWidth={2} />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Evolution: Prediction Accuracy ────────────────────────────────────────────
+function AccuracySection({ data }) {
+  if (!data || data.insufficient_data) return <InsufficientData msg={data?.message} />;
+  const { rolling_7d, rolling_30d, weekly } = data;
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', marginBottom: 14 }}>
+        {[
+          ['7d Accuracy',    rolling_7d?.accurate_pct,  '%'],
+          ['30d Accuracy',   rolling_30d?.accurate_pct, '%'],
+          ['7d FP Rate',     rolling_7d?.fp_rate,       '%'],
+          ['7d FN Rate',     rolling_7d?.fn_rate,       '%'],
+          ['30d FP Count',   rolling_30d?.fp_count,     ''],
+          ['30d FN Count',   rolling_30d?.fn_count,     ''],
+        ].map(([label, val, unit]) => (
+          <div key={label} style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+            <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', marginBottom: 4 }}>{label}</div>
+            <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#8888ff' }}>{val != null ? `${val}${unit}` : '—'}</div>
+          </div>
+        ))}
+      </div>
+      {weekly?.length >= 2 && (
+        <div style={{ height: 130 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={weekly} margin={{ top: 4, right: 8, left: -30, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#111" />
+              <XAxis dataKey="week" tick={{ fill: '#333', fontSize: 9 }} />
+              <YAxis domain={[0, 100]} tick={{ fill: '#333', fontSize: 10 }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem' }} />
+              <Line type="monotone" dataKey="accurate_pct" name="Accuracy %" stroke="#4ade80" dot={false} strokeWidth={2} />
+              <Line type="monotone" dataKey="fp" name="FP" stroke="#f87171" dot={false} strokeWidth={1} strokeDasharray="3 3" />
+              <Line type="monotone" dataKey="fn" name="FN" stroke="#fbbf24" dot={false} strokeWidth={1} strokeDasharray="3 3" />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Evolution: Score Distribution ─────────────────────────────────────────────
+function ScoreDistSection({ data }) {
+  if (!data || data.no_calibration) return <InsufficientData msg={data?.message ?? 'No calibration comparison available yet'} />;
+  const { before, after, weekly } = data;
+  const bands = ['weak', 'average', 'strong'];
+  const bandColors = { weak: '#f87171', average: '#fbbf24', strong: '#4ade80' };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 20, marginBottom: 14, flexWrap: 'wrap' }}>
+        {[['Before Calibration', before], ['After Calibration', after]].map(([label, d]) => (
+          <div key={label} style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 16px', minWidth: 200 }}>
+            <div style={{ fontSize: '0.65rem', color: '#444', marginBottom: 10, letterSpacing: '0.1em', textTransform: 'uppercase' }}>{label}</div>
+            {d ? bands.map(b => (
+              <div key={b} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: '0.7rem', color: bandColors[b] }}>{b}</span>
+                <span style={{ fontSize: '0.7rem', color: '#666' }}>{d[b] ?? 0} <span style={{ color: '#333' }}>({d.total > 0 ? Math.round(d[b] / d.total * 100) : 0}%)</span></span>
+              </div>
+            )) : <span style={{ color: '#333', fontSize: '0.7rem' }}>no data</span>}
+          </div>
+        ))}
+      </div>
+      {weekly?.length >= 2 && (
+        <div style={{ height: 120 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <BarChart data={weekly} margin={{ top: 4, right: 8, left: -30, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#111" />
+              <XAxis dataKey="week" tick={{ fill: '#333', fontSize: 9 }} />
+              <YAxis tick={{ fill: '#333', fontSize: 10 }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem' }} />
+              {bands.map(b => <Bar key={b} dataKey={b} stackId="a" fill={bandColors[b]} />)}
+            </BarChart>
+          </ResponsiveContainer>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Evolution: Benchmark Drift ────────────────────────────────────────────────
+function DriftSection({ data }) {
+  if (!data || data.insufficient_history) return <InsufficientData msg={data?.message} />;
+  const { drift, heatmap, warnings, batches } = data;
+  const niches   = [...new Set(heatmap?.map(h => h.niche) ?? [])].sort();
+  const durBucks = ['short', 'medium', 'long', 'unknown'];
+
+  return (
+    <div>
+      {warnings?.map((w, i) => (
+        <div key={i} style={{ background: w.severity === 'red' ? '#1f0a0a' : '#1f1700', border: `1px solid ${w.severity === 'red' ? '#4a1a1a' : '#3a2800'}`, borderRadius: 6, padding: '8px 12px', marginBottom: 8, fontSize: '0.72rem', color: w.severity === 'red' ? '#f87171' : '#fbbf24' }}>
+          {w.severity === 'red' ? '⚠ ' : '△ '}{w.message}
+        </div>
+      ))}
+      <div style={{ fontSize: '0.65rem', color: '#333', marginBottom: 10 }}>
+        {batches?.current?.snapshot_at?.slice(0, 16)} vs {batches?.previous?.snapshot_at?.slice(0, 16)}
+      </div>
+
+      {/* Heatmap */}
+      {niches.length > 0 && (
+        <div style={{ marginBottom: 16 }}>
+          <div style={{ fontSize: '0.65rem', color: '#444', marginBottom: 8, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Stability Heatmap</div>
+          <div style={{ display: 'grid', gridTemplateColumns: `120px repeat(${durBucks.length}, 1fr)`, gap: 2, fontSize: '0.65rem' }}>
+            <div style={{ color: '#333' }} />
+            {durBucks.map(d => <div key={d} style={{ color: '#444', textAlign: 'center', padding: '2px 0' }}>{d}</div>)}
+            {niches.map(niche => (
+              <>
+                <div key={niche} style={{ color: '#666', display: 'flex', alignItems: 'center' }}>{niche}</div>
+                {durBucks.map(d => {
+                  const cell = heatmap?.find(h => h.niche === niche && h.duration_bucket === d);
+                  const drift = cell?.max_drift ?? 0;
+                  const bg = drift > 40 ? '#2a0a0a' : drift > 20 ? '#1f1700' : drift > 5 ? '#0a1a0a' : '#0d0d12';
+                  const color = drift > 40 ? '#f87171' : drift > 20 ? '#fbbf24' : drift > 5 ? '#4ade80' : '#333';
+                  return (
+                    <div key={d} style={{ background: bg, borderRadius: 4, padding: '6px 4px', textAlign: 'center', color, fontWeight: drift > 20 ? 700 : 400 }}>
+                      {cell ? `${drift.toFixed(0)}%` : '—'}
+                    </div>
+                  );
+                })}
+              </>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Drift table */}
+      {drift?.length > 0 && (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={S.table}>
+            <thead><tr>
+              {['Niche', 'Bucket', 'Dur', 'Prev VPH', 'Curr VPH', 'Delta', 'Sample Δ', 'Status'].map(h => (
+                <th key={h} style={S.th}>{h}</th>
+              ))}
+            </tr></thead>
+            <tbody>
+              {drift.filter(d => d.warning_level !== 'none').concat(drift.filter(d => d.warning_level === 'none')).map((d, i) => (
+                <tr key={i}>
+                  <td style={S.td}><span style={S.tag}>{d.niche}</span></td>
+                  <td style={S.td}>{d.bucket}</td>
+                  <td style={S.td}>{d.duration_bucket}</td>
+                  <td style={S.td}>{d.prev_median_vph?.toFixed(2) ?? '—'}</td>
+                  <td style={S.td}>{d.curr_median_vph?.toFixed(2) ?? '—'}</td>
+                  <td style={S.td}><DeltaIndicator value={d.delta_pct} /></td>
+                  <td style={S.td}><DeltaIndicator value={d.sample_change} unit="" /></td>
+                  <td style={S.td}><WarnBadge level={d.warning_level}>{d.warning_level}</WarnBadge></td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Evolution: Signal Weights ─────────────────────────────────────────────────
+function SignalWeightsSection({ data }) {
+  if (!data?.versions?.length) return <InsufficientData msg="No scoring versions recorded yet" />;
+  const niches = [...new Set(data.versions.flatMap(v => Object.keys(v.weights ?? {})))].sort();
+  if (!niches.length) return <InsufficientData msg="No niche bias weights recorded" />;
+
+  const chartData = data.versions
+    .filter(v => v.version_type === 'niche_bias')
+    .map(v => ({ label: v.created_at?.slice(0, 10), ...v.weights }));
+
+  const LINE_COLORS = ['#8888ff', '#4ade80', '#f87171', '#fbbf24', '#60a5fa', '#a78bfa'];
+
+  return (
+    <div>
+      {chartData.length >= 2 ? (
+        <div style={{ height: 160 }}>
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="2 4" stroke="#111" />
+              <XAxis dataKey="label" tick={{ fill: '#333', fontSize: 9 }} />
+              <YAxis tick={{ fill: '#333', fontSize: 10 }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem' }} />
+              <Legend wrapperStyle={{ fontSize: '0.65rem', color: '#555' }} />
+              {niches.map((n, i) => (
+                <Line key={n} type="monotone" dataKey={n} stroke={LINE_COLORS[i % LINE_COLORS.length]} dot={{ r: 2 }} strokeWidth={1.5} />
+              ))}
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      ) : <InsufficientData msg="Needs at least 2 calibration events for trend chart" />}
+    </div>
+  );
+}
+
+// ── Evolution: Confidence Reliability ────────────────────────────────────────
+function ConfidenceSection({ data }) {
+  if (!data || data.insufficient_data) return <InsufficientData msg={data?.message} />;
+  const { bins } = data;
+  if (!bins?.length) return <InsufficientData />;
+
+  return (
+    <div>
+      <div style={{ height: 130, marginBottom: 12 }}>
+        <ResponsiveContainer width="100%" height="100%">
+          <BarChart data={bins} margin={{ top: 4, right: 8, left: -30, bottom: 0 }}>
+            <CartesianGrid strokeDasharray="2 4" stroke="#111" />
+            <XAxis dataKey="confidence_bucket" tick={{ fill: '#444', fontSize: 10 }} />
+            <YAxis domain={[0, 100]} tick={{ fill: '#333', fontSize: 10 }} />
+            <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem' }} formatter={(v, n) => [`${v}%`, n]} />
+            <Bar dataKey="accurate_pct" name="Accurate %" fill="#4ade80">
+              {bins.map((b, i) => <Cell key={i} fillOpacity={b.sparse ? 0.35 : 1} fill={b.sparse ? '#4ade80' : '#4ade80'} />)}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+      <table style={S.table}>
+        <thead><tr>
+          {['Confidence', 'Total', 'Accurate %', 'MAE', 'FP', 'FN', 'Note'].map(h => <th key={h} style={S.th}>{h}</th>)}
+        </tr></thead>
+        <tbody>
+          {bins.map((b, i) => (
+            <tr key={i} style={{ opacity: b.sparse ? 0.5 : 1 }}>
+              <td style={S.td}><span style={S.tag}>{b.confidence_bucket}</span></td>
+              <td style={S.td}>{b.total}</td>
+              <td style={{ ...S.td, color: b.accurate_pct >= 70 ? '#4ade80' : b.accurate_pct >= 40 ? '#fbbf24' : '#f87171' }}>{b.accurate_pct ?? '—'}%</td>
+              <td style={S.td}>{b.mae?.toFixed(2) ?? '—'}</td>
+              <td style={S.td}>{b.fp_count}</td>
+              <td style={S.td}>{b.fn_count}</td>
+              <td style={S.td}>{b.sparse ? <WarnBadge level="amber">sparse &lt;10</WarnBadge> : null}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ── Evolution: Calibration History ────────────────────────────────────────────
+function CalibrationHistorySection({ data }) {
+  if (!data?.versions?.length) return <InsufficientData msg="No calibration events recorded yet" />;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      {data.versions.map(v => {
+        const changed = v.changed_weights ?? {};
+        const keys    = Object.keys(changed);
+        const triggerColor = v.trigger === 'rollback' ? '#f87171' : v.trigger === 'auto' ? '#4ade80' : '#8888ff';
+        return (
+          <div key={v.id} style={{ background: '#0a0a0f', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8, flexWrap: 'wrap', gap: 8 }}>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <span style={{ fontSize: '0.65rem', color: triggerColor, border: `1px solid ${triggerColor}33`, borderRadius: 4, padding: '1px 7px', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{v.trigger}</span>
+                {v.health_score != null && <span style={{ fontSize: '0.65rem', color: '#555' }}>health: <span style={{ color: v.health_score >= 70 ? '#4ade80' : v.health_score >= 40 ? '#fbbf24' : '#f87171' }}>{v.health_score}</span></span>}
+                {v.learning_velocity && <span style={{ fontSize: '0.65rem', color: VEL_COLOR[v.learning_velocity] ?? '#555' }}>{v.learning_velocity}</span>}
+              </div>
+              <span style={{ fontSize: '0.65rem', color: '#333' }}>{v.created_at?.slice(0, 19).replace('T', ' ')}</span>
+            </div>
+            {keys.length > 0 && (
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 6 }}>
+                {keys.map(k => (
+                  <span key={k} style={{ fontSize: '0.68rem', background: '#111', border: '1px solid #222', borderRadius: 4, padding: '2px 8px', color: changed[k] > 0 ? '#4ade80' : '#f87171' }}>
+                    {k} {changed[k] > 0 ? '+' : ''}{changed[k]}
+                  </span>
+                ))}
+              </div>
+            )}
+            {v.notes && <div style={{ fontSize: '0.68rem', color: '#444', fontStyle: 'italic' }}>{v.notes}</div>}
+            {v.rollback_tag && <div style={{ fontSize: '0.65rem', color: '#f87171', marginTop: 4 }}>tag: {v.rollback_tag}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Evolution: Timeline Playback ──────────────────────────────────────────────
+function TimelinePlayback({ data }) {
+  const [selA, setSelA] = useState(null);
+  const [selB, setSelB] = useState(null);
+  if (!data?.versions?.length) return <InsufficientData msg="No intelligence versions to compare" />;
+  const versions = data.versions;
+
+  const A = versions.find(v => v.id === selA);
+  const B = versions.find(v => v.id === selB);
+
+  function WeightsCard({ v, label }) {
+    if (!v) return <div style={{ flex: 1, background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 14px', minWidth: 200 }}><span style={{ color: '#333', fontSize: '0.72rem' }}>Select a version</span></div>;
+    const weights = v.new_weights ?? {};
+    return (
+      <div style={{ flex: 1, background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 14px', minWidth: 200 }}>
+        <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
+        <div style={{ fontSize: '0.68rem', color: '#666', marginBottom: 6 }}>{v.created_at?.slice(0, 19).replace('T', ' ')} · <span style={{ color: VEL_COLOR[v.learning_velocity] ?? '#555' }}>{v.learning_velocity}</span></div>
+        {Object.keys(weights).length ? Object.entries(weights).map(([k, val]) => {
+          const other = label === 'Version A' ? (B?.new_weights?.[k] ?? null) : (A?.new_weights?.[k] ?? null);
+          const diff = other != null ? val - other : null;
+          return (
+            <div key={k} style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+              <span style={{ fontSize: '0.7rem', color: '#555' }}>{k}</span>
+              <span style={{ fontSize: '0.7rem', color: '#8888ff' }}>
+                {val} {diff != null && <span style={{ color: diff > 0 ? '#4ade80' : diff < 0 ? '#f87171' : '#333', fontSize: '0.65rem' }}>({diff > 0 ? '+' : ''}{diff.toFixed(2)})</span>}
+              </span>
+            </div>
+          );
+        }) : <span style={{ color: '#333', fontSize: '0.7rem' }}>no weights</span>}
+        {v.health_score != null && <div style={{ marginTop: 8, fontSize: '0.68rem', color: '#444' }}>health: <span style={{ color: '#8888ff' }}>{v.health_score}</span></div>}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 10, marginBottom: 12, flexWrap: 'wrap' }}>
+        {[['Version A', selA, setSelA], ['Version B', selB, setSelB]].map(([label, sel, setSel]) => (
+          <div key={label} style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: '0.65rem', color: '#444' }}>{label}</span>
+            <select style={S.select} value={sel ?? ''} onChange={e => setSel(e.target.value || null)}>
+              <option value="">— select —</option>
+              {versions.map(v => (
+                <option key={v.id} value={v.id}>
+                  {v.created_at?.slice(0, 16).replace('T', ' ')} · {v.trigger} · {v.learning_velocity ?? '?'}
+                </option>
+              ))}
+            </select>
+          </div>
+        ))}
+      </div>
+      <div style={{ display: 'flex', gap: 12, flexWrap: 'wrap' }}>
+        <WeightsCard v={A} label="Version A" />
+        <WeightsCard v={B} label="Version B" />
+      </div>
+    </div>
+  );
+}
+
+// ── Evolution: Snapshot Timeline ─────────────────────────────────────────────
+function SnapshotTimeline({ token }) {
+  const [rows,     setRows]     = useState([]);
+  const [loading,  setLoading]  = useState(false);
+  const [niche,    setNiche]    = useState('');
+  const [bucket,   setBucket]   = useState('30d');
+  const [durBuck,  setDurBuck]  = useState('');
+
+  async function load() {
+    setLoading(true);
+    try {
+      let url = ROUTES.adminEvolutionBenchmarkTimeline;
+      const params = [];
+      if (niche)   params.push(`niche=${encodeURIComponent(niche)}`);
+      if (bucket)  params.push(`bucket=${encodeURIComponent(bucket)}`);
+      if (durBuck) params.push(`duration_bucket=${encodeURIComponent(durBuck)}`);
+      if (params.length) url += '?' + params.join('&');
+      const data = await apiFetch(url, token);
+      setRows(data.rows ?? []);
+    } catch (_) {}
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+        <select style={S.select} value={niche} onChange={e => setNiche(e.target.value)}>
+          <option value="">All niches</option>
+          {NICHES.map(n => <option key={n} value={n}>{n}</option>)}
+        </select>
+        <select style={S.select} value={bucket} onChange={e => setBucket(e.target.value)}>
+          <option value="">All buckets</option>
+          {['1d','3d','7d','14d','30d','90d','365d'].map(b => <option key={b} value={b}>{b}</option>)}
+        </select>
+        <select style={S.select} value={durBuck} onChange={e => setDurBuck(e.target.value)}>
+          <option value="">All durations</option>
+          {['short','medium','long'].map(d => <option key={d} value={d}>{d}</option>)}
+        </select>
+        <button style={S.btn} onClick={load}>{loading ? 'Loading…' : 'Apply'}</button>
+      </div>
+      {!rows.length ? (
+        <div style={{ color: '#333', fontSize: '0.75rem' }}>No benchmark history yet — runs after second patternMiner execution.</div>
+      ) : (
+        <div style={{ overflowX: 'auto' }}>
+          <table style={S.table}>
+            <thead><tr>
+              {['Snapshot', 'Niche', 'Bucket', 'Dur', 'N', 'Med VPH', 'P90 VPH', 'Med SAV', 'Med VSR'].map(h => <th key={h} style={S.th}>{h}</th>)}
+            </tr></thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i}>
+                  <td style={{ ...S.td, fontSize: '0.65rem', color: '#333' }}>{r.snapshot_at?.slice(0, 16).replace('T', ' ')}</td>
+                  <td style={S.td}><span style={S.tag}>{r.niche}</span></td>
+                  <td style={S.td}>{r.bucket}</td>
+                  <td style={S.td}>{r.duration_bucket}</td>
+                  <td style={{ ...S.td, color: '#8888ff' }}>{r.sample_size}</td>
+                  <td style={S.td}>{r.median_vph?.toFixed(3) ?? '—'}</td>
+                  <td style={S.td}>{r.p90_vph?.toFixed(3) ?? '—'}</td>
+                  <td style={S.td}>{r.median_sav?.toFixed(4) ?? '—'}</td>
+                  <td style={S.td}>{r.median_vsr?.toFixed(4) ?? '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Evolution: Rollback Panel ─────────────────────────────────────────────────
+function RollbackPanel({ token, onDone }) {
+  const [versions, setVersions]   = useState([]);
+  const [selId,    setSelId]      = useState('');
+  const [reason,   setReason]     = useState('');
+  const [tag,      setTag]        = useState('');
+  const [type,     setType]       = useState('niche_bias');
+  const [busy,     setBusy]       = useState(false);
+  const [msg,      setMsg]        = useState('');
+  const [err,      setErr]        = useState('');
+
+  useEffect(() => {
+    apiFetch(ROUTES.adminScoringVersions, token).then(d => setVersions(d.versions ?? [])).catch(() => {});
+  }, [token]);
+
+  async function doRollback() {
+    if (!selId)       return setErr('Select a target version');
+    if (!reason.trim()) return setErr('Reason is required');
+    setBusy(true); setMsg(''); setErr('');
+    try {
+      const data = await apiFetch(ROUTES.adminScoringRollback, token, {
+        method: 'POST',
+        body: JSON.stringify({ version_type: type, version_id: selId, reason: reason.trim(), rollback_tag: tag.trim() || null, applied_by: 'operator' }),
+      });
+      setMsg(`Rolled back to ${selId.slice(0, 8)}… — audit: ${data.audit_id?.slice(0, 8)}…`);
+      setSelId(''); setReason(''); setTag('');
+      onDone?.();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  const filtered = versions.filter(v => v.version_type === type);
+
+  return (
+    <div style={{ background: '#0a0505', border: '1px solid #3a1a1a', borderRadius: 10, padding: '18px 20px' }}>
+      <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#f87171', marginBottom: 4, letterSpacing: '0.1em', textTransform: 'uppercase' }}>Rollback Scoring Weights Only</div>
+      <div style={{ fontSize: '0.68rem', color: '#555', marginBottom: 14 }}>
+        Benchmark history is immutable and will not be reverted. This action is logged permanently.
+      </div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            <span style={{ fontSize: '0.65rem', color: '#555' }}>Version type</span>
+            <select style={S.select} value={type} onChange={e => setType(e.target.value)}>
+              <option value="niche_bias">niche_bias</option>
+              <option value="ensemble_weights">ensemble_weights</option>
+            </select>
+          </div>
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, flex: 2 }}>
+            <span style={{ fontSize: '0.65rem', color: '#555' }}>Target version</span>
+            <select style={{ ...S.select, width: '100%' }} value={selId} onChange={e => setSelId(e.target.value)}>
+              <option value="">— select version to restore —</option>
+              {filtered.map(v => (
+                <option key={v.id} value={v.id}>
+                  {v.version_name} · {v.created_at?.slice(0, 10)} {v.active ? '(active)' : ''}
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: '0.65rem', color: '#f87171' }}>Reason (required)</span>
+          <input style={S.input} placeholder="Why are you rolling back? Be specific." value={reason} onChange={e => setReason(e.target.value)} />
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <span style={{ fontSize: '0.65rem', color: '#555' }}>Tag (optional)</span>
+          <input style={S.input} placeholder="e.g. emergency, post-incident, scheduled" value={tag} onChange={e => setTag(e.target.value)} />
+        </div>
+        <button
+          style={{ ...S.btnRed, alignSelf: 'flex-start', opacity: busy || !selId || !reason.trim() ? 0.4 : 1 }}
+          disabled={busy || !selId || !reason.trim()}
+          onClick={doRollback}
+        >
+          {busy ? 'Rolling back…' : 'Confirm Rollback'}
+        </button>
+        {msg && <div style={S.ok}>{msg}</div>}
+        {err && <div style={S.err}>{err}</div>}
+      </div>
+    </div>
+  );
+}
+
+// ── Tab: Evolution ────────────────────────────────────────────────────────────
+function EvolutionTab({ token }) {
+  const [health,     setHealth]     = useState(null);
+  const [accuracy,   setAccuracy]   = useState(null);
+  const [scoreDist,  setScoreDist]  = useState(null);
+  const [weights,    setWeights]    = useState(null);
+  const [drift,      setDrift]      = useState(null);
+  const [calibHist,  setCalibHist]  = useState(null);
+  const [confidence, setConfidence] = useState(null);
+  const [versions,   setVersions]   = useState(null);
+  const [loading,    setLoading]    = useState(true);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const safe = async (url) => { try { return await apiFetch(url, token); } catch { return null; } };
+    const [h, a, sd, w, d, ch, cf, v] = await Promise.all([
+      safe(ROUTES.adminEvolutionHealthScore),
+      safe(ROUTES.adminEvolutionPredictionAccuracy),
+      safe(ROUTES.adminEvolutionScoreDistribution),
+      safe(ROUTES.adminEvolutionSignalWeights),
+      safe(ROUTES.adminEvolutionBenchmarkDrift),
+      safe(ROUTES.adminEvolutionCalibrationHistory),
+      safe(ROUTES.adminEvolutionConfidence),
+      safe(ROUTES.adminEvolutionVersions),
+    ]);
+    setHealth(h); setAccuracy(a); setScoreDist(sd); setWeights(w);
+    setDrift(d); setCalibHist(ch); setConfidence(cf); setVersions(v);
+    setLoading(false);
+  }, [token]);
+
+  useEffect(() => { load(); }, [load]);
+
+  if (loading) return <div style={{ color: '#333', fontSize: '0.78rem', padding: '20px 0' }}>Loading intelligence data…</div>;
+
+  const globalWarnings = drift?.warnings ?? [];
+
+  return (
+    <div>
+      {/* Global warning banners */}
+      {globalWarnings.filter(w => w.severity === 'red').map((w, i) => (
+        <div key={i} style={{ background: '#1f0a0a', border: '1px solid #4a1a1a', borderRadius: 6, padding: '10px 14px', marginBottom: 8, fontSize: '0.75rem', color: '#f87171', fontWeight: 600 }}>
+          ⚠ {w.message} — <span style={{ fontWeight: 400 }}>Possible benchmark instability</span>
+        </div>
+      ))}
+
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+        <button style={S.btn} onClick={load}>Refresh All</button>
+      </div>
+
+      <EvoSection title="Intelligence Health Score">
+        <HealthSection data={health} />
+      </EvoSection>
+
+      <EvoSection title="Benchmark Drift Detection">
+        <DriftSection data={drift} />
+      </EvoSection>
+
+      <EvoSection title="Prediction Accuracy Tracking">
+        <AccuracySection data={accuracy} />
+      </EvoSection>
+
+      <EvoSection title="Score Distribution Evolution">
+        <ScoreDistSection data={scoreDist} />
+      </EvoSection>
+
+      <EvoSection title="Signal Importance Evolution">
+        <SignalWeightsSection data={weights} />
+      </EvoSection>
+
+      <EvoSection title="Confidence Reliability">
+        <ConfidenceSection data={confidence} />
+      </EvoSection>
+
+      <EvoSection title="Calibration History">
+        <CalibrationHistorySection data={calibHist} />
+      </EvoSection>
+
+      <EvoSection title="Intelligence Timeline Playback">
+        <TimelinePlayback data={versions} />
+      </EvoSection>
+
+      <EvoSection title="Snapshot Timeline Viewer">
+        <SnapshotTimeline token={token} />
+      </EvoSection>
+
+      <EvoSection title="Rollback — Scoring Weights Only">
+        <RollbackPanel token={token} onDone={load} />
+      </EvoSection>
+    </div>
+  );
+}
+
+// ── Tab: Learning Intelligence Dashboard ──────────────────────────────────────
+
+const MAE_STATUS  = (v) => v == null ? '#555' : v < 15 ? '#4ade80' : v < 30 ? '#fbbf24' : '#f87171';
+const TRUST_COLOR = (v) => v == null ? '#555' : v >= 70 ? '#4ade80' : v >= 40 ? '#fbbf24' : '#f87171';
+const SYNTH_COLOR = (v) => v == null ? '#555' : v < 0.5 ? '#4ade80' : v < 0.9 ? '#fbbf24' : '#f87171';
+const SEV_STYLE   = { red: { background: '#1f0808', border: '1px solid #5a1a1a', color: '#f87171' }, yellow: { background: '#1f1808', border: '1px solid #5a3a0a', color: '#fbbf24' }, info: { background: '#080f1f', border: '1px solid #1a2a5a', color: '#60a5fa' } };
+const BAND_COLOR  = { large_overprediction: '#f87171', slight_overprediction: '#fbbf24', accurate: '#4ade80', slight_underprediction: '#fbbf24', large_underprediction: '#f87171' };
+
+function DeltaPill({ value, lowerBetter = true }) {
+  if (value == null) return <span style={{ fontSize: '0.6rem', color: '#333' }}>—</span>;
+  const good = lowerBetter ? value <= 0 : value >= 0;
+  const color = good ? '#4ade80' : '#f87171';
+  const arrow = value > 0 ? '↑' : value < 0 ? '↓' : '→';
+  return (
+    <span style={{ fontSize: '0.6rem', color, marginLeft: 4 }}>
+      {arrow} {value > 0 ? '+' : ''}{value}
+    </span>
+  );
+}
+
+function KpiCard({ title, value, unit, delta24h, delta7d, color, lowerBetter, tooltip, sub }) {
+  return (
+    <div title={tooltip} style={{ background: '#08080f', border: `1px solid #1a1a2e`, borderRadius: 10, padding: '16px 18px', minWidth: 170, flex: '1 1 170px', cursor: 'help' }}>
+      <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 6 }}>{title}</div>
+      <div style={{ fontSize: '1.5rem', fontWeight: 700, color: color ?? '#8888ff', lineHeight: 1.1 }}>
+        {value ?? '—'}{unit && <span style={{ fontSize: '0.75rem', fontWeight: 400, color: '#555', marginLeft: 2 }}>{unit}</span>}
+      </div>
+      <div style={{ display: 'flex', gap: 10, marginTop: 6, flexWrap: 'wrap' }}>
+        {delta24h !== undefined && <span style={{ fontSize: '0.6rem', color: '#333' }}>24h: <DeltaPill value={delta24h} lowerBetter={lowerBetter} /></span>}
+        {delta7d  !== undefined && <span style={{ fontSize: '0.6rem', color: '#333' }}>7d: <DeltaPill value={delta7d}  lowerBetter={lowerBetter} /></span>}
+      </div>
+      {sub && <div style={{ fontSize: '0.6rem', color: '#333', marginTop: 4 }}>{sub}</div>}
+      <div style={{ fontSize: '0.55rem', color: '#2a2a3a', marginTop: 4 }}>{lowerBetter ? 'Lower is better' : 'Higher is better'}</div>
+    </div>
+  );
+}
+
+function AlertBanners({ alerts }) {
+  if (!alerts?.length) return null;
+  return (
+    <div style={{ marginBottom: 16 }}>
+      {alerts.map((a, i) => (
+        <div key={i} style={{ ...SEV_STYLE[a.severity] ?? SEV_STYLE.info, borderRadius: 7, padding: '10px 14px', marginBottom: 6, fontSize: '0.75rem' }}>
+          <div style={{ fontWeight: 700, marginBottom: 2 }}>{a.severity === 'red' ? '⚠ ALERT' : '● WARNING'} — {a.message}</div>
+          {a.action && <div style={{ opacity: 0.75, fontWeight: 400 }}>Action: {a.action}</div>}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function LSection({ title, children, collapsed, onToggle }) {
+  return (
+    <div style={{ marginBottom: 20 }}>
+      <div
+        onClick={onToggle}
+        style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', cursor: 'pointer', borderBottom: '1px solid #1a1a2e', paddingBottom: 7, marginBottom: collapsed ? 0 : 14 }}
+      >
+        <div style={{ fontSize: '0.7rem', fontWeight: 700, color: '#555', letterSpacing: '0.12em', textTransform: 'uppercase' }}>{title}</div>
+        <span style={{ fontSize: '0.65rem', color: '#333' }}>{collapsed ? '▶ expand' : '▼ collapse'}</span>
+      </div>
+      {!collapsed && children}
+    </div>
+  );
+}
+
+function SparkChart({ data, dataKey, color = '#8888ff', label }) {
+  if (!data?.length || data.length < 2) {
+    return <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Accumulating history — check back after daily snapshot cron fires</div>;
+  }
+  return (
+    <div>
+      {label && <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>}
+      <ResponsiveContainer width="100%" height={120}>
+        <LineChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+          <XAxis dataKey="snapshot_date" tick={{ fontSize: 9, fill: '#444' }} tickFormatter={v => v?.slice(5)} />
+          <YAxis tick={{ fontSize: 9, fill: '#444' }} />
+          <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }} />
+          <Line type="monotone" dataKey={dataKey} stroke={color} dot={false} strokeWidth={2} />
+        </LineChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function HistChart({ data, xKey, yKey, color = '#8888ff', label, tooltip: tipText }) {
+  if (!data?.length) return <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '12px 0' }}>No data</div>;
+  return (
+    <div title={tipText}>
+      {label && <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 6 }}>{label}</div>}
+      <ResponsiveContainer width="100%" height={140}>
+        <BarChart data={data} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+          <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+          <XAxis dataKey={xKey} tick={{ fontSize: 9, fill: '#444' }} />
+          <YAxis tick={{ fontSize: 9, fill: '#444' }} />
+          <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }} />
+          <Bar dataKey={yKey} fill={color} radius={[2, 2, 0, 0]} />
+        </BarChart>
+      </ResponsiveContainer>
+    </div>
+  );
+}
+
+function NicheRow({ r, rank }) {
+  const errColor = Math.abs(r.avg_error ?? 0) <= 10 ? '#4ade80' : Math.abs(r.avg_error ?? 0) <= 25 ? '#fbbf24' : '#f87171';
+  const maeColor = MAE_STATUS(r.mae);
+  const trendLabel = r.trend === 'over' ? { label: '↑ over', color: '#fbbf24' } : r.trend === 'under' ? { label: '↓ under', color: '#60a5fa' } : { label: '✓ cal.', color: '#4ade80' };
+  const freshDays = r.last_refreshed ? Math.floor((Date.now() - new Date(r.last_refreshed)) / 86400000) : null;
+  return (
+    <tr>
+      <td style={S.td}><span style={{ color: '#333', fontSize: '0.65rem' }}>{rank}</span></td>
+      <td style={S.td}><span style={{ color: '#7aadff', fontSize: '0.75rem' }}>{r.niche}</span></td>
+      <td style={S.td}>{r.sample_count}</td>
+      <td style={{ ...S.td, color: errColor }} title="Positive = over-predicts this niche. Negative = under-predicts.">{r.avg_error > 0 ? '+' : ''}{r.avg_error ?? '—'}</td>
+      <td style={S.td}>{r.avg_actual ?? '—'}</td>
+      <td style={{ ...S.td, color: maeColor }} title="Mean Absolute Error for this niche">{r.mae ?? '—'}</td>
+      <td style={S.td}><span style={{ color: trendLabel.color, fontSize: '0.7rem' }}>{trendLabel.label}</span></td>
+      <td style={S.td}><span style={{ color: '#333', fontSize: '0.65rem' }}>{r.real_count > 0 ? <span style={{ color: '#4ade80' }}>{r.real_count}R</span> : null}{r.synthetic_count > 0 ? <span style={{ color: '#555', marginLeft: r.real_count > 0 ? 4 : 0 }}>{r.synthetic_count}S</span> : null}</span></td>
+      <td style={S.td}><span style={{ color: freshDays == null ? '#333' : freshDays > 7 ? '#f87171' : '#444', fontSize: '0.65rem' }}>{freshDays != null ? `${freshDays}d ago` : '—'}</span></td>
+    </tr>
+  );
+}
+
+function EventRow({ ev }) {
+  const sev  = ev.severity ?? 'info';
+  const dot  = { red: '#f87171', yellow: '#fbbf24', info: '#60a5fa' }[sev] ?? '#555';
+  const ts   = ev.created_at ? new Date(ev.created_at).toLocaleString() : '—';
+  const typeLabel = { calibration: 'Calibration', synthetic_run: 'Synthetic Run' }[ev.type] ?? ev.type;
+
+  return (
+    <div style={{ display: 'flex', gap: 12, padding: '8px 0', borderBottom: '1px solid #0d0d12' }}>
+      <div style={{ paddingTop: 3 }}><div style={{ width: 7, height: 7, borderRadius: '50%', background: dot, flexShrink: 0 }} /></div>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+          <span style={{ fontSize: '0.65rem', color: '#555', fontWeight: 700, letterSpacing: '0.07em', textTransform: 'uppercase' }}>{typeLabel}</span>
+          {ev.trigger && <span style={{ ...S.tag }}>{ev.trigger}</span>}
+          {ev.health_score != null && <span style={{ fontSize: '0.65rem', color: ev.health_score < 40 ? '#f87171' : '#4ade80' }}>health {ev.health_score}</span>}
+          {ev.velocity && <span style={{ fontSize: '0.65rem', color: VEL_COLOR[ev.velocity] ?? '#555' }}>{ev.velocity}</span>}
+          {ev.weight_delta > 0 && <span style={{ fontSize: '0.65rem', color: '#fbbf24' }}>Δw {ev.weight_delta}</span>}
+          {ev.rows_inserted != null && <span style={{ fontSize: '0.65rem', color: '#60a5fa' }}>{ev.rows_inserted} rows</span>}
+          {ev.mae != null && <span style={{ fontSize: '0.65rem', color: MAE_STATUS(ev.mae) }}>MAE {ev.mae}</span>}
+        </div>
+        <div style={{ fontSize: '0.6rem', color: '#2a2a3a', marginTop: 2 }}>{ts}</div>
+        {ev.notes && <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 2 }}>{ev.notes}</div>}
+      </div>
+    </div>
+  );
+}
+
+const FEAT_COLORS = {
+  niche_research: '#60a5fa', viral_formula: '#f472b6', pattern_ranking: '#34d399',
+  title_generation: '#fbbf24', upload_timing: '#a78bfa',
+  hook_intelligence: '#fb923c', channel_classification: '#22d3ee',
+};
+
+function DeltaCard({ label, d, lowerBetter }) {
+  if (!d || d.current == null) return null;
+  return (
+    <div style={{ ...S.card, margin: 0, padding: '8px 14px', minWidth: 160 }}>
+      <div style={{ fontSize: '0.58rem', color: '#333', letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 4 }}>{label}</div>
+      <div style={{ fontSize: '0.9rem', color: '#ccc', fontWeight: 600, marginBottom: 6 }}>{typeof d.current === 'number' ? d.current.toFixed(1) : d.current}</div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, fontSize: '0.58rem', color: '#444' }}>
+        {d.vs_yesterday != null && <span>1d<DeltaPill value={d.vs_yesterday} lowerBetter={lowerBetter} /></span>}
+        {d.vs_7d_avg    != null && <span>7d avg<DeltaPill value={d.vs_7d_avg} lowerBetter={lowerBetter} /></span>}
+        {d.vs_30d_avg   != null && <span>30d avg<DeltaPill value={d.vs_30d_avg} lowerBetter={lowerBetter} /></span>}
+      </div>
+    </div>
+  );
+}
+
+function HistorySubtab({ token }) {
+  const [data,        setData]        = useState(null);
+  const [loading,     setLoading]     = useState(true);
+  const [days,        setDays]        = useState(30);
+  const [snapping,    setSnapping]    = useState(false);
+  const [snapMsg,     setSnapMsg]     = useState('');
+  const [correctness,  setCorrectness]  = useState(null);
+  const [routingStats, setRoutingStats] = useState(null);
+  const [reliability,  setReliability]  = useState(null);
+  const [cohorts,      setCohorts]      = useState(null);
+  const [decayData,    setDecayData]    = useState(null);
+  const [disagStats,   setDisagStats]   = useState(null);
+  const [synthTrans,   setSynthTrans]   = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const safe = async (url) => { try { return await apiFetch(url, token); } catch { return null; } };
+    const [r, c, rt, rel, coh, dec, dis, syn] = await Promise.all([
+      safe(`${ROUTES.adminLearningHistoryDashboard}?days=${days}`),
+      safe(ROUTES.adminConfidenceCorrectness),
+      safe(`${ROUTES.adminRoutingAnalytics}?days=${days}`),
+      safe(ROUTES.adminLearningNicheReliability),
+      safe(`${ROUTES.adminLearningCohortAnalysis}?days=${days}`),
+      safe(ROUTES.adminLearningDecayAnalysis),
+      safe(`${ROUTES.adminLearningDisagreementStats}?days=${days}`),
+      safe(ROUTES.adminLearningSyntheticTransition),
+    ]);
+    setData(r); setCorrectness(c); setRoutingStats(rt);
+    setReliability(rel); setCohorts(coh); setDecayData(dec);
+    setDisagStats(dis); setSynthTrans(syn);
+    setLoading(false);
+  }, [token, days]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function snap() {
+    setSnapping(true); setSnapMsg('');
+    try {
+      const r = await apiFetch(ROUTES.adminConfidenceSnapshot, token, { method: 'POST' });
+      setSnapMsg(`Snapshot: ${r.date} — ${r.niches_scored} niches scored`);
+      load();
+    } catch (e) { setSnapMsg(`Error: ${e.message}`); }
+    setSnapping(false);
+  }
+
+  if (loading) return <div style={{ color: '#333', fontSize: '0.78rem', padding: '20px 0' }}>Loading intelligence history…</div>;
+  if (!data)   return <div style={{ color: '#f87171', fontSize: '0.75rem', padding: '20px 0' }}>Failed to load history data</div>;
+
+  const health  = data.health_timeline     ?? [];
+  const routing = data.routing_timeline    ?? [];
+  const conf    = data.confidence_timeline ?? [];
+  const deltas  = data.deltas ?? {};
+  const { top: topN = [], worst: worstN = [] } = data.niche_rankings ?? {};
+  const features = [...new Set(conf.map(r => r.feature))];
+
+  const confByDate = {};
+  for (const r of conf) {
+    confByDate[r.snapshot_date] ??= { snapshot_date: r.snapshot_date };
+    confByDate[r.snapshot_date][r.feature] = r.avg_confidence;
+  }
+  const confTimeline = Object.values(confByDate).sort((a, b) => a.snapshot_date.localeCompare(b.snapshot_date));
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+          <span style={{ fontSize: '0.65rem', color: '#333' }}>Range:</span>
+          {[7, 14, 30, 90].map(d => (
+            <button key={d} onClick={() => setDays(d)} style={{ ...S.btn, padding: '4px 10px', fontSize: '0.65rem', borderColor: days === d ? '#8888ff' : '#222', color: days === d ? '#8888ff' : '#444' }}>{d}d</button>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn} onClick={snap} disabled={snapping}>{snapping ? 'Saving…' : 'Confidence Snapshot'}</button>
+          <button style={S.btn} onClick={load}>Refresh</button>
+        </div>
+      </div>
+      {snapMsg && <div style={{ ...S.ok, marginBottom: 10, fontSize: '0.68rem' }}>{snapMsg}</div>}
+
+      {/* Delta summary strip */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 20 }}>
+        <DeltaCard label="MAE" d={deltas.mae} lowerBetter />
+        <DeltaCard label="Calibration Trust" d={deltas.calibration_trust} lowerBetter={false} />
+        <DeltaCard label="Avg Confidence" d={deltas.avg_confidence} lowerBetter={false} />
+        <DeltaCard label="Fallback Rate" d={deltas.fallback_rate} lowerBetter />
+      </div>
+
+      {/* Charts 1+2: Health timeline */}
+      <LSection title="Intelligence Health Timeline" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={health} dataKey="mae" color="#f87171" label="MAE — lower is better" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Downward trend = improving prediction accuracy.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={health} dataKey="calibration_trust_score" color="#4ade80" label="Calibration Trust Score" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Rising trust = system accumulating reliable real-world signal.</div>
+          </div>
+        </div>
+      </LSection>
+
+      {/* Charts 3+4: Confidence growth + routing distribution */}
+      <LSection title="Confidence Growth & Routing Distribution" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            {confTimeline.length >= 2 ? (
+              <div>
+                <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Confidence by Feature Over Time</div>
+                <ResponsiveContainer width="100%" height={130}>
+                  <LineChart data={confTimeline} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+                    <XAxis dataKey="snapshot_date" tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => v?.slice(5)} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 8, fill: '#444' }} />
+                    <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={(v, n) => [v?.toFixed(1), n?.replace(/_/g, ' ')]} labelFormatter={v => `Date: ${v}`} />
+                    {features.map(f => <Line key={f} dataKey={f} stroke={FEAT_COLORS[f] ?? '#888'} dot={false} strokeWidth={1.5} name={f} />)}
+                  </LineChart>
+                </ResponsiveContainer>
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
+                  {features.map(f => <span key={f} style={{ fontSize: '0.57rem', color: FEAT_COLORS[f] ?? '#888' }}>● {f.replace(/_/g, ' ')}</span>)}
+                </div>
+              </div>
+            ) : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Accumulating — confidence snapshot runs daily at 03:00 UTC</div>}
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            {routing.length >= 2 ? (
+              <div>
+                <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Routing Distribution Over Time</div>
+                <ResponsiveContainer width="100%" height={130}>
+                  <AreaChart data={routing} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+                    <XAxis dataKey="snapshot_date" tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => v?.slice(5)} />
+                    <YAxis domain={[0, 100]} tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => `${v}%`} />
+                    <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={v => [`${v?.toFixed(1)}%`]} labelFormatter={v => `Date: ${v}`} />
+                    <Area type="monotone" dataKey="autonomous_pct"       stackId="1" stroke="#4ade80" fill="#4ade8022" strokeWidth={1.5} name="Autonomous" />
+                    <Area type="monotone" dataKey="local_first_pct"      stackId="1" stroke="#8888ff" fill="#8888ff22" strokeWidth={1.5} name="Local First" />
+                    <Area type="monotone" dataKey="hybrid_pct"           stackId="1" stroke="#fbbf24" fill="#fbbf2422" strokeWidth={1.5} name="Hybrid" />
+                    <Area type="monotone" dataKey="mandatory_claude_pct" stackId="1" stroke="#f87171" fill="#f8717122" strokeWidth={1.5} name="Claude Required" />
+                  </AreaChart>
+                </ResponsiveContainer>
+                <div style={{ display: 'flex', gap: 8, marginTop: 6, flexWrap: 'wrap' }}>
+                  {[['Autonomous', '#4ade80'], ['Local First', '#8888ff'], ['Hybrid', '#fbbf24'], ['Claude Required', '#f87171']].map(([n, c]) => (
+                    <span key={n} style={{ fontSize: '0.57rem', color: c }}>● {n}</span>
+                  ))}
+                </div>
+              </div>
+            ) : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Accumulating — confidence snapshot runs daily at 03:00 UTC</div>}
+          </div>
+        </div>
+      </LSection>
+
+      {/* Charts 5+6: Claude dependency reduction */}
+      <LSection title="Claude Dependency Reduction" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={routing} dataKey="fallback_rate" color="#f87171" label="System Fallback Rate — lower = more autonomous" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>% of decisions routed to Claude. Target: trend toward 0%.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={health} dataKey="synthetic_ratio" color="#fbbf24" label="Synthetic Data Ratio — lower = more real signal" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>As real creator data grows, synthetic ratio should fall. Target: &lt;50%.</div>
+          </div>
+        </div>
+      </LSection>
+
+      {/* Chart 7: Benchmark drift */}
+      <LSection title="Benchmark Drift" collapsed={false} onToggle={() => {}}>
+        <div style={{ ...S.card }}>
+          <SparkChart data={health} dataKey="benchmark_drift" color="#fbbf24" label="Benchmark Drift Over Time" />
+          <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Gradual drift is healthy (markets shift). Sudden spikes = benchmark instability.</div>
+        </div>
+      </LSection>
+
+      {/* Charts 8+9: Niche rankings */}
+      <LSection title="Niche Confidence Rankings (Latest Snapshot)" collapsed={false} onToggle={() => {}}>
+        {topN.length === 0
+          ? <div style={{ color: '#333', fontSize: '0.75rem' }}>No niche confidence snapshot yet — runs daily at 03:00 UTC</div>
+          : (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 16 }}>
+              <div style={{ ...S.card, margin: 0 }}>
+                <div style={{ fontSize: '0.6rem', color: '#4ade80', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Top Niches — Highest Confidence</div>
+                {topN.map((r, i) => (
+                  <div key={r.niche} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid #0d0d12' }}>
+                    <span style={{ fontSize: '0.68rem', color: '#666' }}>#{i + 1} {r.niche}</span>
+                    <span style={{ fontSize: '0.7rem', color: r.avg_confidence >= 80 ? '#4ade80' : r.avg_confidence >= 60 ? '#8888ff' : '#fbbf24', fontWeight: 600 }}>{r.avg_confidence?.toFixed(1)}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={{ ...S.card, margin: 0 }}>
+                <div style={{ fontSize: '0.6rem', color: '#f87171', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Worst Niches — Lowest Confidence</div>
+                {worstN.map((r, i) => (
+                  <div key={r.niche} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 6, paddingBottom: 5, borderBottom: '1px solid #0d0d12' }}>
+                    <span style={{ fontSize: '0.68rem', color: '#666' }}>#{i + 1} {r.niche}</span>
+                    <span style={{ fontSize: '0.7rem', color: r.avg_confidence >= 80 ? '#4ade80' : r.avg_confidence >= 60 ? '#8888ff' : '#fbbf24', fontWeight: 600 }}>{r.avg_confidence?.toFixed(1)}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )
+        }
+      </LSection>
+
+      {/* Chart 10: Signal-level placeholders */}
+      <LSection title="Signal-Level Intelligence (Phase D/F)" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0, opacity: 0.45 }}>
+            <div style={{ fontSize: '0.6rem', color: '#fb923c', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Hook Intelligence Momentum</div>
+            <div style={{ color: '#2a2a2a', fontSize: '0.72rem' }}>Phase D (hook extraction) not yet built. Hook-level confidence trending will appear here after Phase D is complete.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <div style={{ fontSize: '0.6rem', color: '#a78bfa', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Upload Timing Stability</div>
+            {conf.filter(r => r.feature === 'upload_timing').length >= 2
+              ? (
+                <div>
+                  <SparkChart data={conf.filter(r => r.feature === 'upload_timing')} dataKey="avg_confidence" color="#a78bfa" label="Upload Timing — confidence over time" />
+                  <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Upload timing is the highest-confidence autonomous signal (~92). Should remain stable.</div>
+                </div>
+              )
+              : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Accumulating — snapshot runs daily at 03:00 UTC</div>
+            }
+          </div>
+        </div>
+      </LSection>
+
+      {/* Confidence Correctness (Phase C Pre-req) */}
+      <LSection title="Confidence Correctness Validation" collapsed={false} onToggle={() => {}}>
+        {!correctness
+          ? <div style={{ color: '#333', fontSize: '0.72rem' }}>No correctness data — requires video_outcomes with calibration_error populated</div>
+          : (
+            <div>
+              {(correctness.alerts ?? []).map((a, i) => (
+                <div key={i} style={{ ...S.card, margin: '0 0 8px', borderColor: a.severity === 'red' ? '#f87171' : '#fbbf24', background: a.severity === 'red' ? '#1a0505' : '#181205' }}>
+                  <div style={{ fontSize: '0.65rem', color: a.severity === 'red' ? '#f87171' : '#fbbf24', fontWeight: 600 }}>{a.type.replace(/_/g, ' ').toUpperCase()}</div>
+                  <div style={{ fontSize: '0.65rem', color: '#aaa', marginTop: 2 }}>{a.message}</div>
+                </div>
+              ))}
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginTop: 8 }}>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Confidence–MAE Correlation</div>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+                    <div style={{ fontSize: '2rem', fontWeight: 700, color: correctness.correlation == null ? '#444' : correctness.correlation < -0.3 ? '#4ade80' : correctness.correlation < 0 ? '#fbbf24' : '#f87171' }}>
+                      {correctness.correlation != null ? correctness.correlation.toFixed(3) : 'N/A'}
+                    </div>
+                    <div>
+                      <div style={{ fontSize: '0.6rem', color: '#555', marginBottom: 2 }}>Routing Accuracy Score</div>
+                      <div style={{ fontSize: '1.1rem', fontWeight: 600, color: (correctness.routing_accuracy_score ?? 0) >= 70 ? '#4ade80' : (correctness.routing_accuracy_score ?? 0) >= 40 ? '#fbbf24' : '#f87171' }}>
+                        {correctness.routing_accuracy_score ?? 0}/100
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: '0.58rem', color: '#333', marginTop: 6 }}>
+                    Negative = healthy (high confidence → low MAE). Data points: {correctness.data_points ?? 0}. Validated: {correctness.validated ? '✓' : '✗ (need ≥5 niches, ≥2 tiers, valid r)'}
+                  </div>
+                </div>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>MAE by Confidence Tier</div>
+                  {Object.values(correctness.bucketed_mae ?? {}).some(v => v != null) ? (
+                    <ResponsiveContainer width="100%" height={100}>
+                      <BarChart data={[
+                        { tier: 'low',        mae: correctness.bucketed_mae?.low        ?? 0, n: correctness.tier_counts?.low        ?? 0 },
+                        { tier: 'medium',     mae: correctness.bucketed_mae?.medium     ?? 0, n: correctness.tier_counts?.medium     ?? 0 },
+                        { tier: 'high',       mae: correctness.bucketed_mae?.high       ?? 0, n: correctness.tier_counts?.high       ?? 0 },
+                        { tier: 'autonomous', mae: correctness.bucketed_mae?.autonomous ?? 0, n: correctness.tier_counts?.autonomous ?? 0 },
+                      ]} margin={{ top: 0, right: 0, left: -28, bottom: 0 }}>
+                        <XAxis dataKey="tier" tick={{ fontSize: 8, fill: '#444' }} />
+                        <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+                        <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={(v, n, p) => [v?.toFixed(2), `MAE (n=${p.payload?.n})`]} />
+                        <Bar dataKey="mae" radius={[2, 2, 0, 0]}>
+                          {['#f87171','#fbbf24','#8888ff','#4ade80'].map((c, i) => <Cell key={i} fill={c} />)}
+                        </Bar>
+                      </BarChart>
+                    </ResponsiveContainer>
+                  ) : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Insufficient MAE data — need ≥5 video_outcomes per niche</div>}
+                  <div style={{ fontSize: '0.58rem', color: '#333', marginTop: 4 }}>Healthy: autonomous MAE &lt; high &lt; medium &lt; low</div>
+                </div>
+              </div>
+            </div>
+          )}
+      </LSection>
+
+      {/* Routing Analytics (Phase C) */}
+      <LSection title="Autonomous Routing Analytics" collapsed={false} onToggle={() => {}}>
+        {!routingStats || (routingStats.total ?? 0) === 0
+          ? <div style={{ color: '#333', fontSize: '0.72rem' }}>No routing data yet — log populates when /api/intelligence/query is called</div>
+          : (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 16 }}>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Route Distribution ({days}d)</div>
+                  <ResponsiveContainer width="100%" height={110}>
+                    <BarChart data={(routingStats.dist ?? []).map(d => ({ route: d.route_type, pct: routingStats.total > 0 ? d.n / routingStats.total * 100 : 0, n: d.n }))} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                      <XAxis dataKey="route" tick={{ fontSize: 7, fill: '#444' }} tickFormatter={v => v?.replace('_', ' ')} />
+                      <YAxis tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => `${v.toFixed(0)}%`} />
+                      <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={(v, n, p) => [`${v?.toFixed(1)}% (${p.payload?.n})`, 'requests']} />
+                      <Bar dataKey="pct" radius={[2, 2, 0, 0]}>
+                        {(routingStats.dist ?? []).map((d, i) => (
+                          <Cell key={i} fill={d.route_type === 'autonomous' ? '#4ade80' : d.route_type === 'hybrid' ? '#fbbf24' : d.route_type === 'mandatory_claude' ? '#f87171' : '#8888ff'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div style={{ fontSize: '0.58rem', color: '#333', marginTop: 4 }}>
+                    Total: {routingStats.total ?? 0} requests | Est. tokens saved: {(routingStats.total_tokens_saved ?? 0).toLocaleString()}
+                  </div>
+                </div>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Avg Latency by Route (ms)</div>
+                  <ResponsiveContainer width="100%" height={110}>
+                    <BarChart data={(routingStats.dist ?? []).map(d => ({ route: d.route_type, ms: d.avg_latency ?? 0 }))} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                      <XAxis dataKey="route" tick={{ fontSize: 7, fill: '#444' }} tickFormatter={v => v?.replace('_', ' ')} />
+                      <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+                      <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={v => [`${v?.toFixed(0)}ms`, 'avg latency']} />
+                      <Bar dataKey="ms" radius={[2, 2, 0, 0]}>
+                        {(routingStats.dist ?? []).map((d, i) => (
+                          <Cell key={i} fill={d.route_type === 'autonomous' ? '#4ade80' : d.route_type === 'hybrid' ? '#fbbf24' : d.route_type === 'mandatory_claude' ? '#f87171' : '#8888ff'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div style={{ fontSize: '0.58rem', color: '#333', marginTop: 4 }}>Autonomous: no API call. Claude routes: 500–2000ms.</div>
+                </div>
+              </div>
+              {(routingStats.fallbacks ?? []).length > 0 && (
+                <div style={{ ...S.card }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Top Fallback Reasons</div>
+                  {routingStats.fallbacks.slice(0, 5).map((f, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 5, paddingBottom: 4, borderBottom: '1px solid #0d0d12' }}>
+                      <span style={{ fontSize: '0.63rem', color: '#555', flex: 1, marginRight: 8 }}>{f.fallback_reason}</span>
+                      <span style={{ fontSize: '0.65rem', color: '#fbbf24', fontWeight: 600, flexShrink: 0 }}>{f.n}×</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+      </LSection>
+
+      {/* Phase E: Niche Reliability Heatmap */}
+      <LSection title="Niche Reliability Heatmap (Phase E)" collapsed={false} onToggle={() => {}}>
+        {!(reliability?.niches?.length)
+          ? <div style={{ color: '#333', fontSize: '0.72rem' }}>No reliability data yet — populated daily by snapshot cron at 02:00 UTC</div>
+          : (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16, marginBottom: 16 }}>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Reliability Score by Niche</div>
+                  <ResponsiveContainer width="100%" height={Math.min(220, reliability.niches.length * 22 + 20)}>
+                    <BarChart layout="vertical" data={reliability.niches.slice(0, 12).map(r => ({ niche: r.niche, score: r.reliability_score ?? 0 }))} margin={{ top: 0, right: 16, left: 60, bottom: 0 }}>
+                      <XAxis type="number" domain={[0, 100]} tick={{ fontSize: 8, fill: '#444' }} />
+                      <YAxis type="category" dataKey="niche" tick={{ fontSize: 8, fill: '#555' }} width={58} />
+                      <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={v => [v?.toFixed(1), 'reliability']} />
+                      <Bar dataKey="score" radius={[0, 2, 2, 0]}>
+                        {reliability.niches.slice(0, 12).map((r, i) => (
+                          <Cell key={i} fill={r.reliability_score >= 70 ? '#4ade80' : r.reliability_score >= 45 ? '#fbbf24' : '#f87171'} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>≥70 = reliable, 45–70 = accumulating, &lt;45 = insufficient real data</div>
+                </div>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Trust Weight × MAE Breakdown</div>
+                  <table style={S.table}>
+                    <thead><tr>
+                      <th style={S.th}>Niche</th>
+                      <th style={{ ...S.th, textAlign: 'right' }}>MAE 30d</th>
+                      <th style={{ ...S.th, textAlign: 'right' }}>Trust</th>
+                      <th style={{ ...S.th, textAlign: 'right' }}>Real</th>
+                    </tr></thead>
+                    <tbody>
+                      {reliability.niches.slice(0, 10).map(r => (
+                        <tr key={r.niche}>
+                          <td style={{ ...S.td, color: '#666', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.niche}</td>
+                          <td style={{ ...S.td, textAlign: 'right', color: r.mae_30d == null ? '#2a2a3a' : r.mae_30d <= 10 ? '#4ade80' : r.mae_30d <= 20 ? '#fbbf24' : '#f87171' }}>
+                            {r.mae_30d != null ? r.mae_30d.toFixed(1) : '–'}
+                          </td>
+                          <td style={{ ...S.td, textAlign: 'right', color: '#8888ff' }}>{r.trust_weight?.toFixed(2) ?? '–'}</td>
+                          <td style={{ ...S.td, textAlign: 'right', color: '#666' }}>{r.real_outcome_count ?? 0}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+      </LSection>
+
+      {/* Phase E: Temporal Cohort MAE Comparison */}
+      <LSection title="Temporal Cohort Analysis (Phase E)" collapsed={false} onToggle={() => {}}>
+        {!(cohorts?.snapshots?.length)
+          ? <div style={{ color: '#333', fontSize: '0.72rem' }}>No cohort snapshots yet — populated daily at 03:00 UTC</div>
+          : (() => {
+            const allSnaps = cohorts.snapshots.filter(s => s.niche === '__all__');
+            const by7d  = allSnaps.filter(s => s.cohort_window === '7d');
+            const by30d = allSnaps.filter(s => s.cohort_window === '30d');
+            const by90d = allSnaps.filter(s => s.cohort_window === '90d');
+            const dates = [...new Set(allSnaps.map(s => s.snapshot_date))].sort();
+            const chartData = dates.map(d => {
+              const snap7  = by7d.find(s => s.snapshot_date === d);
+              const snap30 = by30d.find(s => s.snapshot_date === d);
+              const snap90 = by90d.find(s => s.snapshot_date === d);
+              return {
+                date: d,
+                mae_7d:  snap7?.mae  ?? null,
+                mae_30d: snap30?.mae ?? null,
+                mae_90d: snap90?.mae ?? null,
+              };
+            });
+            return (
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>MAE by Window (7d / 30d / 90d)</div>
+                  {chartData.length >= 2 ? (
+                    <ResponsiveContainer width="100%" height={130}>
+                      <LineChart data={chartData} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+                        <XAxis dataKey="date" tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => v?.slice(5)} />
+                        <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+                        <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={v => [v?.toFixed(2), 'MAE']} labelFormatter={v => `Date: ${v}`} />
+                        <Line dataKey="mae_7d"  stroke="#f87171" dot={false} strokeWidth={1.5} name="7d window" />
+                        <Line dataKey="mae_30d" stroke="#fbbf24" dot={false} strokeWidth={1.5} name="30d window" />
+                        <Line dataKey="mae_90d" stroke="#8888ff" dot={false} strokeWidth={1.5} name="90d window" />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  ) : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>Accumulating snapshots…</div>}
+                  <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                    {[['7d', '#f87171'], ['30d', '#fbbf24'], ['90d', '#8888ff']].map(([w, c]) => (
+                      <span key={w} style={{ fontSize: '0.57rem', color: c }}>● {w} window</span>
+                    ))}
+                  </div>
+                </div>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Latest Cohort Stats</div>
+                  {['7d', '30d', '90d'].map(w => {
+                    const latest = cohorts.snapshots.filter(s => s.cohort_window === w && s.niche === '__all__').sort((a, b) => b.snapshot_date.localeCompare(a.snapshot_date))[0];
+                    if (!latest) return null;
+                    return (
+                      <div key={w} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, paddingBottom: 7, borderBottom: '1px solid #0d0d12' }}>
+                        <span style={{ fontSize: '0.68rem', color: '#555', fontWeight: 600 }}>{w}</span>
+                        <div style={{ display: 'flex', gap: 14 }}>
+                          <span style={{ fontSize: '0.65rem', color: '#888' }}>MAE <span style={{ color: latest.mae <= 10 ? '#4ade80' : latest.mae <= 20 ? '#fbbf24' : '#f87171' }}>{latest.mae?.toFixed(1) ?? '–'}</span></span>
+                          <span style={{ fontSize: '0.65rem', color: '#888' }}>Acc <span style={{ color: '#8888ff' }}>{latest.accuracy_rate != null ? (latest.accuracy_rate * 100).toFixed(0) + '%' : '–'}</span></span>
+                          <span style={{ fontSize: '0.65rem', color: '#888' }}>n={latest.total_outcomes ?? 0}</span>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+      </LSection>
+
+      {/* Phase E: Freshness Decay Analysis */}
+      <LSection title="Freshness Decay & Disagreement (Phase E)" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Outcome Freshness Distribution</div>
+            {(decayData?.buckets ?? []).length > 0 ? (
+              <ResponsiveContainer width="100%" height={110}>
+                <BarChart data={decayData.buckets} margin={{ top: 0, right: 0, left: -20, bottom: 0 }}>
+                  <XAxis dataKey="bucket" tick={{ fontSize: 7, fill: '#444' }} tickFormatter={v => v?.split(' ')[0]} />
+                  <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+                  <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} formatter={(v, n, p) => [n === 'count' ? v : v?.toFixed(2), n === 'count' ? 'outcomes' : 'avg MAE']} />
+                  <Bar dataKey="count" fill="#8888ff44" name="count" radius={[2, 2, 0, 0]} />
+                  <Bar dataKey="avg_mae" fill="#f8717166" name="avg_mae" radius={[2, 2, 0, 0]} />
+                </BarChart>
+              </ResponsiveContainer>
+            ) : <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>No freshness data — outcomes need last_refreshed_at populated</div>}
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Fresh outcomes (weight≥0.9) should have lowest MAE. Stale ones weighted down.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Human Disagreement by Niche ({days}d)</div>
+            {!(disagStats?.niches?.length)
+              ? <div style={{ fontSize: '0.68rem', color: '#2a2a3a', padding: '20px 0', textAlign: 'center' }}>No feedback with score_override yet — appears when users submit corrected scores</div>
+              : (
+                <table style={S.table}>
+                  <thead><tr>
+                    <th style={S.th}>Niche</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>Overrides</th>
+                    <th style={{ ...S.th, textAlign: 'right' }}>Avg Δ</th>
+                  </tr></thead>
+                  <tbody>
+                    {disagStats.niches.filter(r => r.overrides > 0).slice(0, 8).map(r => (
+                      <tr key={r.niche}>
+                        <td style={{ ...S.td, color: '#666' }}>{r.niche ?? 'unknown'}</td>
+                        <td style={{ ...S.td, textAlign: 'right', color: '#fbbf24' }}>{r.overrides}/{r.total_feedback}</td>
+                        <td style={{ ...S.td, textAlign: 'right', color: r.avg_disagreement > 20 ? '#f87171' : r.avg_disagreement > 10 ? '#fbbf24' : '#4ade80' }}>
+                          {r.avg_disagreement != null ? r.avg_disagreement.toFixed(1) : '–'}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+          </div>
+        </div>
+      </LSection>
+
+      {/* Phase E: Synthetic Transition Progress */}
+      <LSection title="Synthetic → Real Transition Progress (Phase E)" collapsed={false} onToggle={() => {}}>
+        {!(synthTrans?.niches?.length)
+          ? <div style={{ color: '#333', fontSize: '0.72rem' }}>No transition data — populates once video_outcomes exist</div>
+          : (
+            <div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Real vs. Synthetic Budget</div>
+                  <ResponsiveContainer width="100%" height={Math.min(200, synthTrans.niches.length * 22 + 20)}>
+                    <BarChart layout="vertical" data={synthTrans.niches.map(r => ({ niche: r.niche, real: r.real_count, live_synth: r.live_synthetic, expired: r.expired_count }))} margin={{ top: 0, right: 16, left: 60, bottom: 0 }}>
+                      <XAxis type="number" tick={{ fontSize: 8, fill: '#444' }} />
+                      <YAxis type="category" dataKey="niche" tick={{ fontSize: 8, fill: '#555' }} width={58} />
+                      <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.65rem', color: '#ccc' }} />
+                      <Bar dataKey="real"       stackId="a" fill="#4ade8088" name="real" radius={[0, 0, 0, 0]} />
+                      <Bar dataKey="live_synth" stackId="a" fill="#fbbf2466" name="synthetic" radius={[0, 2, 2, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                  <div style={{ display: 'flex', gap: 10, marginTop: 6 }}>
+                    <span style={{ fontSize: '0.57rem', color: '#4ade80' }}>● real outcomes</span>
+                    <span style={{ fontSize: '0.57rem', color: '#fbbf24' }}>● synthetic (live)</span>
+                  </div>
+                </div>
+                <div style={{ ...S.card, margin: 0 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Transition Status</div>
+                  <table style={S.table}>
+                    <thead><tr>
+                      <th style={S.th}>Niche</th>
+                      <th style={{ ...S.th, textAlign: 'right' }}>Budget</th>
+                      <th style={{ ...S.th, textAlign: 'right' }}>Done</th>
+                    </tr></thead>
+                    <tbody>
+                      {synthTrans.niches.slice(0, 10).map(r => (
+                        <tr key={r.niche}>
+                          <td style={{ ...S.td, color: '#666', maxWidth: 100, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.niche}</td>
+                          <td style={{ ...S.td, textAlign: 'right', color: '#555' }}>{r.budget_pct}% synth</td>
+                          <td style={{ ...S.td, textAlign: 'right' }}>
+                            <span style={{ fontSize: '0.65rem', color: r.transition_complete ? '#4ade80' : '#fbbf24' }}>{r.transition_complete ? '✓' : `${r.live_synthetic}→${r.allowed_synthetic}`}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
+      </LSection>
+    </div>
+  );
+}
+
+const SORT_KEYS = ['sample_count', 'mae', 'avg_error', 'avg_actual', 'real_count'];
+
+function LearningTab({ token }) {
+  const [kpis,   setKpis]   = useState(null);
+  const [hist,   setHist]   = useState(null);
+  const [niches, setNiches] = useState(null);
+  const [dist,   setDist]   = useState(null);
+  const [events, setEvents] = useState(null);
+  const [loading, setLoading]   = useState(true);
+  const [histDays, setHistDays] = useState(30);
+  const [sortKey, setSortKey]   = useState('sample_count');
+  const [sortDir, setSortDir]   = useState('desc');
+  const [collapsed, setCollapsed] = useState({ trends: false, niches: false, dist: false, events: true });
+  const [snapping, setSnapping]   = useState(false);
+  const [snapMsg,  setSnapMsg]    = useState('');
+  const [activeSubTab, setActiveSubTab] = useState(0);
+
+  const toggle = (k) => setCollapsed(p => ({ ...p, [k]: !p[k] }));
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    const safe = async (url) => { try { return await apiFetch(url, token); } catch { return null; } };
+    const [k, h, n, d, e] = await Promise.all([
+      safe(ROUTES.adminLearningKpis),
+      safe(`${ROUTES.adminLearningHistory}?days=${histDays}`),
+      safe(ROUTES.adminLearningNicheIntel),
+      safe(ROUTES.adminLearningDistributions),
+      safe(ROUTES.adminLearningEvents),
+    ]);
+    setKpis(k); setHist(h); setNiches(n); setDist(d); setEvents(e);
+    setLoading(false);
+  }, [token, histDays]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function triggerSnapshot() {
+    setSnapping(true); setSnapMsg('');
+    try {
+      const r = await apiFetch(ROUTES.adminLearningSnapshot, token, { method: 'POST' });
+      setSnapMsg(r.skipped ? `Snapshot already exists for today` : `Snapshot saved for ${r.snapshot?.snapshot_date}`);
+      load();
+    } catch (e) { setSnapMsg(`Error: ${e.message}`); }
+    finally { setSnapping(false); }
+  }
+
+  if (loading) return <div style={{ color: '#333', fontSize: '0.78rem', padding: '20px 0' }}>Loading learning intelligence data…</div>;
+
+  const k   = kpis?.kpis ?? {};
+  const mae = k.mae?.current;
+  const trust = k.calibration_trust?.current;
+  const synthRatio = k.synthetic_ratio?.current;
+  const histRows = hist?.rows ?? [];
+  const nicheRows = [...(niches?.niches ?? [])].sort((a, b) => {
+    const diff = (a[sortKey] ?? 0) - (b[sortKey] ?? 0);
+    return sortDir === 'asc' ? diff : -diff;
+  });
+
+  function SortTh({ col, label, tip }) {
+    return (
+      <th style={{ ...S.th, cursor: 'pointer', userSelect: 'none' }} title={tip} onClick={() => { if (sortKey === col) setSortDir(d => d === 'asc' ? 'desc' : 'asc'); else { setSortKey(col); setSortDir('desc'); } }}>
+        {label}{sortKey === col ? (sortDir === 'asc' ? ' ↑' : ' ↓') : ''}
+      </th>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: 'flex', gap: 4, marginBottom: 18 }}>
+        {['Overview', 'Intelligence History'].map((label, i) => (
+          <button key={i} onClick={() => setActiveSubTab(i)} style={{ ...S.btn, padding: '4px 14px', fontSize: '0.65rem', borderColor: activeSubTab === i ? '#8888ff' : '#222', color: activeSubTab === i ? '#8888ff' : '#444' }}>{label}</button>
+        ))}
+      </div>
+      {activeSubTab === 0 && (
+      <div>
+      {/* Alert banners */}
+      <AlertBanners alerts={kpis?.alerts ?? []} />
+
+      {/* Header row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 18, flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ fontSize: '0.65rem', color: '#333' }}>
+          Source: <span style={{ color: '#555' }}>{hist?.source === 'snapshots' ? 'daily snapshots' : 'live-derived (snapshots accumulating)'}</span>
+          {' · '}{kpis?.totals?.total ?? 0} calibration rows · {kpis?.totals?.real ?? 0} real · {kpis?.totals?.synthetic ?? 0} synthetic
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <button style={S.btn} onClick={triggerSnapshot} disabled={snapping}>{snapping ? 'Saving…' : 'Save Snapshot'}</button>
+          <button style={S.btn} onClick={load}>Refresh</button>
+        </div>
+      </div>
+      {snapMsg && <div style={{ ...S.ok, marginBottom: 10, fontSize: '0.68rem' }}>{snapMsg}</div>}
+
+      {/* Section 1 — KPI Cards */}
+      <LSection title="Learning Health KPIs" collapsed={false} onToggle={() => {}}>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 6 }}>
+
+          <KpiCard
+            title="MAE — Mean Absolute Error"
+            value={mae ?? '—'}
+            color={MAE_STATUS(mae)}
+            delta24h={k.mae?.delta_24h}
+            delta7d={k.mae?.delta_7d}
+            lowerBetter
+            tooltip="Measures average prediction error. Lower is better. Falling MAE means TubeIntel predictions are becoming more accurate over time. Green < 15 · Yellow 15–30 · Red > 30"
+            sub={mae < 15 ? 'Excellent' : mae < 30 ? 'Acceptable' : mae != null ? 'Needs attention' : ''}
+          />
+
+          <KpiCard
+            title="Calibration Trust Score"
+            value={trust ?? '—'}
+            unit="/100"
+            color={TRUST_COLOR(trust)}
+            delta24h={k.calibration_trust?.delta_24h}
+            delta7d={k.calibration_trust?.delta_7d}
+            lowerBetter={false}
+            tooltip="Composite score based on sample count (20%), real vs synthetic ratio (35%), freshness (20%), benchmark health (15%), MAE quality (10%). Higher is better."
+            sub={trust >= 70 ? 'Trustworthy' : trust >= 40 ? 'Developing' : trust != null ? 'Low confidence' : ''}
+          />
+
+          <KpiCard
+            title="Learning Velocity"
+            value={k.learning_velocity?.label ?? '—'}
+            color={VEL_COLOR[k.learning_velocity?.label] ?? '#555'}
+            lowerBetter={false}
+            tooltip="Stable: consistent accuracy. Improving: MAE declining and weights stable. Volatile: rapid weight changes or high calibration frequency. Drifting: benchmark shift with weight changes."
+          />
+
+          <KpiCard
+            title="Synthetic vs Real Ratio"
+            value={synthRatio != null ? `${Math.round(synthRatio * 100)}%` : '—'}
+            color={SYNTH_COLOR(synthRatio)}
+            lowerBetter
+            tooltip="Tracks reliance on synthetic market learning vs real creator outcome data. Healthy early on, but should decline as real creator feedback grows. Green < 50% · Yellow 50–90% · Red > 90%"
+            sub={`${k.synthetic_ratio?.real_rows ?? 0} real · ${k.synthetic_ratio?.synthetic_rows ?? 0} synthetic`}
+          />
+
+          <KpiCard
+            title="Benchmark Health"
+            value={k.benchmark_health?.score ?? '—'}
+            unit="/100"
+            color={k.benchmark_health?.score >= 80 ? '#4ade80' : k.benchmark_health?.score >= 50 ? '#fbbf24' : '#f87171'}
+            lowerBetter={false}
+            tooltip="Percentage of niche/duration combinations with valid (non-zero) benchmark VPH data. 100 = all benchmarks healthy. Lower = gaps in niche coverage."
+            sub={`${k.benchmark_health?.zero_count ?? 0} zero-benchmark niches · ${k.benchmark_health?.coverage_niches ?? 0} covered`}
+          />
+
+          <KpiCard
+            title="Stale Outcomes"
+            value={k.stale_outcomes?.count_30d ?? '—'}
+            color={k.stale_outcomes?.count_30d > 0 ? '#fbbf24' : '#4ade80'}
+            lowerBetter
+            tooltip="Rows where last_refreshed_at is older than the threshold. High stale counts mean the learning engine is operating on outdated signals."
+            sub={`>1d: ${k.stale_outcomes?.count_1d ?? 0}  ·  >7d: ${k.stale_outcomes?.count_7d ?? 0}  ·  >30d: ${k.stale_outcomes?.count_30d ?? 0}`}
+          />
+        </div>
+      </LSection>
+
+      {/* Section 2 — Historical Trends */}
+      <LSection title="Historical Learning Trends" collapsed={collapsed.trends} onToggle={() => toggle('trends')}>
+        <div style={{ display: 'flex', gap: 8, marginBottom: 14, alignItems: 'center' }}>
+          <span style={{ fontSize: '0.65rem', color: '#444' }}>Range:</span>
+          {[7, 14, 30, 90].map(d => (
+            <button key={d} onClick={() => setHistDays(d)} style={{ ...S.btn, padding: '4px 10px', fontSize: '0.65rem', borderColor: histDays === d ? '#8888ff' : '#222', color: histDays === d ? '#8888ff' : '#444' }}>{d}d</button>
+          ))}
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="mae" color={MAE_STATUS(mae)} label="MAE Trend — lower = improving accuracy" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Downward trend is healthy. Sudden spikes may indicate benchmark corruption or calibration instability.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="total_calibration_rows" color="#60a5fa" label="Calibration Sample Growth" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Growing sample count increases calibration confidence over time.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="synthetic_rows" color="#8888ff" label="Synthetic Rows Accumulated" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Synthetic data bootstraps learning. Real rows (from creator predictions) should grow to dominate over time.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="calibration_trust_score" color={TRUST_COLOR(trust)} label="Calibration Trust Score Trend" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Rising trust score means the system is accumulating reliable real-world calibration signal.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="benchmark_drift" color="#fbbf24" label="Benchmark Drift" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Small gradual drift is healthy (market changes). Large spikes may indicate benchmark instability or data quality issues.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <SparkChart data={histRows} dataKey="stale_outcomes" color="#f87171" label="Stale Outcomes Count" />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Should trend toward zero as the snapshot refresh cron runs. Rising count = learning on outdated data.</div>
+          </div>
+        </div>
+      </LSection>
+
+      {/* Section 3 — Niche Intelligence Panel */}
+      <LSection title="Niche Intelligence Panel" collapsed={collapsed.niches} onToggle={() => toggle('niches')}>
+        {nicheRows.length === 0
+          ? <div style={{ color: '#333', fontSize: '0.75rem' }}>No niche data available yet</div>
+          : (
+            <div style={{ overflowX: 'auto' }}>
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>#</th>
+                    <SortTh col="niche"        label="Niche" />
+                    <SortTh col="sample_count" label="Samples"  tip="Total calibration rows for this niche" />
+                    <SortTh col="avg_error"    label="Avg Error" tip="Positive = TubeIntel over-predicts this niche. Negative = under-predicts. Target: near 0." />
+                    <SortTh col="avg_actual"   label="Avg Actual" tip="Average actual performance score (0-100) for this niche based on VPH vs benchmarks" />
+                    <SortTh col="mae"          label="MAE"    tip="Mean Absolute Error — average magnitude of prediction error regardless of direction" />
+                    <th style={S.th} title="Whether the niche is systematically over-predicted, under-predicted, or well-calibrated">Trend</th>
+                    <SortTh col="real_count"   label="R/S"    tip="Real vs Synthetic row count. R = real creator predictions (high quality). S = synthetic market data (half weight)." />
+                    <th style={S.th} title="How recently this niche had a calibration outcome updated">Freshness</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {nicheRows.map((r, i) => <NicheRow key={r.niche} r={r} rank={i + 1} />)}
+                </tbody>
+              </table>
+            </div>
+          )
+        }
+      </LSection>
+
+      {/* Section 4 — Calibration Distribution Analysis */}
+      <LSection title="Calibration Distribution Analysis" collapsed={collapsed.dist} onToggle={() => toggle('dist')}>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))', gap: 16 }}>
+          <div style={{ ...S.card, margin: 0 }}>
+            <HistChart
+              data={dist?.actual ?? []} xKey="bucket" yKey="n" color="#60a5fa"
+              label="Actual Performance Score Distribution"
+              tooltip="Healthy: broad distribution across all buckets. If scores cluster near 100, VPH formula or percentile normalization may be corrupted."
+            />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Healthy distribution spans 0–100 with no extreme clustering at either end.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            <HistChart
+              data={dist?.error ?? []} xKey="bucket" yKey="n" color="#fbbf24"
+              label="Calibration Error Distribution"
+              tooltip="Centered near 0 = well-calibrated. Skewed right = systematic over-prediction. Skewed left = systematic under-prediction."
+            />
+            <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 4 }}>Should be roughly bell-curved around 0. Asymmetry reveals systematic prediction bias.</div>
+          </div>
+          <div style={{ ...S.card, margin: 0 }}>
+            {dist?.bands?.length
+              ? (
+                <div>
+                  <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Calibration Band Breakdown</div>
+                  {(dist.bands ?? []).map(b => {
+                    const total = b.total ?? 0;
+                    const pct = kpis?.totals?.total > 0 ? Math.round((total / kpis.totals.total) * 100) : 0;
+                    return (
+                      <div key={b.calibration_band} style={{ marginBottom: 8 }}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 3 }}>
+                          <span style={{ fontSize: '0.68rem', color: BAND_COLOR[b.calibration_band] ?? '#555' }}>{b.calibration_band?.replace(/_/g, ' ')}</span>
+                          <span style={{ fontSize: '0.65rem', color: '#555' }}>{total} ({pct}%)</span>
+                        </div>
+                        <div style={{ height: 4, background: '#111', borderRadius: 2 }}>
+                          <div style={{ width: `${pct}%`, height: '100%', background: BAND_COLOR[b.calibration_band] ?? '#555', borderRadius: 2, opacity: 0.7 }} />
+                        </div>
+                        <div style={{ fontSize: '0.57rem', color: '#2a2a3a', marginTop: 1 }}>
+                          {b.real > 0 ? `${b.real} real` : ''}{b.real > 0 && b.synthetic > 0 ? ' · ' : ''}{b.synthetic > 0 ? `${b.synthetic} synthetic` : ''}
+                        </div>
+                      </div>
+                    );
+                  })}
+                  <div style={{ fontSize: '0.58rem', color: '#222', marginTop: 8 }}>Accurate = |error| ≤ 10. Slight = 10–25. Large = &gt;25. Synthetic rows have 0.5× calibration weight.</div>
+                </div>
+              )
+              : <div style={{ color: '#333', fontSize: '0.75rem' }}>No distribution data</div>
+            }
+          </div>
+        </div>
+      </LSection>
+
+      {/* Section 5 — Learning Event Timeline */}
+      <LSection title="Learning Event Timeline" collapsed={collapsed.events} onToggle={() => toggle('events')}>
+        {!(events?.events?.length)
+          ? <div style={{ color: '#333', fontSize: '0.75rem' }}>No learning events recorded yet</div>
+          : (
+            <div style={{ maxHeight: 400, overflowY: 'auto' }}>
+              {(events.events ?? []).map((ev, i) => <EventRow key={ev.id ?? i} ev={ev} />)}
+            </div>
+          )
+        }
+      </LSection>
+      </div>
+      )}
+      {activeSubTab === 1 && <HistorySubtab token={token} />}
+    </div>
+  );
+}
+
+// ── Discovery Tab ─────────────────────────────────────────────────────────────
+
+const SOURCE_LABEL = {
+  featured_channels: 'Featured',
+  topic_search:      'Topic Search',
+  video_search:      'Video Search',
+  unknown:           'Unknown',
+};
+
+const DUP_COLOR = { none: '#4ade80', medium: '#fbbf24', high: '#f87171' };
+const DUP_LABEL = { none: 'New', medium: 'Seen Before', high: 'Already Ingested' };
+
+function DiscoveryBadge({ label, color, bg, border }) {
+  return (
+    <span style={{
+      display: 'inline-block', background: bg, border: `1px solid ${border}`,
+      borderRadius: 4, padding: '1px 7px', fontSize: '0.62rem', color, fontWeight: 600,
+      letterSpacing: '0.04em', marginRight: 3, marginBottom: 3,
+    }}>{label}</span>
+  );
+}
+
+function DiversityBar({ score }) {
+  const pct   = Math.round((score ?? 0) * 100);
+  const color = pct >= 60 ? '#4ade80' : pct >= 35 ? '#fbbf24' : '#f87171';
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ flex: 1, height: 4, background: '#1a1a2e', borderRadius: 2 }}>
+        <div style={{ width: `${pct}%`, height: '100%', background: color, borderRadius: 2 }} />
+      </div>
+      <span style={{ fontSize: '0.65rem', color, minWidth: 28, textAlign: 'right' }}>{pct}%</span>
+    </div>
+  );
+}
+
+function CandidateCard({ candidate, onAction, selected, onSelect }) {
+  const {
+    id, title, handle, thumbnail_url, subscriber_count, video_count,
+    primary_niche, content_archetype, inferred_topics, behavior_tags,
+    discovery_source, discovery_confidence, diversity_score, duplicate_risk,
+    identity_confidence, approval_status,
+  } = candidate;
+
+  const topics   = Array.isArray(inferred_topics) ? inferred_topics : [];
+  const tags     = Array.isArray(behavior_tags)   ? behavior_tags   : [];
+  const conf     = Math.round((discovery_confidence ?? 0) * 100);
+  const isActioned = approval_status !== 'pending';
+
+  return (
+    <div style={{
+      background: isActioned ? '#0a0a10' : '#0d0d18',
+      border: `1px solid ${selected ? '#4444aa' : isActioned ? '#111' : '#1a1a2e'}`,
+      borderRadius: 10, padding: '14px 16px', display: 'flex', gap: 14,
+      opacity: isActioned ? 0.55 : 1,
+    }}>
+      {/* Select checkbox */}
+      <div style={{ paddingTop: 2 }}>
+        <input type="checkbox" checked={selected} onChange={() => onSelect(id)}
+          style={{ accentColor: '#8888ff', cursor: 'pointer' }} />
+      </div>
+
+      {/* Thumbnail */}
+      {thumbnail_url
+        ? <img src={thumbnail_url} alt="" style={{ width: 52, height: 52, borderRadius: 6, objectFit: 'cover', flexShrink: 0 }} />
+        : <div style={{ width: 52, height: 52, borderRadius: 6, background: '#1a1a2e', flexShrink: 0 }} />}
+
+      {/* Main content */}
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 8, flexWrap: 'wrap' }}>
+          <div>
+            <div style={{ fontSize: '0.82rem', fontWeight: 700, color: '#ccc', marginBottom: 1 }}>
+              {title ?? 'Unknown Channel'}
+            </div>
+            <div style={{ fontSize: '0.65rem', color: '#444' }}>
+              {handle ? `${handle} · ` : ''}{subscriber_count != null ? `${(subscriber_count / 1000).toFixed(0)}K subs` : ''}{video_count ? ` · ${video_count} videos` : ''}
+            </div>
+          </div>
+          {/* Status badge if actioned */}
+          {isActioned && (
+            <span style={{ fontSize: '0.62rem', fontWeight: 700, color: approval_status === 'approved' ? '#4ade80' : '#f87171', letterSpacing: '0.08em' }}>
+              {approval_status.toUpperCase()}
+            </span>
+          )}
+        </div>
+
+        {/* Semantic badges */}
+        <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap' }}>
+          {primary_niche && <DiscoveryBadge label={primary_niche} color="#7aadff" bg="#0d1526" border="#1a3060" />}
+          {content_archetype && <DiscoveryBadge label={content_archetype} color="#fbbf24" bg="#1a1200" border="#3a2800" />}
+          {topics.slice(0, 3).map(t => <DiscoveryBadge key={t} label={t} color="#2dd4bf" bg="#041a1a" border="#0a3030" />)}
+          {tags.slice(0, 2).map(t => <DiscoveryBadge key={t} label={t} color="#a78bfa" bg="#140d26" border="#2a1a50" />)}
+        </div>
+
+        {/* Metrics row */}
+        <div style={{ marginTop: 8, display: 'flex', gap: 16, flexWrap: 'wrap', alignItems: 'center' }}>
+          <div style={{ fontSize: '0.65rem', color: '#555' }}>
+            Source: <span style={{ color: '#888' }}>{SOURCE_LABEL[discovery_source] ?? discovery_source}</span>
+          </div>
+          <div style={{ fontSize: '0.65rem', color: '#555' }}>
+            Confidence: <span style={{ color: '#888' }}>{conf}%</span>
+          </div>
+          <div style={{ fontSize: '0.65rem', color: DUP_COLOR[duplicate_risk ?? 'none'] }}>
+            {DUP_LABEL[duplicate_risk ?? 'none']}
+          </div>
+        </div>
+
+        {/* Diversity bar */}
+        <div style={{ marginTop: 6 }}>
+          <div style={{ fontSize: '0.6rem', color: '#333', marginBottom: 3 }}>Dataset diversity</div>
+          <DiversityBar score={diversity_score} />
+        </div>
+      </div>
+
+      {/* Action buttons */}
+      {!isActioned && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, flexShrink: 0 }}>
+          <button onClick={() => onAction(id, 'approved')}
+            style={{ background: '#0f2a1a', border: '1px solid #1a4a2a', borderRadius: 6, color: '#4ade80', padding: '5px 12px', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 700 }}>
+            Approve
+          </button>
+          <button onClick={() => onAction(id, 'rejected')}
+            style={{ background: '#1a0f0f', border: '1px solid #3a1a1a', borderRadius: 6, color: '#f87171', padding: '5px 12px', cursor: 'pointer', fontSize: '0.7rem', fontWeight: 700 }}>
+            Reject
+          </button>
+          <button onClick={() => onAction(id, 'ignored')}
+            style={{ background: '#111', border: '1px solid #222', borderRadius: 6, color: '#444', padding: '5px 10px', cursor: 'pointer', fontSize: '0.68rem' }}>
+            Ignore
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function DiscoveryTab({ token }) {
+  const [seedInput,   setSeedInput]   = useState('');
+  const [jobId,       setJobId]       = useState(null);
+  const [job,         setJob]         = useState(null);
+  const [candidates,  setCandidates]  = useState([]);
+  const [stats,       setStats]       = useState(null);
+  const [filter,      setFilter]      = useState('pending');
+  const [selected,    setSelected]    = useState(new Set());
+  const [err,         setErr]         = useState('');
+  const [polling,     setPolling]     = useState(false);
+
+  const headers = token ? { 'Content-Type': 'application/json', 'x-admin-token': token } : { 'Content-Type': 'application/json' };
+
+  async function fetchCandidates() {
+    try {
+      const url = filter ? `${ROUTES.adminDiscoveryCandidates}?status=${filter}` : ROUTES.adminDiscoveryCandidates;
+      const r   = await fetch(url, { headers });
+      const d   = await r.json();
+      setCandidates(d.candidates ?? []);
+    } catch (_) {}
+  }
+
+  async function fetchStats() {
+    try {
+      const r = await fetch(ROUTES.adminDiscoveryStats, { headers });
+      const d = await r.json();
+      setStats(d);
+    } catch (_) {}
+  }
+
+  useEffect(() => { fetchCandidates(); fetchStats(); }, [filter]);
+
+  // Poll job status while running
+  useEffect(() => {
+    if (!jobId || !polling) return;
+    const iv = setInterval(async () => {
+      try {
+        const r = await fetch(ROUTES.adminDiscoveryJob(jobId), { headers });
+        const d = await r.json();
+        setJob(d);
+        if (d.status === 'complete' || d.status === 'error') {
+          setPolling(false);
+          fetchCandidates();
+          fetchStats();
+        }
+      } catch (_) { setPolling(false); }
+    }, 1500);
+    return () => clearInterval(iv);
+  }, [jobId, polling]);
+
+  async function startDiscovery() {
+    if (!seedInput.trim()) return;
+    setErr(''); setJob(null);
+    try {
+      const r = await fetch(ROUTES.adminDiscoveryRun, {
+        method: 'POST', headers, body: JSON.stringify({ seed_input: seedInput.trim() }),
+      });
+      const d = await r.json();
+      if (!r.ok) { setErr(d.error || 'Failed to start discovery'); return; }
+      setJobId(d.job_id);
+      setPolling(true);
+    } catch (e) { setErr(e.message); }
+  }
+
+  async function handleAction(id, status) {
+    try {
+      await fetch(ROUTES.adminDiscoveryCandidate(id), {
+        method: 'PATCH', headers, body: JSON.stringify({ status }),
+      });
+      setCandidates(prev => prev.map(c => c.id === id ? { ...c, approval_status: status } : c));
+      fetchStats();
+    } catch (_) {}
+  }
+
+  async function bulkAction(status) {
+    if (!selected.size) return;
+    try {
+      await fetch(ROUTES.adminDiscoveryBulk, {
+        method: 'POST', headers, body: JSON.stringify({ ids: [...selected], status }),
+      });
+      setSelected(new Set());
+      fetchCandidates();
+      fetchStats();
+    } catch (_) {}
+  }
+
+  function toggleSelect(id) {
+    setSelected(prev => {
+      const n = new Set(prev);
+      n.has(id) ? n.delete(id) : n.add(id);
+      return n;
+    });
+  }
+
+  function selectAll() {
+    const pendingIds = candidates.filter(c => c.approval_status === 'pending').map(c => c.id);
+    setSelected(new Set(pendingIds));
+  }
+
+  const jobRunning  = job?.status === 'running' || job?.status === 'queued';
+  const jobComplete = job?.status === 'complete';
+  const jobError    = job?.status === 'error';
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+
+      {/* Stats row */}
+      {stats && (
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          {[
+            { label: 'Total Found',    value: stats.total },
+            { label: 'Pending',        value: stats.pending },
+            { label: 'Approved',       value: stats.approved },
+            { label: 'Rejected',       value: stats.rejected },
+            { label: 'Duplicate Risk', value: stats.duplicates },
+          ].map(s => (
+            <div key={s.label} style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '10px 14px', minWidth: 100 }}>
+              <div style={{ fontSize: '0.58rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>{s.label}</div>
+              <div style={{ fontSize: '1.1rem', fontWeight: 700, color: '#8888ff' }}>{s.value ?? 0}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Seed input */}
+      <div style={{ background: '#0d0d18', border: '1px solid #1a1a2e', borderRadius: 10, padding: 16 }}>
+        <div style={{ fontSize: '0.68rem', fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>
+          Seed Channel Discovery
+        </div>
+        <div style={{ fontSize: '0.7rem', color: '#333', marginBottom: 10 }}>
+          Enter a YouTube channel URL or @handle. The system will discover related channels via featured channels, topic search, and video adjacency.
+        </div>
+        <div style={{ display: 'flex', gap: 8 }}>
+          <input
+            value={seedInput}
+            onChange={e => setSeedInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && startDiscovery()}
+            placeholder="@ThinkSchool or https://youtube.com/@MrBeast"
+            style={{ flex: 1, background: '#070710', border: '1px solid #2a2a50', borderRadius: 6, color: '#ccc', padding: '8px 12px', fontSize: '0.78rem', outline: 'none' }}
+          />
+          <button
+            onClick={startDiscovery}
+            disabled={jobRunning || !seedInput.trim()}
+            style={{ background: jobRunning ? '#1a1a2e' : '#1a1a4a', border: '1px solid #3a3a8a', borderRadius: 6, color: jobRunning ? '#555' : '#8888ff', padding: '8px 18px', cursor: jobRunning ? 'not-allowed' : 'pointer', fontSize: '0.75rem', fontWeight: 700, whiteSpace: 'nowrap' }}
+          >
+            {jobRunning ? 'Discovering…' : 'Discover Related Channels'}
+          </button>
+        </div>
+        {err && <div style={{ marginTop: 8, fontSize: '0.72rem', color: '#f87171' }}>{err}</div>}
+
+        {/* Job status */}
+        {job && (
+          <div style={{ marginTop: 12, background: '#070710', border: `1px solid ${jobError ? '#4a1a1a' : jobComplete ? '#0a3020' : '#1a2a4a'}`, borderRadius: 8, padding: '10px 14px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <span style={{ fontSize: '0.7rem', fontWeight: 700, color: jobError ? '#f87171' : jobComplete ? '#4ade80' : '#8888ff' }}>
+                {jobError ? `Error: ${job.error}` : jobComplete ? `Complete — ${job.result?.saved ?? 0} new candidates saved` : `${job.progress?.stage ?? 'running'}…`}
+              </span>
+              {jobRunning && (
+                <span style={{ fontSize: '0.65rem', color: '#444' }}>
+                  Found {job.progress?.found ?? 0} · Classified {job.progress?.classified ?? 0} · Saved {job.progress?.saved ?? 0}
+                </span>
+              )}
+              {jobComplete && job.result && (
+                <span style={{ fontSize: '0.65rem', color: '#333' }}>
+                  Topics: {(job.result.topics_used ?? []).join(', ')}
+                </span>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Filter + bulk actions */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
+        <div style={{ display: 'flex', gap: 4 }}>
+          {['pending', 'approved', 'rejected', 'ignored', ''].map(s => (
+            <button key={s || 'all'} onClick={() => { setFilter(s); setSelected(new Set()); }}
+              style={{ background: filter === s ? '#1a1a3a' : 'transparent', border: `1px solid ${filter === s ? '#3a3a6a' : '#1a1a2e'}`, borderRadius: 6, color: filter === s ? '#8888ff' : '#444', padding: '4px 12px', cursor: 'pointer', fontSize: '0.68rem', fontWeight: 600 }}>
+              {s || 'All'}
+            </button>
+          ))}
+        </div>
+
+        {selected.size > 0 && (
+          <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+            <span style={{ fontSize: '0.65rem', color: '#555' }}>{selected.size} selected</span>
+            <button onClick={() => bulkAction('approved')}
+              style={{ background: '#0f2a1a', border: '1px solid #1a4a2a', borderRadius: 6, color: '#4ade80', padding: '4px 12px', cursor: 'pointer', fontSize: '0.68rem', fontWeight: 700 }}>
+              Bulk Approve
+            </button>
+            <button onClick={() => bulkAction('rejected')}
+              style={{ background: '#1a0f0f', border: '1px solid #3a1a1a', borderRadius: 6, color: '#f87171', padding: '4px 12px', cursor: 'pointer', fontSize: '0.68rem', fontWeight: 700 }}>
+              Bulk Reject
+            </button>
+            <button onClick={() => setSelected(new Set())}
+              style={{ background: 'transparent', border: '1px solid #222', borderRadius: 6, color: '#333', padding: '4px 10px', cursor: 'pointer', fontSize: '0.65rem' }}>
+              Clear
+            </button>
+          </div>
+        )}
+
+        {candidates.some(c => c.approval_status === 'pending') && selected.size === 0 && (
+          <button onClick={selectAll}
+            style={{ background: 'transparent', border: '1px solid #1a1a2e', borderRadius: 6, color: '#444', padding: '4px 12px', cursor: 'pointer', fontSize: '0.68rem' }}>
+            Select All Pending
+          </button>
+        )}
+      </div>
+
+      {/* Candidate list */}
+      {candidates.length === 0 ? (
+        <div style={{ color: '#333', fontSize: '0.78rem', padding: '24px 0', textAlign: 'center' }}>
+          {filter === 'pending' ? 'No pending candidates — run a discovery to populate.' : `No ${filter || ''} candidates.`}
+        </div>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {candidates.map(c => (
+            <CandidateCard
+              key={c.id}
+              candidate={c}
+              onAction={handleAction}
+              selected={selected.has(c.id)}
+              onSelect={toggleSelect}
+            />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ── Root ──────────────────────────────────────────────────────────────────────
 export default function AdminIntelligence() {
   const [token,     setToken]     = useState(() => sessionStorage.getItem('admin_token') ?? '');
@@ -605,31 +3167,51 @@ export default function AdminIntelligence() {
           {loadErr && <div style={{ ...S.err, marginBottom: 12 }}>{loadErr}</div>}
 
           {/* Tabs */}
-          <div style={{ display: 'flex', gap: 2, marginBottom: 20, borderBottom: '1px solid #1a1a2e', paddingBottom: 0 }}>
+          <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid #1a1a2e' }}>
             {TABS.map((t, i) => (
-              <button
+              <motion.button
                 key={t}
                 onClick={() => setTab(i)}
+                whileHover={{ color: '#8888ff' }}
+                whileTap={{ scale: 0.97 }}
+                transition={spring.snappy}
                 style={{
+                  position: 'relative',
                   background: tab === i ? '#0d0d1f' : 'transparent',
-                  border: 'none', borderBottom: tab === i ? '2px solid #8888ff' : '2px solid transparent',
+                  border: 'none',
                   color: tab === i ? '#8888ff' : '#444',
                   padding: '8px 14px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600,
                   fontFamily: 'monospace',
                 }}
               >
                 {t}
-              </button>
+                {tab === i && (
+                  <motion.span
+                    layoutId="admin-tab-indicator"
+                    style={{
+                      position: 'absolute', bottom: 0, left: 0, right: 0,
+                      height: 2, background: '#8888ff',
+                      borderRadius: '2px 2px 0 0',
+                    }}
+                    transition={spring.layout}
+                  />
+                )}
+              </motion.button>
             ))}
           </div>
 
           {/* Tab content */}
-          {tab === 0 && <ChannelsTab   token={token} channels={channels}           onRefresh={() => load()} />}
+          {tab === 0 && <ChannelsTab    token={token} channels={channels}           onRefresh={() => load()} />}
           {tab === 1 && <IngestStatusTab status={status} channels={channels} />}
-          {tab === 2 && <QuotaTab      status={status} />}
-          {tab === 3 && <CronHealthTab status={status} channels={channels} />}
-          {tab === 4 && <PatternsTab   token={token} />}
-          {tab === 5 && <ControlsTab   token={token} onRefresh={() => load()} />}
+          {tab === 2 && <QuotaTab       status={status} />}
+          {tab === 3 && <CronHealthTab  status={status} />}
+          {tab === 4 && <PatternsTab    token={token} />}
+          {tab === 5 && <ControlsTab    token={token} onRefresh={() => load()} />}
+          {tab === 6 && <EvolutionTab   token={token} />}
+          {tab === 7 && <DiscoveryTab   token={token} />}
+          {tab === 8 && <LearningTab    token={token} />}
+          {tab === 9  && <SemanticIntelligenceTab  token={token} />}
+          {tab === 10 && <StrategyIntelligenceTab token={token} />}
         </>
       )}
     </div>

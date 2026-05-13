@@ -10,7 +10,7 @@ const PLAN_KEY = 'tubeintel_plan_v1';
 const STEPS = [
   { id: 1, label: 'Niche Research',    icon: '🔥', desc: 'Trending topics and content gaps in your niche' },
   { id: 2, label: 'Decode What Works', icon: '🧬', desc: 'Viral patterns from top competitor videos' },
-  { id: 3, label: 'Voice Calibration', icon: '🎤', desc: 'Auto-detect your channel tone and writing style' },
+  { id: 3, label: 'Voice Calibration', icon: '🎤', desc: 'Paste a writing sample so AI scripts match your voice' },
   { id: 4, label: 'Script + Hooks',    icon: '✍️', desc: 'Hook, chapter outline, and closing CTA' },
   { id: 5, label: 'Title & SEO',       icon: '⚡', desc: 'Title variants, thumbnail concept, and tags' },
   { id: 6, label: 'Validate & Export', icon: '🚀', desc: 'Final quality gate and Video Brief PDF export' },
@@ -177,6 +177,7 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
   const [result,        setResult]        = useState(cached || null);
   const [error,         setError]         = useState('');
   const [selectedAngle, setSelectedAngle] = useState(null);
+  const [selectedGaps,  setSelectedGaps]  = useState(cached?.selected_gaps ?? (cached?.gaps || []));
 
   const channelName     = channel?.snippet?.title || 'your channel';
   const subscriberCount = formatNum(parseInt(channel?.statistics?.subscriberCount || 0));
@@ -195,8 +196,12 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
         views: formatNum(parseInt(v.statistics?.viewCount || 0)),
       }));
       const parsed = await analyzeNiche({ topic: plan.topic, audience: plan.audience, channelName, subscriberCount, recentTitles, trendingVideos });
-      setResult(parsed); setSelectedAngle(null); setStatus('done');
+      setResult(parsed); setSelectedAngle(null); setSelectedGaps([]); setStatus('done');
     } catch (e) { setError(e.message || 'Analysis failed.'); setStatus('error'); }
+  }
+
+  function toggleGap(gap) {
+    setSelectedGaps(prev => prev.includes(gap) ? prev.filter(g => g !== gap) : [...prev, gap]);
   }
 
   const SIGNAL_COLOR = { high: '#00b894', medium: '#f59e0b', low: '#555' };
@@ -220,19 +225,21 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
         {isDone && <span style={{ fontSize: 11, background: '#00b89422', color: '#00b894', borderRadius: 4, padding: '2px 8px', fontWeight: 700 }}>SAVED TO BRIEF</span>}
         <button onClick={run} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #1a1a1a', borderRadius: 6, color: '#444', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>&#8635; Re-run</button>
       </div>
+
+      {/* Trending Angles */}
       <div style={{ marginBottom: 22 }}>
         <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Trending Angles</div>
-          <div style={{ fontSize: 11, color: '#333' }}>— click one to select it as your angle</div>
+          <div style={{ fontSize: 11, color: '#333' }}>— click one to use as your angle</div>
         </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
           {(result.trends || []).map((t, i) => {
             const isSel = selectedAngle === i;
             return (
-              <div key={i} onClick={() => !isDone && setSelectedAngle(isSel ? null : i)}
-                style={{ background: isSel ? '#0a1a0f' : '#111', border: `1px solid ${isSel ? '#00b894' : '#1a1a1a'}`, borderRadius: 10, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12, cursor: isDone ? 'default' : 'pointer', transition: 'all 0.12s' }}>
+              <div key={i} onClick={() => setSelectedAngle(isSel ? null : i)}
+                style={{ background: isSel ? '#0a1a0f' : '#111', border: `1px solid ${isSel ? '#00b894' : '#1a1a1a'}`, borderRadius: 10, padding: '12px 14px', display: 'flex', alignItems: 'flex-start', gap: 12, cursor: 'pointer', transition: 'all 0.12s' }}>
                 <div style={{ width: 22, height: 22, borderRadius: '50%', background: isSel ? '#00b89433' : '#1a1a1a', border: `1px solid ${isSel ? '#00b894' : '#2a2a2a'}`, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, color: isSel ? '#00b894' : '#555', flexShrink: 0, marginTop: 1 }}>
-                  {isSel ? '&#10003;' : i + 1}
+                  {isSel ? '✓' : i + 1}
                 </div>
                 <div style={{ flex: 1 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: isSel ? '#fff' : '#e0e0e0', marginBottom: 4 }}>{t.angle}</div>
@@ -244,20 +251,11 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
           })}
         </div>
       </div>
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>Content Gaps</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-          {(result.gaps || []).map((gap, i) => (
-            <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: '#111', border: '1px solid #1a3a2a', borderRadius: 8, padding: '10px 14px' }}>
-              <span style={{ color: '#00b894', fontSize: 14, flexShrink: 0, marginTop: 1 }}>&#9670;</span>
-              <span style={{ fontSize: 13, color: '#ccc', lineHeight: 1.5 }}>{gap}</span>
-            </div>
-          ))}
-        </div>
-      </div>
+
+      {/* AI Recommended Angle */}
       {result.recommended_angle && (
-        <div onClick={() => !isDone && setSelectedAngle(null)}
-          style={{ marginBottom: 22, background: '#0a1a0f', border: `1px solid ${selectedAngle === null ? '#00b894' : '#00b89433'}`, borderRadius: 12, padding: '16px 18px', cursor: isDone ? 'default' : 'pointer', transition: 'border-color 0.12s' }}>
+        <div onClick={() => setSelectedAngle(null)}
+          style={{ marginBottom: 22, background: '#0a1a0f', border: `1px solid ${selectedAngle === null ? '#00b894' : '#00b89433'}`, borderRadius: 12, padding: '16px 18px', cursor: 'pointer', transition: 'border-color 0.12s' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: '#00b894', letterSpacing: '0.1em', textTransform: 'uppercase' }}>AI Recommended Angle</div>
             {selectedAngle === null && <span style={{ fontSize: 9, fontWeight: 800, background: '#00b89422', color: '#00b894', borderRadius: 4, padding: '2px 6px' }}>SELECTED</span>}
@@ -265,23 +263,39 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
           <div style={{ fontSize: 14, color: '#e0e0e0', lineHeight: 1.6 }}>{result.recommended_angle}</div>
         </div>
       )}
-      {result.hook_idea && (
-        <div style={{ marginBottom: 26, background: '#111', border: '1px solid #2a2a2a', borderRadius: 10, padding: '14px 16px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#888', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Hook Idea</div>
-          <div style={{ fontSize: 14, color: '#bbb', fontStyle: 'italic', lineHeight: 1.6 }}>"{result.hook_idea}"</div>
+
+      {/* Content Gaps — checkable */}
+      <div style={{ marginBottom: 26 }}>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Content Gaps</div>
+          <div style={{ fontSize: 11, color: '#333' }}>— tick the ones relevant to your video</div>
         </div>
-      )}
-      {isDone
-        ? <SavedBanner onRerun={run} />
-        : <button
-            onClick={() => onComplete(1, 'niche', {
-              ...result,
-              recommended_angle: selectedAngle !== null ? result.trends?.[selectedAngle]?.angle : result.recommended_angle,
-            })}
-            style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer' }}>
-            {selectedAngle !== null ? `Save Angle ${selectedAngle + 1} to Brief` : 'Save AI Recommendation to Brief'} &amp; Continue &rarr;
-          </button>
-      }
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          {(result.gaps || []).map((gap, i) => {
+            const checked = selectedGaps.includes(gap);
+            return (
+              <div key={i} onClick={() => toggleGap(gap)}
+                style={{ display: 'flex', alignItems: 'flex-start', gap: 12, background: checked ? '#0a1a0f' : '#111', border: `1px solid ${checked ? '#00b89433' : '#1a3a2a'}`, borderRadius: 8, padding: '10px 14px', cursor: 'pointer', transition: 'all 0.12s' }}>
+                <div style={{ width: 18, height: 18, border: `2px solid ${checked ? '#00b894' : '#2a2a2a'}`, borderRadius: 4, background: checked ? '#00b894' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1, transition: 'all 0.12s' }}>
+                  {checked && <span style={{ color: '#000', fontSize: 11, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                </div>
+                <span style={{ fontSize: 13, color: checked ? '#e0e0e0' : '#aaa', lineHeight: 1.5 }}>{gap}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
+      {isDone && <SavedBanner onRerun={run} />}
+      <button
+        onClick={() => onComplete(1, 'niche', {
+          ...result,
+          recommended_angle: selectedAngle !== null ? result.trends?.[selectedAngle]?.angle : result.recommended_angle,
+          selected_gaps: selectedGaps,
+        })}
+        style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer', marginTop: isDone ? 10 : 0 }}>
+        {isDone ? 'Update Brief & Continue →' : selectedAngle !== null ? `Save Angle ${selectedAngle + 1} to Brief & Continue →` : 'Save AI Recommendation to Brief & Continue →'}
+      </button>
     </div>
   );
 }
@@ -289,10 +303,16 @@ function NicheResearchStep({ channel, videos, plan, onComplete, canUseAI, consum
 // Step 2: Decode What Works
 function DecodeWhatWorksStep({ channel, plan, onComplete, canUseAI, consumeAICall, onUpgrade }) {
   const cached = plan.brief.patterns;
-  const [status,  setStatus]  = useState(cached ? 'done' : 'idle');
-  const [result,  setResult]  = useState(cached || null);
-  const [topVids, setTopVids] = useState([]);
-  const [error,   setError]   = useState('');
+  const [status,               setStatus]               = useState(cached ? 'done' : 'idle');
+  const [result,               setResult]               = useState(cached || null);
+  const [topVids,              setTopVids]              = useState([]);
+  const [error,                setError]                = useState('');
+  const [selectedTitlePattern, setSelectedTitlePattern] = useState(() => {
+    if (!cached?.selected_title_pattern || !cached?.title_patterns) return 0;
+    const idx = (cached.title_patterns || []).findIndex(p => p.pattern === cached.selected_title_pattern.pattern);
+    return idx >= 0 ? idx : 0;
+  });
+  const [selectedThumbnails,   setSelectedThumbnails]   = useState(cached?.selected_thumbnail_tips ?? (cached?.thumbnail_strategy || []));
 
   const channelName = channel?.snippet?.title || 'your channel';
   const nicheLabel  = plan.brief.niche?.niche || null;
@@ -312,13 +332,20 @@ function DecodeWhatWorksStep({ channel, plan, onComplete, canUseAI, consumeAICal
       }));
       setTopVids(videos);
       const parsed = await analyzeWhatWorks({ topic: plan.topic, niche: nicheLabel, channelName, topVideos: videos });
-      setResult(parsed); setStatus('done');
+      setResult(parsed);
+      setSelectedTitlePattern(0);
+      setSelectedThumbnails(parsed.thumbnail_strategy || []);
+      setStatus('done');
     } catch (e) { setError(e.message || 'Analysis failed.'); setStatus('error'); }
+  }
+
+  function toggleThumbnail(tip) {
+    setSelectedThumbnails(prev => prev.includes(tip) ? prev.filter(t => t !== tip) : [...prev, tip]);
   }
 
   if (status === 'idle') return (
     <StepIdle icon="&#129516;" title="Decode What Works"
-      desc="Fetches top-performing videos in your niche and extracts the hook formulas, title patterns, and thumbnail strategies driving the most views."
+      desc="Fetches top-performing videos in your niche and extracts the title patterns and thumbnail strategies driving the most views."
       note="YouTube all-time top videos + AI analysis - burns 1 AI call"
       bullets={[
         `Search: "${searchQuery.slice(0, 50)}${searchQuery.length > 50 ? '...' : ''}"`,
@@ -327,7 +354,7 @@ function DecodeWhatWorksStep({ channel, plan, onComplete, canUseAI, consumeAICal
       ]}
       ctaLabel="Decode Top Videos" onCta={run} />
   );
-  if (status === 'loading') return <StepLoading lines={['Fetching top videos in your niche...', 'Extracting hooks, title patterns & thumbnail strategies']} />;
+  if (status === 'loading') return <StepLoading lines={['Fetching top videos in your niche...', 'Extracting title patterns & thumbnail strategies']} />;
   if (status === 'error')   return <StepError message={error} onRetry={run} />;
 
   return (
@@ -339,113 +366,165 @@ function DecodeWhatWorksStep({ channel, plan, onComplete, canUseAI, consumeAICal
         {isDone && <span style={{ fontSize: 11, background: '#00b89422', color: '#00b894', borderRadius: 4, padding: '2px 8px', fontWeight: 700 }}>SAVED TO BRIEF</span>}
         <button onClick={run} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #1a1a1a', borderRadius: 6, color: '#444', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>&#8635; Re-run</button>
       </div>
+
+      {/* Title Patterns — pick one */}
       <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>Hook Formulas</div>
+        <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Title Patterns</div>
+          <div style={{ fontSize: 11, color: '#333' }}>— click one to use as your title structure</div>
+        </div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {(result.hooks || []).map((h, i) => (
-            <div key={i} style={{ background: '#111', border: '1px solid #1a1a1a', borderRadius: 10, padding: '14px 16px' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 8 }}>
-                <div style={{ width: 20, height: 20, borderRadius: '50%', background: '#1a1a1a', border: '1px solid #2a2a2a', display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 9, fontWeight: 800, color: '#555', flexShrink: 0 }}>{i + 1}</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: '#e0e0e0' }}>{h.formula}</div>
+          {(result.title_patterns || []).map((t, i) => {
+            const isSel = selectedTitlePattern === i;
+            return (
+              <div key={i} onClick={() => setSelectedTitlePattern(i)}
+                style={{ background: isSel ? '#0d1230' : '#111', border: `1px solid ${isSel ? '#a78bfa' : '#1a1a1a'}`, borderRadius: 10, padding: '14px 16px', cursor: 'pointer', transition: 'all 0.12s' }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+                  <div style={{ width: 22, height: 22, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 10, fontWeight: 800, background: isSel ? '#a78bfa' : '#1a1a1a', color: isSel ? '#000' : '#555' }}>
+                    {isSel ? '✓' : i + 1}
+                  </div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: isSel ? '#e0e0e0' : '#aaa', flex: 1 }}>{t.pattern}</div>
+                  {isSel && <span style={{ fontSize: 9, fontWeight: 800, background: '#a78bfa22', color: '#a78bfa', borderRadius: 4, padding: '2px 8px' }}>SELECTED</span>}
+                </div>
+                {t.example && <div style={{ fontSize: 12, color: '#555', marginBottom: isSel && t.template ? 8 : 0, paddingLeft: 32 }}>e.g. "{t.example}"</div>}
+                {isSel && t.template && <div style={{ background: '#0a0a0a', border: '1px solid #2a2a2a', borderRadius: 7, padding: '8px 12px', fontSize: 12, color: '#a78bfa', fontFamily: 'monospace', marginLeft: 32 }}>{t.template}</div>}
               </div>
-              {h.example && <div style={{ fontSize: 12, color: '#888', fontStyle: 'italic', marginBottom: 8, paddingLeft: 28 }}>"{h.example}"</div>}
-              {h.template && <div style={{ background: '#0a0a0a', border: '1px solid #2a2a2a', borderRadius: 7, padding: '8px 12px', fontSize: 12, color: '#60a5fa', fontFamily: 'monospace', marginLeft: 28 }}>{h.template}</div>}
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
-      <div style={{ marginBottom: 22 }}>
-        <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>Title Patterns</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {(result.title_patterns || []).map((t, i) => (
-            <div key={i} style={{ background: '#111', border: '1px solid #1a1a1a', borderRadius: 10, padding: '14px 16px' }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: '#e0e0e0', marginBottom: 6 }}>{t.pattern}</div>
-              {t.example && <div style={{ fontSize: 12, color: '#555', marginBottom: 8 }}>e.g. "{t.example}"</div>}
-              {t.template && <div style={{ background: '#0a0a0a', border: '1px solid #2a2a2a', borderRadius: 7, padding: '8px 12px', fontSize: 12, color: '#a78bfa', fontFamily: 'monospace' }}>{t.template}</div>}
-            </div>
-          ))}
-        </div>
-      </div>
+
+      {/* Thumbnail Strategy — checkable */}
       {(result.thumbnail_strategy || []).length > 0 && (
         <div style={{ marginBottom: 22 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>Thumbnail Strategy</div>
+          <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Thumbnail Strategy</div>
+            <div style={{ fontSize: 11, color: '#333' }}>— tick the tips you'll apply</div>
+          </div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
-            {result.thumbnail_strategy.map((s, i) => (
-              <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '10px 14px' }}>
-                <span style={{ color: '#a78bfa', fontSize: 14, flexShrink: 0, marginTop: 1 }}>&#9656;</span>
-                <span style={{ fontSize: 13, color: '#ccc', lineHeight: 1.5 }}>{s}</span>
-              </div>
-            ))}
+            {result.thumbnail_strategy.map((s, i) => {
+              const checked = selectedThumbnails.includes(s);
+              return (
+                <div key={i} onClick={() => toggleThumbnail(s)}
+                  style={{ display: 'flex', alignItems: 'flex-start', gap: 12, background: checked ? '#130d21' : '#111', border: `1px solid ${checked ? '#a78bfa44' : '#1a1a1a'}`, borderRadius: 8, padding: '10px 14px', cursor: 'pointer', transition: 'all 0.12s' }}>
+                  <div style={{ width: 18, height: 18, border: `2px solid ${checked ? '#a78bfa' : '#2a2a2a'}`, borderRadius: 4, background: checked ? '#a78bfa' : 'transparent', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, marginTop: 1, transition: 'all 0.12s' }}>
+                    {checked && <span style={{ color: '#000', fontSize: 11, fontWeight: 900, lineHeight: 1 }}>✓</span>}
+                  </div>
+                  <span style={{ fontSize: 13, color: checked ? '#e0e0e0' : '#aaa', lineHeight: 1.5 }}>{s}</span>
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
-      {result.format_insights && (
-        <div style={{ marginBottom: 22, background: '#111', border: '1px solid #2a2a2a', borderRadius: 10, padding: '14px 16px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#888', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Format Insights</div>
-          <div style={{ fontSize: 13, color: '#aaa', lineHeight: 1.6 }}>{result.format_insights}</div>
-        </div>
-      )}
+
+      {/* Steal This — read-only context */}
       {result.steal_this && (
         <div style={{ marginBottom: 26, background: '#0d1f3a', border: '1px solid #1e3a5f', borderRadius: 12, padding: '16px 18px' }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Steal This for Your Video</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#60a5fa', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>What's Working — Context</div>
           <div style={{ fontSize: 14, color: '#e0e0e0', lineHeight: 1.6 }}>{result.steal_this}</div>
         </div>
       )}
-      {isDone
-        ? <SavedBanner onRerun={run} />
-        : <button onClick={() => onComplete(2, 'patterns', result)} style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer' }}>Save to Brief &amp; Continue &rarr;</button>
-      }
+
+      {isDone && <SavedBanner onRerun={run} />}
+      <button
+        onClick={() => onComplete(2, 'patterns', {
+          ...result,
+          selected_title_pattern: result.title_patterns?.[selectedTitlePattern] ?? null,
+          selected_thumbnail_tips: selectedThumbnails,
+        })}
+        style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer', marginTop: isDone ? 10 : 0 }}>
+        {isDone ? 'Update Brief & Continue →' : 'Save Title Pattern & Thumbnail Tips to Brief →'}
+      </button>
     </div>
   );
 }
 
 // Step 3: Voice Calibration
-function VoiceCalibrationStep({ channel, videos, plan, onComplete, canUseAI, consumeAICall, onUpgrade }) {
+function VoiceCalibrationStep({ plan, onComplete, canUseAI, consumeAICall, onUpgrade }) {
   const cached = plan.brief.voice;
-  const [status, setStatus] = useState(cached ? 'done' : 'idle');
-  const [result, setResult] = useState(cached || null);
-  const [error,  setError]  = useState('');
+  const [status,     setStatus]     = useState(cached ? 'done' : 'idle');
+  const [result,     setResult]     = useState(cached || null);
+  const [error,      setError]      = useState('');
+  const [sampleText, setSampleText] = useState(cached?.sample_text ?? '');
+  const isDone = plan.completedSteps.includes(3);
 
-  const isDone      = plan.completedSteps.includes(3);
-  const channelName = channel?.snippet?.title || '';
-  const hasChannel  = !!channel;
-  const videoCount  = Math.min((videos || []).length, 20);
-  const topByViews  = [...(videos || [])]
-    .sort((a, b) => parseInt(b.statistics?.viewCount || 0) - parseInt(a.statistics?.viewCount || 0))
-    .slice(0, 20);
+  const canAnalyze = sampleText.trim().length >= 80;
 
   async function run() {
     if (!canUseAI()) { onUpgrade(); return; }
     consumeAICall();
     setStatus('loading'); setError('');
     try {
-      const topTitles = topByViews.map(v => v.snippet?.title || '').filter(Boolean);
-      const sampleDescriptions = topByViews.slice(0, 5)
-        .map(v => (v.snippet?.description || '').slice(0, 200).replace(/\n/g, ' ').trim())
-        .filter(Boolean);
-      const channelDescription = (channel?.snippet?.description || '').slice(0, 400);
-      const parsed = await analyzeVoice({ channelName, channelDescription, topTitles, sampleDescriptions });
-      setResult(parsed); setStatus('done');
+      const parsed = await analyzeVoice({ sampleText: sampleText.trim() });
+      setResult({ ...parsed, sample_text: sampleText.trim() });
+      setStatus('done');
     } catch (e) { setError(e.message || 'Analysis failed.'); setStatus('error'); }
   }
 
-  if (!hasChannel) return (
-    <div style={{ padding: '60px 40px', display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', flex: 1 }}>
-      <div style={{ fontSize: 48, marginBottom: 20 }}>&#127908;</div>
-      <div style={{ fontSize: 18, fontWeight: 800, color: '#fff', marginBottom: 10 }}>Voice Calibration</div>
-      <div style={{ fontSize: 14, color: '#555', lineHeight: 1.7, maxWidth: 340 }}>Load your channel from the dashboard first. Voice Calibration reads your existing video patterns to match your tone.</div>
+  function handleSkip() {
+    onComplete(3, 'voice', null);
+  }
+
+  const inputUI = (
+    <div style={{ padding: '22px 26px', flex: 1, overflowY: 'auto' }}>
+      {/* Why this matters */}
+      <div style={{ marginBottom: 24, background: '#1a0a2e', border: '1px solid #6d28d933', borderRadius: 12, padding: '16px 18px' }}>
+        <div style={{ fontSize: 11, fontWeight: 700, color: '#c084fc', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>Why voice calibration matters</div>
+        <div style={{ fontSize: 13, color: '#c0b0d8', lineHeight: 1.7 }}>
+          Without this, AI scripts sound like everyone else's — generic, stiff, interchangeable. Paste 2-3 paragraphs of something you've actually written (a script excerpt, video description, blog post, even a long tweet thread) and the AI will detect your sentence rhythm, vocabulary, and energy level. The script it generates in Step 4 will sound like <em>you</em>, not a chatbot.
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 12 }}>
+        <label style={{ display: 'block', fontSize: 12, fontWeight: 700, color: '#555', marginBottom: 8, letterSpacing: '0.08em', textTransform: 'uppercase' }}>
+          Your writing sample
+        </label>
+        <div style={{ fontSize: 12, color: '#444', marginBottom: 10, lineHeight: 1.5 }}>
+          Paste anything you've written — a script, a description, a newsletter, a tweet thread. 2-3 paragraphs is enough. The more natural and unedited, the better.
+        </div>
+        <textarea
+          value={sampleText}
+          onChange={e => setSampleText(e.target.value)}
+          placeholder={"Paste 2-3 paragraphs of your own writing here...\n\nExamples:\n- A script you already recorded\n- A video description you wrote\n- A blog post or newsletter\n- Even a detailed message you sent about your topic"}
+          rows={10}
+          style={{ width: '100%', boxSizing: 'border-box', background: '#0d0d0d', border: '1px solid #2a2a2a', borderRadius: 10, color: '#e0e0e0', fontSize: 14, padding: '14px 16px', resize: 'vertical', outline: 'none', fontFamily: 'inherit', lineHeight: 1.6 }}
+          onFocus={e => e.target.style.borderColor = '#c084fc'}
+          onBlur={e => e.target.style.borderColor = '#2a2a2a'}
+        />
+        <div style={{ fontSize: 11, color: '#333', marginTop: 6 }}>
+          {sampleText.trim().length < 80
+            ? `${80 - sampleText.trim().length} more characters needed to analyze`
+            : `${sampleText.trim().split(/\s+/).length} words — good to go`}
+        </div>
+      </div>
+
+      <button
+        onClick={run}
+        disabled={!canAnalyze}
+        style={{ width: '100%', padding: '14px', background: canAnalyze ? '#c084fc' : '#111', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: canAnalyze ? '#000' : '#333', cursor: canAnalyze ? 'pointer' : 'not-allowed', marginBottom: 10, transition: 'all 0.15s' }}
+      >
+        Analyze My Voice — 1 AI Call
+      </button>
+      <button
+        onClick={handleSkip}
+        style={{ width: '100%', padding: '12px', background: 'none', border: '1px solid #2a2a2a', borderRadius: 10, fontSize: 13, fontWeight: 600, color: '#444', cursor: 'pointer' }}
+      >
+        Skip this step &rarr;
+      </button>
     </div>
   );
 
-  if (status === 'idle') return (
-    <StepIdle icon="&#127908;" title="Voice Calibration"
-      desc="Reads your top videos to extract your unique tone, writing style, and content personality so everything generated sounds like you."
-      note="No extra API calls - uses already-loaded channel data - burns 1 AI call"
-      bullets={[`Channel: ${channelName}`, `Analyzing top ${videoCount} videos by view count`, 'Extracts: tone, title style, pacing, vocabulary patterns']}
-      ctaLabel="Calibrate My Voice" onCta={run} />
+  if (status === 'idle') return inputUI;
+  if (status === 'loading') return <StepLoading lines={['Analyzing your writing style...', 'Extracting tone, vocabulary, sentence rhythm and energy']} />;
+  if (status === 'error')   return (
+    <div style={{ padding: '22px 26px', flex: 1, overflowY: 'auto' }}>
+      <StepError message={error} onRetry={run} />
+      <button onClick={() => setStatus('idle')} style={{ width: '100%', marginTop: 12, padding: '12px', background: 'none', border: '1px solid #2a2a2a', borderRadius: 10, fontSize: 13, color: '#444', cursor: 'pointer' }}>
+        Edit sample &amp; retry
+      </button>
+    </div>
   );
-  if (status === 'loading') return <StepLoading lines={['Reading your channel content patterns...', 'Extracting tone, style and vocabulary signals']} />;
-  if (status === 'error')   return <StepError message={error} onRetry={run} />;
 
   return (
     <div style={{ padding: '22px 26px', flex: 1, overflowY: 'auto' }}>
@@ -457,7 +536,7 @@ function VoiceCalibrationStep({ channel, videos, plan, onComplete, canUseAI, con
           <div key={tag} style={{ background: '#111', border: '1px solid #222', borderRadius: 6, padding: '4px 10px', fontSize: 11, color: '#888' }}>{tag}</div>
         ))}
         {isDone && <span style={{ fontSize: 11, background: '#00b89422', color: '#00b894', borderRadius: 4, padding: '2px 8px', fontWeight: 700 }}>SAVED</span>}
-        <button onClick={run} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #1a1a1a', borderRadius: 6, color: '#444', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>&#8635; Re-run</button>
+        <button onClick={() => setStatus('idle')} style={{ marginLeft: 'auto', background: 'none', border: '1px solid #1a1a1a', borderRadius: 6, color: '#444', fontSize: 11, padding: '4px 10px', cursor: 'pointer' }}>&#8635; Re-run</button>
       </div>
       {result.voice_summary && (
         <div style={{ marginBottom: 22, background: '#1a0a2e', border: '1px solid #6d28d933', borderRadius: 12, padding: '16px 18px' }}>
@@ -473,7 +552,7 @@ function VoiceCalibrationStep({ channel, videos, plan, onComplete, canUseAI, con
       )}
       {(result.common_patterns || []).length > 0 && (
         <div style={{ marginBottom: 22 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Content Patterns</div>
+          <div style={{ fontSize: 11, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Writing Patterns</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
             {result.common_patterns.map((p, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'flex-start', gap: 10, background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '10px 14px' }}>
@@ -503,10 +582,13 @@ function VoiceCalibrationStep({ channel, videos, plan, onComplete, canUseAI, con
           <div style={{ fontSize: 13, color: '#aaa', lineHeight: 1.8, whiteSpace: 'pre-line' }}>{result.script_style_guide}</div>
         </div>
       )}
-      {isDone
-        ? <SavedBanner onRerun={run} />
-        : <button onClick={() => onComplete(3, 'voice', result)} style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer' }}>Save to Brief &amp; Continue &rarr;</button>
-      }
+      {isDone && <SavedBanner onRerun={() => setStatus('idle')} />}
+      <button
+        onClick={() => onComplete(3, 'voice', result)}
+        style={{ width: '100%', padding: '14px', background: '#00b894', border: 'none', borderRadius: 10, fontSize: 14, fontWeight: 800, color: '#000', cursor: 'pointer', marginTop: isDone ? 10 : 0 }}
+      >
+        {isDone ? 'Update Brief & Continue →' : 'Save Voice Profile to Brief & Continue →'}
+      </button>
     </div>
   );
 }
@@ -526,9 +608,9 @@ function ScriptHooksStep({ channel, plan, onComplete, canUseAI, consumeAICall, o
 
   const contextBullets = [
     `Topic: "${plan.topic.slice(0, 55)}${plan.topic.length > 55 ? '...' : ''}"`,
-    nicheData.recommended_angle ? 'Niche angle from Step 1' : 'Step 1 not run (richer output if complete)',
-    patternsData.hooks?.length  ? 'Hook formulas from Step 2' : 'Step 2 not run (richer output if complete)',
-    voiceData.tone              ? `Voice profile: ${voiceData.tone}` : 'Step 3 not run (richer output if complete)',
+    nicheData.recommended_angle ? 'Niche angle from Step 1'                  : 'Step 1 not run (richer output if complete)',
+    patternsData.title_patterns?.length ? 'Title patterns from Step 2'       : 'Step 2 not run (richer output if complete)',
+    voiceData.tone              ? `Voice profile: ${voiceData.tone}`         : 'Step 3 skipped (script will be generic)',
   ];
 
   async function run() {
@@ -542,8 +624,6 @@ function ScriptHooksStep({ channel, plan, onComplete, canUseAI, consumeAICall, o
         channelName:      channel?.snippet?.title || '',
         niche:            nicheData.niche,
         recommendedAngle: nicheData.recommended_angle,
-        hookIdea:         nicheData.hook_idea,
-        hookFormulas:     patternsData.hooks,
         tone:             voiceData.tone,
         scriptStyleGuide: voiceData.script_style_guide,
       });
@@ -800,8 +880,13 @@ function buildBriefText(plan, validation) {
   if (b.niche) {
     lines.push(`\nNICHE: ${b.niche.niche || ''}`);
     if (b.niche.recommended_angle) lines.push(`Angle: ${b.niche.recommended_angle}`);
+    if (b.niche.selected_gaps?.length) lines.push(`Content gaps:\n${b.niche.selected_gaps.map(g => `  - ${g}`).join('\n')}`);
   }
-  if (b.patterns?.steal_this) lines.push(`\nWHAT WORKS\n${b.patterns.steal_this}`);
+  if (b.patterns) {
+    if (b.patterns.selected_title_pattern) lines.push(`\nTITLE PATTERN\n${b.patterns.selected_title_pattern.pattern}${b.patterns.selected_title_pattern.template ? '\nTemplate: ' + b.patterns.selected_title_pattern.template : ''}`);
+    if (b.patterns.selected_thumbnail_tips?.length) lines.push(`\nTHUMBNAIL TIPS\n${b.patterns.selected_thumbnail_tips.map(t => `  - ${t}`).join('\n')}`);
+    if (b.patterns.steal_this) lines.push(`\nWHAT'S WORKING\n${b.patterns.steal_this}`);
+  }
   if (b.voice?.voice_summary)  lines.push(`\nVOICE (${b.voice.tone})\n${b.voice.voice_summary}`);
 
   if (b.script) {
@@ -896,10 +981,17 @@ function buildBriefPDF(plan, validation) {
   if (b.niche) {
     const parts = [b.niche.niche].filter(Boolean);
     if (b.niche.recommended_angle) parts.push('Angle: ' + b.niche.recommended_angle);
-    if (b.niche.hook_idea) parts.push('Hook idea: ' + b.niche.hook_idea);
+    if (b.niche.selected_gaps?.length) parts.push('Content gaps:\n' + b.niche.selected_gaps.map(g => '  - ' + g).join('\n'));
     addSection('Niche Research', parts.join('\n'));
   }
-  if (b.patterns?.steal_this) addSection('What Works', b.patterns.steal_this);
+  if (b.patterns) {
+    if (b.patterns.selected_title_pattern) {
+      const tp = b.patterns.selected_title_pattern;
+      addSection('Title Pattern', [tp.pattern, tp.template ? 'Template: ' + tp.template : null].filter(Boolean).join('\n'));
+    }
+    if (b.patterns.selected_thumbnail_tips?.length) addSection('Thumbnail Tips', b.patterns.selected_thumbnail_tips.map(t => '- ' + t).join('\n'));
+    if (b.patterns.steal_this) addSection("What's Working", b.patterns.steal_this);
+  }
   if (b.voice) {
     const parts = ['Tone: ' + (b.voice.tone || '')];
     if (b.voice.voice_summary) parts.push(b.voice.voice_summary);
@@ -947,6 +1039,89 @@ function buildBriefPDF(plan, validation) {
 
   const slug = plan.topic.slice(0, 40).replace(/[^a-z0-9]/gi, '-').toLowerCase();
   doc.save('video-brief-' + slug + '.pdf');
+}
+
+// Completion Screen — shown after all 6 steps are marked done
+function CompletionScreen({ plan, onStartNew, onReview, onNavigate }) {
+  const validation = plan.brief.validation;
+  const titleObj   = plan.brief.titles?.titles?.[plan.brief.titles?.selectedTitle ?? 0];
+  const nicheLabel = plan.brief.niche?.niche;
+  const voiceTone  = plan.brief.voice?.tone;
+  const score      = validation?.score;
+  const decision   = validation?.decision;
+  const scoreColor = score >= 75 ? '#00b894' : score >= 50 ? '#f59e0b' : '#ef4444';
+
+  return (
+    <div style={{ maxWidth: 600, margin: '60px auto', padding: '0 16px' }}>
+      <div style={{ textAlign: 'center', marginBottom: 36 }}>
+        <div style={{ fontSize: 56, marginBottom: 18 }}>&#127881;</div>
+        <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', color: '#00b894', marginBottom: 8 }}>Plan Complete</div>
+        <div style={{ fontSize: 26, fontWeight: 800, color: '#fff', marginBottom: 10, lineHeight: 1.25 }}>Your Video Brief is Ready</div>
+        <div style={{ fontSize: 14, color: '#555', lineHeight: 1.6, marginBottom: 16 }}>Download your PDF and go make the video.</div>
+        <div style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: '#0a1a0f', border: '1px solid #00b89433', borderRadius: 8, padding: '8px 14px', fontSize: 12, color: '#00b894' }}>
+          <span>&#10003;</span>
+          <span>Auto-saved to Video Briefs &mdash;</span>
+          <button onClick={() => onNavigate('workspaces')} style={{ background: 'none', border: 'none', color: '#00b894', fontWeight: 700, cursor: 'pointer', fontSize: 12, textDecoration: 'underline', padding: 0 }}>View in Workspaces</button>
+        </div>
+      </div>
+
+      {/* Summary card */}
+      <div style={{ background: '#0d0d0d', border: '1px solid #1a1a1a', borderRadius: 16, padding: '22px 24px', marginBottom: 24 }}>
+        <div style={{ fontSize: 10, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Topic</div>
+        <div style={{ fontSize: 16, fontWeight: 700, color: '#e0e0e0', marginBottom: titleObj ? 18 : 0, lineHeight: 1.4 }}>{plan.topic}</div>
+
+        {titleObj && (
+          <>
+            <div style={{ fontSize: 10, fontWeight: 700, color: '#555', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 4 }}>Selected Title</div>
+            <div style={{ fontSize: 14, color: '#00b894', marginBottom: 18, lineHeight: 1.5 }}>{titleObj.title}</div>
+          </>
+        )}
+
+        <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap' }}>
+          {nicheLabel && (
+            <div style={{ background: '#00b89411', border: '1px solid #00b89422', borderRadius: 8, padding: '8px 14px' }}>
+              <div style={{ fontSize: 9, color: '#00b89488', fontWeight: 700, marginBottom: 2, letterSpacing: '0.08em' }}>NICHE</div>
+              <div style={{ fontSize: 13, color: '#00b894' }}>{nicheLabel}</div>
+            </div>
+          )}
+          {score != null && (
+            <div style={{ background: '#0d1f3a', border: '1px solid #1e3a5f', borderRadius: 8, padding: '8px 14px' }}>
+              <div style={{ fontSize: 9, color: '#60a5fa88', fontWeight: 700, marginBottom: 2, letterSpacing: '0.08em' }}>VALIDATION</div>
+              <div style={{ fontSize: 13, color: scoreColor, fontWeight: 700 }}>{score}/100 &mdash; {decision}</div>
+            </div>
+          )}
+          {voiceTone && (
+            <div style={{ background: '#1a0a2e', border: '1px solid #6d28d933', borderRadius: 8, padding: '8px 14px' }}>
+              <div style={{ fontSize: 9, color: '#c084fc88', fontWeight: 700, marginBottom: 2, letterSpacing: '0.08em' }}>VOICE</div>
+              <div style={{ fontSize: 13, color: '#c084fc' }}>{voiceTone}</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+        <button
+          onClick={() => buildBriefPDF(plan, validation)}
+          style={{ width: '100%', padding: '15px 24px', background: '#00b894', border: 'none', borderRadius: 12, cursor: 'pointer', fontSize: 15, fontWeight: 800, color: '#000' }}
+        >
+          &#128196; Download Video Brief PDF
+        </button>
+        <button
+          onClick={onReview}
+          style={{ width: '100%', padding: '13px 24px', background: 'none', border: '1px solid #2a2a2a', borderRadius: 12, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#666' }}
+        >
+          Review or edit any step
+        </button>
+        <button
+          onClick={onStartNew}
+          style={{ width: '100%', padding: '13px 24px', background: 'none', border: '1px solid #1a1a1a', borderRadius: 12, cursor: 'pointer', fontSize: 14, fontWeight: 600, color: '#333' }}
+        >
+          Start New Plan
+        </button>
+      </div>
+    </div>
+  );
 }
 
 const SCORE_COLOR = s => s >= 75 ? '#00b894' : s >= 50 ? '#f59e0b' : '#ef4444';
@@ -1198,6 +1373,12 @@ function BriefPanel({ plan }) {
 // Main Component
 export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseAI, consumeAICall, remainingCalls, onUpgrade }) {
   const [plan, setPlan] = useState(loadPlan);
+  const [reviewMode, setReviewMode] = useState(() => {
+    const flag = storage.get('tubeintel_plan_edit_request');
+    if (flag) storage.remove('tubeintel_plan_edit_request');
+    return flag === '1';
+  });
+  const [freshConfirm, setFreshConfirm] = useState(false);
 
   const updatePlan = useCallback((updates) => {
     setPlan(prev => { const next = { ...prev, ...updates }; savePlan(next); return next; });
@@ -1206,20 +1387,44 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
   const setStep = useCallback((stepId) => updatePlan({ currentStep: stepId }), [updatePlan]);
 
   const handleStepComplete = useCallback((stepId, briefKey, data, extraBrief = {}) => {
-    setPlan(prev => {
-      const completed = prev.completedSteps.includes(stepId) ? prev.completedSteps : [...prev.completedSteps, stepId];
-      const next = { ...prev, completedSteps: completed, currentStep: Math.min(stepId + 1, 6), brief: { ...prev.brief, [briefKey]: data, ...extraBrief } };
-      savePlan(next);
-      return next;
-    });
-  }, []);
+    const completed = plan.completedSteps.includes(stepId)
+      ? plan.completedSteps
+      : [...plan.completedSteps, stepId];
+    const done    = completed.length === STEPS.length;
+    const briefId = plan.briefId || ('brief_' + Date.now());
+    const now     = new Date().toISOString();
+
+    const next = {
+      ...plan,
+      completedSteps: completed,
+      currentStep:    Math.min(stepId + 1, 6),
+      brief:          { ...plan.brief, [briefKey]: data, ...extraBrief },
+      ...(done ? { briefId, briefSavedAt: plan.briefSavedAt || now } : {}),
+    };
+
+    savePlan(next);
+    setPlan(next);
+
+    if (done) {
+      setReviewMode(false);
+      storage.saveBrief({
+        id:        briefId,
+        name:      next.topic.slice(0, 80),
+        savedAt:   plan.briefSavedAt || now,
+        updatedAt: now,
+        plan:      next,
+      });
+    }
+  }, [plan]);
 
   const startNewPlan = useCallback(() => {
-    const fresh = { ...DEFAULT_PLAN, brief: { ...DEFAULT_BRIEF } };
-    savePlan(fresh); setPlan(fresh);
+    storage.remove(PLAN_KEY);
+    setPlan({ ...DEFAULT_PLAN, brief: { ...DEFAULT_BRIEF } });
+    setReviewMode(false);
   }, []);
 
   const hasTopic = plan.topic.trim().length > 0;
+  const allDone  = plan.completedSteps.length === STEPS.length;
 
   if (!hasTopic) {
     return (
@@ -1227,6 +1432,17 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
         channel={channel}
         onBack={() => onNavigate('dashboard')}
         onStart={(topic, audience) => updatePlan({ topic, audience, brief: { ...plan.brief, topic } })}
+      />
+    );
+  }
+
+  if (allDone && !reviewMode) {
+    return (
+      <CompletionScreen
+        plan={plan}
+        onStartNew={startNewPlan}
+        onReview={() => setReviewMode(true)}
+        onNavigate={onNavigate}
       />
     );
   }
@@ -1239,7 +1455,7 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
     switch (plan.currentStep) {
       case 1: return <NicheResearchStep    key={plan.topic} channel={channel} videos={videos} {...shared} />;
       case 2: return <DecodeWhatWorksStep  key={plan.topic} channel={channel} {...shared} />;
-      case 3: return <VoiceCalibrationStep key={plan.topic} channel={channel} videos={videos} {...shared} />;
+      case 3: return <VoiceCalibrationStep key={plan.topic} {...shared} />;
       case 4: return <ScriptHooksStep key={plan.topic} channel={channel} {...shared} />;
       case 5: return <TitleSEOStep         key={plan.topic} channel={channel} {...shared} />;
       case 6: return <ValidateExportStep   key={plan.topic} {...shared} />;
@@ -1256,9 +1472,14 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
       `}</style>
       {/* Header */}
       <div style={{ display: 'flex', alignItems: 'center', gap: 14, marginBottom: 22 }}>
-        <button onClick={() => onNavigate('dashboard')} style={{ background: 'none', border: '1px solid #222', borderRadius: 8, color: '#555', fontSize: 13, padding: '7px 14px', cursor: 'pointer', flexShrink: 0 }}>
-          &larr; Back
-        </button>
+        {allDone && reviewMode
+          ? <button onClick={() => setReviewMode(false)} style={{ background: 'none', border: '1px solid #00b89444', borderRadius: 8, color: '#00b894', fontSize: 13, padding: '7px 14px', cursor: 'pointer', flexShrink: 0, fontWeight: 600 }}>
+              &larr; Summary
+            </button>
+          : <button onClick={() => onNavigate('dashboard')} style={{ background: 'none', border: '1px solid #222', borderRadius: 8, color: '#555', fontSize: 13, padding: '7px 14px', cursor: 'pointer', flexShrink: 0 }}>
+              &larr; Back
+            </button>
+        }
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 10, color: '#00b894', fontWeight: 700, letterSpacing: '0.12em', textTransform: 'uppercase', marginBottom: 3 }}>Plan My Video</div>
           <div style={{ fontSize: 15, fontWeight: 700, color: '#e0e0e0', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plan.topic}</div>
@@ -1268,19 +1489,9 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
           <div style={{ width: 72, height: 5, background: '#1a1a1a', borderRadius: 3, overflow: 'hidden' }}>
             <div style={{ width: `${progress * 100}%`, height: '100%', background: '#00b894', borderRadius: 3, transition: 'width 0.4s' }} />
           </div>
-          <button onClick={startNewPlan} style={{ background: 'none', border: '1px solid #1a1a1a', borderRadius: 6, color: '#333', fontSize: 11, padding: '5px 10px', cursor: 'pointer' }}>New Plan</button>
         </div>
       </div>
 
-      {plan.completedSteps.length === 6 && (
-        <div style={{ background: '#0a1a0f', border: '1px solid #00b89444', borderRadius: 12, padding: '13px 18px', marginBottom: 16, display: 'flex', alignItems: 'center', gap: 12 }}>
-          <span style={{ fontSize: 20 }}>&#127881;</span>
-          <div>
-            <div style={{ fontSize: 13, fontWeight: 800, color: '#00b894' }}>Plan Complete &mdash; all 6 steps done!</div>
-            <div style={{ fontSize: 11, color: '#555', marginTop: 2 }}>Go to Step 6 to download your Video Brief PDF.</div>
-          </div>
-        </div>
-      )}
       {/* 3-column layout */}
       <div className="plan-layout" style={{ display: 'flex', gap: 14, alignItems: 'flex-start' }}>
         {/* Step navigator */}
@@ -1305,6 +1516,33 @@ export default function PlanMyVideo({ channel, videos, onNavigate, tier, canUseA
               </button>
             );
           })}
+          <div style={{ borderTop: '1px solid #1a1a1a', marginTop: 8, paddingTop: 8 }}>
+            {freshConfirm ? (
+              <div style={{ padding: '8px 10px', background: '#1a0a0a', border: '1px solid #ef444433', borderRadius: 10 }}>
+                <div style={{ fontSize: 11, color: '#ef4444', fontWeight: 600, marginBottom: 6 }}>Clear all progress?</div>
+                <div style={{ display: 'flex', gap: 6 }}>
+                  <button
+                    onClick={() => { setFreshConfirm(false); startNewPlan(); }}
+                    style={{ flex: 1, fontSize: 11, fontWeight: 700, color: '#ef4444', background: '#ef444422', border: '1px solid #ef444444', borderRadius: 6, padding: '5px 0', cursor: 'pointer' }}
+                  >Yes, clear</button>
+                  <button
+                    onClick={() => setFreshConfirm(false)}
+                    style={{ flex: 1, fontSize: 11, color: '#555', background: 'transparent', border: '1px solid #222', borderRadius: 6, padding: '5px 0', cursor: 'pointer' }}
+                  >Cancel</button>
+                </div>
+              </div>
+            ) : (
+              <button
+                onClick={() => setFreshConfirm(true)}
+                style={{ width: '100%', display: 'flex', alignItems: 'center', gap: 10, padding: '10px 12px', background: 'transparent', border: '1px solid transparent', borderRadius: 10, cursor: 'pointer', textAlign: 'left' }}
+                onMouseEnter={e => { e.currentTarget.style.background = '#1a0808'; e.currentTarget.style.borderColor = '#ef444422'; }}
+                onMouseLeave={e => { e.currentTarget.style.background = 'transparent'; e.currentTarget.style.borderColor = 'transparent'; }}
+              >
+                <div style={{ width: 24, height: 24, borderRadius: '50%', flexShrink: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: 12, background: '#1a0808', border: '1px solid #ef444433', color: '#ef4444' }}>↺</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: '#555' }}>Start Fresh</div>
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Step content */}

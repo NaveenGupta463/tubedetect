@@ -1,12 +1,31 @@
+'use strict';
+
 const path       = require('path');
 const fs         = require('fs');
 const { execSync } = require('child_process');
+const { isSemanticScoringEnabled } = require('../pipeline/flags');
 
 const ML_MODEL_PATH  = path.join(__dirname, '../../ml/models/model.pkl');
 const PREDICT_SCRIPT = path.join(__dirname, '../../ml/predict.py');
 
+// Probe ML availability once at startup with a short timeout.
+// Caches the result so per-prediction calls never re-probe.
+let _mlAvailable = null;
 function modelExists() {
-  return fs.existsSync(ML_MODEL_PATH);
+  if (_mlAvailable !== null) return _mlAvailable;
+  if (!fs.existsSync(ML_MODEL_PATH)) { _mlAvailable = false; return false; }
+  try {
+    execSync(`python "${PREDICT_SCRIPT}"`, {
+      input: JSON.stringify({ title_length: 0, hook_length: 0, curiosity_score: 0, urgency_score: 0, specificity_score: 0, power_word_score: 0, sentiment_score: 0, niche_encoded: 0, channel_size_log: 0 }),
+      timeout: 5000,
+      encoding: 'utf8',
+    });
+    _mlAvailable = true;
+  } catch (_) {
+    console.warn('[Ensemble] ML probe failed — disabling ML scoring for this session');
+    _mlAvailable = false;
+  }
+  return _mlAvailable;
 }
 
 function runMLPredict(features) {
@@ -14,14 +33,15 @@ function runMLPredict(features) {
     const input  = JSON.stringify(features);
     const stdout = execSync(`python "${PREDICT_SCRIPT}"`, {
       input,
-      timeout: 10000,
+      timeout: 5000,
       encoding: 'utf8',
     });
     const result = JSON.parse(stdout.trim());
     if (typeof result.ml_score !== 'number') return null;
     return Math.max(0, Math.min(100, result.ml_score));
   } catch (e) {
-    console.warn('[Ensemble] ML predict error:', e.message);
+    _mlAvailable = false;
+    console.warn('[Ensemble] ML predict error — disabling for session:', e.code ?? e.message);
     return null;
   }
 }
@@ -60,14 +80,19 @@ function ruleBasedScore(features) {
  *   cold start  → rule_based
  *
  * @param {object} p
- * @param {number|null} p.peer_context_score  - avg normalized perf of top-5 peers (0–100)
- * @param {number}      p.matches_count
- * @param {object}      p.features
- * @returns {{ final_score, ml_score, rule_based_score, confidence, ensemble_weights, scoring_source, degraded_mode }}
+ * @param {number|null}  p.peer_context_score     avg normalized perf of top-5 peers (0–100)
+ * @param {number}       p.matches_count
+ * @param {object}       p.features
+ * @param {object|null}  p.activeWeights           DB-sourced weight overrides
+ * @param {object|null}  p.semanticClusterSignal   { cluster, confidence, cluster_avg_vph, sample_size }
  */
-async function buildEnsemble({ peer_context_score, matches_count, features, activeWeights }) {
+async function buildEnsemble({ peer_context_score, matches_count, features, activeWeights, semanticClusterSignal = null }) {
   const ml_score = modelExists() ? runMLPredict(features) : null;
   const rb_score = ruleBasedScore(features);
+
+  if (!activeWeights) {
+    console.warn('[Ensemble] No active DB weights found — using hardcoded fallback ratios (0.6/0.4).');
+  }
 
   let confidence = Math.min(1.0, (matches_count ?? 0) / 10);
   if (ml_score !== null) confidence = Math.min(1.0, confidence + 0.2);
@@ -96,14 +121,40 @@ async function buildEnsemble({ peer_context_score, matches_count, features, acti
 
   final_score = parseFloat(Math.max(0, Math.min(100, final_score)).toFixed(2));
 
+  // ── Semantic cluster prior (dampened additive, max ±5 pts) ────────────────
+  // Gated by: SEMANTIC_SCORING_ENABLED=1, confidence >= 0.3, sample_size >= 15,
+  // non-degraded mode, and cluster_avg_vph present.
+  let clusterAdj = 0;
+  if (
+    isSemanticScoringEnabled() &&
+    scoring_source !== 'rule_based' &&
+    semanticClusterSignal?.cluster_avg_vph != null &&
+    (semanticClusterSignal?.confidence ?? 0) >= 0.3 &&
+    (semanticClusterSignal?.sample_size ?? 0) >= 15
+  ) {
+    // Logistic-ish normalization: avg_vph=30 → score=50 (neutral).
+    // Higher VPH clusters add a small positive signal; low-VPH clusters subtract.
+    // Scaled by cohesion_score (Phase 5): weak topology dampens the prior.
+    const avgVph              = semanticClusterSignal.cluster_avg_vph;
+    const normalizedCluster   = (avgVph / (avgVph + 30)) * 100;
+    const cohesionFactor      = semanticClusterSignal.cohesion_score != null
+      ? Math.max(0.3, semanticClusterSignal.cohesion_score)
+      : 1.0;
+    const rawAdj              = (normalizedCluster - 50) * semanticClusterSignal.confidence * 0.10 * cohesionFactor;
+    clusterAdj                = parseFloat(Math.max(-5, Math.min(5, rawAdj)).toFixed(3));
+    final_score               = parseFloat(Math.max(0, Math.min(100, final_score + clusterAdj)).toFixed(2));
+    ensemble_weights          = { ...ensemble_weights, cluster_signal: parseFloat((semanticClusterSignal.confidence * 0.10).toFixed(3)) };
+  }
+
   return {
     final_score,
     ml_score,
-    rule_based_score: rb_score,
-    confidence:       parseFloat(confidence.toFixed(3)),
+    rule_based_score:  rb_score,
+    confidence:        parseFloat(confidence.toFixed(3)),
     ensemble_weights,
     scoring_source,
-    degraded_mode:    scoring_source === 'rule_based',
+    degraded_mode:     scoring_source === 'rule_based',
+    cluster_adjustment: clusterAdj,
   };
 }
 

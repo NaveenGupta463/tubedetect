@@ -23,6 +23,11 @@
   --radius:  10px;
   --radius-lg: 14px;
   --shadow:  0 4px 24px rgba(0,0,0,0.5);
+  --shadow-lg: 0 8px 40px rgba(0,0,0,0.6), 0 2px 8px rgba(0,0,0,0.4);
+  --shadow-card: 0 2px 12px rgba(0,0,0,0.45), 0 0 0 1px rgba(255,255,255,0.03);
+  --shadow-hover: 0 8px 32px rgba(0,0,0,0.55), 0 0 0 1px rgba(255,255,255,0.05);
+  --glass-bg: rgba(13,13,13,0.85);
+  --glass-border: rgba(255,255,255,0.06);
   --t: 0.16s ease;
 }
 
@@ -64,8 +69,9 @@ img { display: block; }
 .sidebar {
   width: 220px;
   flex-shrink: 0;
-  background: var(--bg2);
-  border-right: 1px solid var(--border);
+  background: var(--glass-bg);
+  backdrop-filter: blur(20px);
+  border-right: 1px solid var(--glass-border);
   position: sticky;
   top: 0;
   height: 100vh;
@@ -145,12 +151,11 @@ img { display: block; }
   font-size: 13px;
   text-align: left;
   border-radius: 0;
-  transition: background var(--t), color var(--t);
   border-left: 2px solid transparent;
+  will-change: transform;
 }
 
 .nav-item:hover {
-  background: rgba(255,255,255,0.04);
   color: var(--text);
 }
 

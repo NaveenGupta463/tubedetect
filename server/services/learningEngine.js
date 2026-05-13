@@ -50,6 +50,21 @@ function stats(errors) {
   return { n, avg, mae };
 }
 
+function weightedStats(rows) {
+  const n          = rows.length;
+  let sumW = 0, sumWE = 0, sumWAE = 0;
+  for (const r of rows) {
+    const w = r.calibration_weight ?? 1.0;
+    const e = r.calibration_error;
+    sumW   += w;
+    sumWE  += w * e;
+    sumWAE += w * Math.abs(e);
+  }
+  const avg = sumW > 0 ? sumWE  / sumW : 0;
+  const mae = sumW > 0 ? sumWAE / sumW : 0;
+  return { n, avg, mae };
+}
+
 // ── Phase 2: Calibration Recommendations ──────────────────────────────────────
 
 function computeCalibrationRecommendations(rows) {
@@ -59,10 +74,9 @@ function computeCalibrationRecommendations(rows) {
   const recs    = [];
 
   for (const [niche, nicheRows] of Object.entries(byNiche)) {
-    const errors = nicheRows.map(r => r.calibration_error);
-    if (errors.length < MIN_NICHE) continue;
+    if (nicheRows.length < MIN_NICHE) continue;
 
-    const { n, avg, mae } = stats(errors);
+    const { n, avg, mae } = weightedStats(nicheRows);
     if (Math.abs(avg) < BIAS_TRIGGER) continue;
 
     const issue               = avg > 0 ? 'systematic_overprediction' : 'systematic_underprediction';
@@ -75,7 +89,7 @@ function computeCalibrationRecommendations(rows) {
       niche,
       issue,
       recommendation:       `Adjust score predictions for "${niche}" by ${suggested_adjustment > 0 ? '+' : ''}${suggested_adjustment} points`,
-      rationale:            `Mean calibration error of ${avg.toFixed(1)} across ${n} samples indicates ${issue.replace(/_/g, ' ')}`,
+      rationale:            `Weighted mean calibration error of ${avg.toFixed(1)} across ${n} samples indicates ${issue.replace(/_/g, ' ')}`,
       average_error:        parseFloat(avg.toFixed(2)),
       mae:                  parseFloat(mae.toFixed(2)),
       suggested_adjustment,
@@ -126,10 +140,9 @@ function computeNicheLearning(rows) {
   const recs    = [];
 
   for (const [niche, nicheRows] of Object.entries(byNiche)) {
-    const errors = nicheRows.map(r => r.calibration_error);
-    if (errors.length < MIN_NICHE) continue;
+    if (nicheRows.length < MIN_NICHE) continue;
 
-    const { n, avg, mae } = stats(errors);
+    const { n, avg, mae } = weightedStats(nicheRows);
 
     let issue, recommendation, rationale;
 

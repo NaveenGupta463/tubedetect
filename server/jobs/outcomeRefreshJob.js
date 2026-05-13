@@ -4,7 +4,11 @@ const logger       = require('../utils/logger');
 const {
   upsertVideoOutcomeReality,
   getChannelViewHistory,
+  updateVideoOutcomeRefresh,
+  getBenchmarkRow,
+  classifyDurationBucket,
 }                  = require('../db/queries');
+const { computeActualPerformanceScoreFromVph, computeCalibrationError, getCalibrationBand } = require('../services/calibration');
 const { fetchVideoStatsBatch }                     = require('../services/youtubeMetrics');
 const {
   computeSignalQuality,
@@ -25,12 +29,14 @@ async function runOutcomeRefreshCycle() {
   const db = getDb();
 
   const stale = db.all(
-    `SELECT id, youtube_video_id, prediction_id, refresh_attempts,
-            predicted_score, niche, published_at
-     FROM video_outcomes
-     WHERE youtube_video_id IS NOT NULL AND published_at IS NOT NULL
-       AND (last_refreshed_at IS NULL
-            OR last_refreshed_at < datetime('now', '-6 hours'))
+    `SELECT vo.id, vo.youtube_video_id, vo.prediction_id, vo.refresh_attempts,
+            vo.predicted_score, vo.niche, vo.published_at,
+            iv.duration_seconds
+     FROM video_outcomes vo
+     LEFT JOIN ingested_videos iv ON iv.youtube_video_id = vo.youtube_video_id
+     WHERE vo.youtube_video_id IS NOT NULL AND vo.published_at IS NOT NULL
+       AND (vo.last_refreshed_at IS NULL
+            OR vo.last_refreshed_at < datetime('now', '-6 hours'))
      ORDER BY RANDOM()
      LIMIT ?`,
     [MAX_REFRESHES_PER_RUN],
@@ -107,6 +113,8 @@ async function runOutcomeRefreshCycle() {
       { viral_outcome: is_breakout, breakout_multiplier, ...fullRow }, predCtx,
     );
 
+    const refreshedAt = new Date().toISOString();
+
     try {
       upsertVideoOutcomeReality(db, row.youtube_video_id, {
         video_id:              row.id,
@@ -120,10 +128,54 @@ async function runOutcomeRefreshCycle() {
         false_negative_reason: fnReason ?? null,
         signal_quality:        signalQuality,
         has_oauth_data:        0,
-        last_refreshed_at:     new Date().toISOString(),
+        last_refreshed_at:     refreshedAt,
       });
     } catch (e) {
       logger.warn('outcomeRefreshJob', `Reality upsert failed for ${row.youtube_video_id}: ${e.message}`);
+    }
+
+    try {
+      const views = stats.views ?? 0;
+      const vph   = hoursAgo != null && hoursAgo > 0 ? views / hoursAgo : null;
+
+      const durationBucket = classifyDurationBucket(row.duration_seconds ?? null);
+      const benchmark      = getBenchmarkRow(db, row.niche ?? 'unknown', '7d', durationBucket);
+
+      const actualPerfScore = benchmark
+        ? computeActualPerformanceScoreFromVph(vph, {
+            median_vph: benchmark.median_vph,
+            p75_vph:    benchmark.p75_vph,
+            p90_vph:    benchmark.p90_vph,
+          })
+        : null;
+
+      const calibError = (actualPerfScore != null && row.predicted_score != null)
+        ? computeCalibrationError({ predicted_score: row.predicted_score, actual_performance_score: actualPerfScore })
+        : null;
+      const calibBand  = calibError != null ? getCalibrationBand(calibError) : null;
+
+      const outcomeState = actualPerfScore == null ? 'insufficient_data'
+        : calibBand === 'large_overprediction'  ? 'overperformed'
+        : calibBand === 'large_underprediction' ? 'underperformed'
+        : 'as_predicted';
+
+      updateVideoOutcomeRefresh(db, row.id, {
+        actual_views_24h:        viewData.views_24h ?? null,
+        actual_views_1h:         viewData.views_1h  ?? null,
+        actual_views_7d:         null,
+        actual_ctr:              null,
+        actual_retention:        null,
+        velocity_1h:             null,
+        velocity_24h:            vph != null ? parseFloat(vph.toFixed(4)) : null,
+        velocity_7d:             null,
+        actual_performance_score: actualPerfScore,
+        calibration_error:       calibError,
+        calibration_band:        calibBand,
+        outcome_state:           outcomeState,
+        last_refreshed_at:       refreshedAt,
+      });
+    } catch (e) {
+      logger.warn('outcomeRefreshJob', `Outcome calibration write failed for ${row.youtube_video_id}: ${e.message}`);
     }
   }
 

@@ -11,10 +11,28 @@ const {
   insertScoringWeightAudit,
   getScoringWeightAuditLog,
   getMostRecentAuditForType,
+  insertIntelligenceVersion,
+  getLatestBenchmarkSnapshotId,
 } = require('../db/queries');
 const { computeCalibrationRecommendations, computeObservationalRecommendations } = require('../services/learningEngine');
 const { loadBenchmarkMap } = require('../services/patternMiner');
+const { computeHealthScore, computeLearningVelocity } = require('../services/intelligenceHealth');
 const scoreCache = require('../services/scoreCache');
+const { setLastRun } = require('../services/jobState');
+
+function weightDiff(prevJson, newJson) {
+  try {
+    const prev = typeof prevJson === 'string' ? JSON.parse(prevJson || '{}') : (prevJson ?? {});
+    const next = typeof newJson  === 'string' ? JSON.parse(newJson  || '{}') : (newJson  ?? {});
+    const keys = new Set([...Object.keys(prev), ...Object.keys(next)]);
+    const diff = {};
+    for (const k of keys) {
+      const delta = (next[k] ?? 0) - (prev[k] ?? 0);
+      if (Math.abs(delta) > 0.001) diff[k] = parseFloat(delta.toFixed(4));
+    }
+    return diff;
+  } catch { return {}; }
+}
 
 const router = express.Router();
 
@@ -110,6 +128,26 @@ router.post('/admin/learning/auto-calibrate', (req, res) => {
     });
 
     scoreCache.bumpVersionStamp();
+    setLastRun('auto_calibrate');
+
+    // Write permanent intelligence version record
+    try {
+      const { health_score, components } = computeHealthScore(db);
+      const { velocity, inputs }         = computeLearningVelocity(db);
+      const changedWeights = weightDiff(currentActive?.weights_json, weights);
+      insertIntelligenceVersion(db, {
+        id:                   crypto.randomUUID(),
+        trigger:              'auto',
+        scoring_version_id:   newVersionId,
+        prev_weights_json:    currentActive?.weights_json ?? null,
+        new_weights_json:     weights,
+        changed_weights_json: changedWeights,
+        health_score,
+        learning_velocity:    velocity,
+        benchmark_snapshot_id: getLatestBenchmarkSnapshotId(db),
+        notes: `Auto-calibration: ${qualifying.length} qualifying niches. Components: accuracy=${components.accuracy_score}, stability=${components.stability_score}`,
+      });
+    } catch (_) {}
 
     res.json({
       ok:               true,
@@ -132,9 +170,10 @@ router.post('/admin/learning/auto-calibrate', (req, res) => {
 router.post('/admin/scoring/rollback', (req, res) => {
   try {
     const db = getDb();
-    const { version_type, version_id, applied_by } = req.body ?? {};
+    const { version_type, version_id, applied_by, reason, rollback_tag } = req.body ?? {};
 
     if (!version_type) return res.status(400).json({ error: 'version_type is required (ensemble_weights or niche_bias)' });
+    if (!reason?.trim()) return res.status(400).json({ error: 'reason is required for rollback' });
 
     const currentActive  = getActiveScoringVersionByType(db, version_type);
     let targetVersionId  = version_id ?? null;
@@ -171,6 +210,26 @@ router.post('/admin/scoring/rollback', (req, res) => {
     });
 
     scoreCache.bumpVersionStamp();
+
+    // Write permanent intelligence version record for this rollback
+    try {
+      const { health_score } = computeHealthScore(db);
+      const { velocity }     = computeLearningVelocity(db);
+      insertIntelligenceVersion(db, {
+        id:                        crypto.randomUUID(),
+        trigger:                   'rollback',
+        scoring_version_id:        targetVersionId ?? null,
+        prev_weights_json:         currentActive?.weights_json ?? null,
+        new_weights_json:          targetVersion?.weights_json ?? null,
+        changed_weights_json:      weightDiff(currentActive?.weights_json, targetVersion?.weights_json),
+        health_score,
+        learning_velocity:         velocity,
+        benchmark_snapshot_id:     getLatestBenchmarkSnapshotId(db),
+        notes:                     reason.trim(),
+        rollback_tag:              rollback_tag?.trim() ?? null,
+        rollback_source_version_id: currentActive?.id ?? null,
+      });
+    } catch (_) {}
 
     res.json({
       ok:          true,

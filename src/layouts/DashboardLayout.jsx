@@ -1,6 +1,8 @@
+import { motion, AnimatePresence } from 'framer-motion';
 import AnalyzeInput from '../screens/AnalyzeInput';
 import WhatToPost   from '../screens/WhatToPost';
 import Validator    from '../screens/Validator';
+import { spring, variants } from '../motion/spring';
 
 const TABS = [
   { id: 'analyze',    label: 'Analyze',               navId: 'dashboard'   },
@@ -25,36 +27,60 @@ export default function DashboardLayout({ aiProps, channel, videos, activeTab = 
         {TABS.map(tab => {
           const active = activeTab === tab.id;
           return (
-            <button
+            <motion.button
               key={tab.id}
               onClick={() => onTabChange(tab.navId)}
+              whileHover={{ color: active ? '#ffffff' : '#aaa' }}
+              whileTap={{ scale: 0.98 }}
+              transition={spring.snappy}
               style={{
-                background:    active ? 'rgba(255,0,0,0.07)' : 'none',
-                border:        'none',
-                borderBottom:  active ? '3px solid #ff0000' : '3px solid transparent',
-                color:         active ? '#ffffff' : '#555',
-                padding:       '13px 20px',
-                fontSize:      13,
-                fontWeight:    active ? 600 : 400,
-                cursor:        'pointer',
-                transition:    'color 0.16s ease, border-color 0.16s ease, background 0.16s ease',
-                marginBottom:  -1,
+                position:     'relative',
+                background:   active ? 'rgba(255,0,0,0.07)' : 'none',
+                border:       'none',
+                color:        active ? '#ffffff' : '#555',
+                padding:      '13px 20px',
+                fontSize:     13,
+                fontWeight:   active ? 600 : 400,
+                cursor:       'pointer',
+                marginBottom: -1,
                 letterSpacing: active ? '-0.2px' : 0,
-                whiteSpace:    'nowrap',
-                borderRadius:  active ? '6px 6px 0 0' : 0,
+                whiteSpace:   'nowrap',
+                borderRadius: active ? '6px 6px 0 0' : 0,
               }}
             >
               {tab.label}
-            </button>
+              {active && (
+                <motion.span
+                  layoutId="dashboard-tab-indicator"
+                  style={{
+                    position: 'absolute',
+                    bottom: -1, left: 0, right: 0,
+                    height: 3,
+                    background: '#ff0000',
+                    borderRadius: '2px 2px 0 0',
+                  }}
+                  transition={spring.layout}
+                />
+              )}
+            </motion.button>
           );
         })}
       </div>
 
-      <div style={{ paddingTop: 28 }}>
-        {activeTab === 'analyze'    && <AnalyzeInput onNavigate={onTabChange} />}
-        {activeTab === 'whatToPost' && <WhatToPost />}
-        {activeTab === 'validator'  && <Validator  {...aiProps} channel={channel} videos={videos} />}
-      </div>
+      <AnimatePresence mode="wait">
+        <motion.div
+          key={activeTab}
+          variants={variants.slideUp}
+          initial="hidden"
+          animate="visible"
+          exit="exit"
+          style={{ paddingTop: 28 }}
+        >
+          {activeTab === 'analyze'    && <AnalyzeInput onNavigate={onTabChange} />}
+          {activeTab === 'whatToPost' && <WhatToPost />}
+          {activeTab === 'validator'  && <Validator  {...aiProps} channel={channel} videos={videos} />}
+        </motion.div>
+      </AnimatePresence>
     </div>
   );
 }

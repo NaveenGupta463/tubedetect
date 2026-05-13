@@ -2,6 +2,7 @@ const cron   = require('node-cron');
 const crypto = require('crypto');
 const { getDb }      = require('../db/init');
 const quotaGuard     = require('../services/quotaGuard');
+const { setLastRun, hoursSinceLastRun } = require('../services/jobState');
 const {
   fetchChannelContentDetails,
   fetchPlaylistItems,
@@ -220,6 +221,7 @@ async function runHistoricalIngestCycle() {
 
   const quota = quotaGuard.getStats();
   console.log(`[historical] Cycle complete — inserted=${totalInserted} skipped=${totalSkipped} snapshots=${totalSnapshots} quota_used=${quota.used}/${quota.cutoff}`);
+  setLastRun('historical_ingest');
   return { channels: channels.length, inserted: totalInserted, skipped: totalSkipped, snapshots: totalSnapshots };
 }
 
@@ -229,6 +231,14 @@ function startHistoricalIngestCron() {
     catch (e) { console.error('[historical] Cron error:', e.message); }
   });
   console.log('[Historical Ingest Cron] Scheduled — daily at 03:00 UTC');
+
+  if (hoursSinceLastRun('historical_ingest') > 23) {
+    console.log('[Historical Ingest Cron] Missed window detected — catch-up run in 15s');
+    setTimeout(async () => {
+      try { await runHistoricalIngestCycle(); }
+      catch (e) { console.error('[historical] Catch-up error:', e.message); }
+    }, 15_000);
+  }
 }
 
 module.exports = { startHistoricalIngestCron, runHistoricalIngestCycle, ingestChannel };

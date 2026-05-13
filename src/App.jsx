@@ -1,4 +1,6 @@
 import { useState, useCallback, useEffect } from 'react';
+import { AnimatePresence, motion } from 'framer-motion';
+import { variants } from './motion/spring';
 import { useTier } from './hooks/useTier';
 import { useOAuth } from './hooks/useOAuth';
 import * as storage from './utils/storage';
@@ -52,6 +54,7 @@ import DiagnosticsPanel from './components/DiagnosticsPanel';
 // Learning
 import LearningDashboard    from './components/LearningDashboard';
 import AdminIntelligence   from './components/AdminIntelligence';
+import CreatorIntelligence from './components/CreatorIntelligence';
 
 // Dashboard
 import DashboardLanding from './components/DashboardLanding';
@@ -76,6 +79,7 @@ export default function App() {
   const [deepLinkError,   setDeepLinkError]   = useState('');
   const [pendingVideoUrl,   setPendingVideoUrl]   = useState('');
   const [navigationPayload, setNavigationPayload] = useState(null);
+  const [planKey,           setPlanKey]           = useState(0);
 
   // ── Deep-link via URL query params (from Chrome extension) ──────────────
   // Extension opens: http://localhost:5173?action=video&id=XXX
@@ -285,6 +289,13 @@ export default function App() {
       setVideoSubView('grid');
       setActiveView('channel');
     }
+  }, []);
+
+  const handleLoadBrief = useCallback((brief) => {
+    storage.setJSON('tubeintel_plan_v1', { ...brief.plan, savedAt: Date.now() });
+    storage.set('tubeintel_plan_edit_request', '1');
+    setPlanKey(k => k + 1);
+    setActiveView('plan');
   }, []);
 
   const handleSelectTier = useCallback((tierId) => {
@@ -550,6 +561,7 @@ export default function App() {
             videos={videos}
             competitors={competitors}
             onLoadWorkspace={handleLoadWorkspace}
+            onLoadBrief={handleLoadBrief}
           />
         );
 
@@ -566,6 +578,7 @@ export default function App() {
       case 'plan':
         return (
           <PlanMyVideo
+            key={planKey}
             channel={channel}
             videos={videos}
             onNavigate={handleNavigate}
@@ -587,6 +600,9 @@ export default function App() {
 
       case 'admin_intelligence':
         return <AdminIntelligence />;
+
+      case 'creator_intel':
+        return <CreatorIntelligence onNavigate={handleNavigate} />;
 
       default:
         return <DashboardLayout aiProps={aiProps} channel={channel} videos={videos} activeTab="analyze" onTabChange={handleNavigate} />;
@@ -629,7 +645,20 @@ export default function App() {
                 {deepLinkError}
               </div>
             </div>
-          ) : renderView()}
+          ) : (
+            <AnimatePresence mode="wait">
+              <motion.div
+                key={activeView}
+                variants={variants.page}
+                initial="hidden"
+                animate="visible"
+                exit="exit"
+                style={{ minHeight: '100%' }}
+              >
+                {renderView()}
+              </motion.div>
+            </AnimatePresence>
+          )}
         </main>
       </div>
     </div>

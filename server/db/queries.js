@@ -80,25 +80,26 @@ function insertPerformanceMetricsPlaceholder(db, videoId) {
 
 // ── Predictions ───────────────────────────────────────────────────────────────
 
-function insertPrediction(db, videoId, { ml_score, similarity_score, final_score, confidence, ensemble_weights }) {
+function insertPrediction(db, videoId, { ml_score, similarity_score, final_score, confidence, ensemble_weights, feature_snapshot_json }) {
   return db.run(
     `INSERT INTO predictions
-       (video_id, llm_score, ml_score, similarity_score, final_score, confidence, ensemble_weights)
-     VALUES (?, NULL, ?, ?, ?, ?, ?)`,
-    [videoId, ml_score, similarity_score, final_score, confidence, JSON.stringify(ensemble_weights)],
+       (video_id, llm_score, ml_score, similarity_score, final_score, confidence, ensemble_weights, feature_snapshot_json)
+     VALUES (?, NULL, ?, ?, ?, ?, ?, ?)`,
+    [videoId, ml_score, similarity_score, final_score, confidence, JSON.stringify(ensemble_weights), feature_snapshot_json ?? null],
   );
 }
 
-function upsertPrediction(db, videoId, { ml_score, similarity_score, final_score, confidence, ensemble_weights }) {
+function upsertPrediction(db, videoId, { ml_score, similarity_score, final_score, confidence, ensemble_weights, feature_snapshot_json }) {
   db.run(
     `INSERT INTO predictions
-       (video_id, llm_score, ml_score, similarity_score, final_score, confidence, ensemble_weights)
-     VALUES (?, NULL, ?, ?, ?, ?, ?)
+       (video_id, llm_score, ml_score, similarity_score, final_score, confidence, ensemble_weights, feature_snapshot_json)
+     VALUES (?, NULL, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(video_id) DO UPDATE SET
        ml_score=excluded.ml_score, similarity_score=excluded.similarity_score,
        final_score=excluded.final_score, confidence=excluded.confidence,
-       ensemble_weights=excluded.ensemble_weights`,
-    [videoId, ml_score, similarity_score, final_score, confidence, JSON.stringify(ensemble_weights)],
+       ensemble_weights=excluded.ensemble_weights,
+       feature_snapshot_json=COALESCE(excluded.feature_snapshot_json, feature_snapshot_json)`,
+    [videoId, ml_score, similarity_score, final_score, confidence, JSON.stringify(ensemble_weights), feature_snapshot_json ?? null],
   );
 }
 
@@ -481,7 +482,8 @@ function getLearningOutcomeRows(db) {
        calibration_error,
        COALESCE(LOWER(TRIM(confidence_state)), 'unknown') AS confidence_state,
        pipeline_version,
-       video_id
+       video_id,
+       COALESCE(calibration_weight, 1.0)                  AS calibration_weight
      FROM video_outcomes
      WHERE actual_performance_score IS NOT NULL
        AND calibration_error IS NOT NULL
@@ -789,8 +791,8 @@ function getChannelViewHistory(db, niche) {
 
 function getIngestableChannels(db) {
   return db.all(
-    `SELECT * FROM ingested_channels WHERE ingest_enabled = 1
-     ORDER BY last_ingested_at ASC NULLS FIRST`,
+    `SELECT * FROM ingested_channels WHERE ingest_enabled = 1 AND last_ingested_at IS NULL
+     ORDER BY added_at ASC`,
   );
 }
 
@@ -832,6 +834,10 @@ function markChannelIngested(db, channelId) {
 
 function setChannelEnabled(db, id, enabled) {
   db.run('UPDATE ingested_channels SET ingest_enabled = ? WHERE id = ?', [enabled ? 1 : 0, id]);
+}
+
+function setOwnChannel(db, id, isOwn) {
+  db.run('UPDATE ingested_channels SET is_own_channel = ? WHERE id = ?', [isOwn ? 1 : 0, id]);
 }
 
 // ── Ingested videos ───────────────────────────────────────────────────────────
@@ -1017,6 +1023,761 @@ function deleteIngestedChannel(db, id) {
   db.run('DELETE FROM ingested_channels WHERE id = ?', [id]);
 }
 
+function getChannelVideoTitles(db, channelId, limit) {
+  return db.all(
+    `SELECT title FROM ingested_videos WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT ?`,
+    [channelId, limit ?? 50],
+  ).map(r => r.title);
+}
+
+function getChannelIdentity(db, id) {
+  return db.get(
+    `SELECT primary_niche, secondary_niche, behavior_tags, format_type, audience_style,
+            identity_confidence, identity_reasoning, identity_last_detected_at,
+            identity_strength, identity_source, inferred_topics, content_archetype,
+            channel_id, channel_name, niche
+     FROM ingested_channels WHERE id = ?`,
+    [id],
+  );
+}
+
+function saveChannelIdentity(db, id, {
+  primary_niche, secondary_niche, behavior_tags, format_type, audience_style,
+  identity_confidence, identity_reasoning, identity_last_detected_at,
+  identity_strength, identity_source, inferred_topics, content_archetype,
+}) {
+  const toJson = v => Array.isArray(v) ? JSON.stringify(v) : (v ?? null);
+  db.run(
+    `UPDATE ingested_channels SET
+       primary_niche              = ?,
+       secondary_niche            = ?,
+       behavior_tags              = ?,
+       format_type                = ?,
+       audience_style             = ?,
+       identity_confidence        = ?,
+       identity_reasoning         = ?,
+       identity_last_detected_at  = ?,
+       identity_strength          = ?,
+       identity_source            = ?,
+       inferred_topics            = ?,
+       content_archetype          = ?
+     WHERE id = ?`,
+    [
+      primary_niche ?? null,
+      secondary_niche ?? null,
+      toJson(behavior_tags),
+      format_type ?? null,
+      audience_style ?? null,
+      identity_confidence ?? null,
+      identity_reasoning ?? null,
+      identity_last_detected_at ?? null,
+      identity_strength ?? null,
+      identity_source ?? null,
+      toJson(inferred_topics),
+      content_archetype ?? null,
+      id,
+    ],
+  );
+}
+
+// ── Niche benchmark history (append-only) ─────────────────────────────────────
+
+function insertBenchmarkHistory(db, {
+  id, snapshot_batch_id, snapshot_at, niche, bucket, duration_bucket,
+  sample_size, median_vph, p75_vph, p90_vph, median_sav, median_vsr, median_accel,
+}) {
+  db.run(
+    `INSERT INTO niche_benchmark_history
+       (id, snapshot_batch_id, snapshot_at, niche, bucket, duration_bucket,
+        sample_size, median_vph, p75_vph, p90_vph, median_sav, median_vsr, median_accel)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id, snapshot_batch_id, snapshot_at, niche, bucket, duration_bucket,
+      sample_size ?? null, median_vph ?? null, p75_vph ?? null, p90_vph ?? null,
+      median_sav ?? null, median_vsr ?? null, median_accel ?? null,
+    ],
+  );
+}
+
+function getLatestTwoSnapshotBatches(db) {
+  return db.all(`
+    SELECT snapshot_batch_id, MIN(snapshot_at) AS snapshot_at, COUNT(*) AS row_count
+    FROM niche_benchmark_history
+    GROUP BY snapshot_batch_id
+    ORDER BY snapshot_at DESC
+    LIMIT 2
+  `);
+}
+
+function getBenchmarkHistoryByBatch(db, batchId) {
+  return db.all(
+    'SELECT * FROM niche_benchmark_history WHERE snapshot_batch_id = ? ORDER BY niche, bucket, duration_bucket',
+    [batchId],
+  );
+}
+
+function getBenchmarkTimelineForCombination(db, { niche, bucket, duration_bucket } = {}) {
+  const conditions = ['1=1'];
+  const params     = [];
+  if (niche)           { conditions.push('niche = ?');           params.push(niche); }
+  if (bucket)          { conditions.push('bucket = ?');          params.push(bucket); }
+  if (duration_bucket) { conditions.push('duration_bucket = ?'); params.push(duration_bucket); }
+  return db.all(
+    `SELECT * FROM niche_benchmark_history WHERE ${conditions.join(' AND ')} ORDER BY snapshot_at ASC`,
+    params,
+  );
+}
+
+function getLatestBenchmarkSnapshotId(db) {
+  return db.get(`
+    SELECT snapshot_batch_id FROM niche_benchmark_history
+    GROUP BY snapshot_batch_id ORDER BY MIN(snapshot_at) DESC LIMIT 1
+  `)?.snapshot_batch_id ?? null;
+}
+
+// ── Intelligence versions (permanent, never deleted) ──────────────────────────
+
+function insertIntelligenceVersion(db, {
+  id, created_at, trigger, scoring_version_id,
+  prev_weights_json, new_weights_json, changed_weights_json,
+  health_score, learning_velocity, benchmark_snapshot_id,
+  notes, rollback_tag, rollback_source_version_id,
+}) {
+  return db.run(
+    `INSERT INTO intelligence_versions
+       (id, created_at, trigger, scoring_version_id,
+        prev_weights_json, new_weights_json, changed_weights_json,
+        health_score, learning_velocity, benchmark_snapshot_id,
+        notes, rollback_tag, rollback_source_version_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      created_at ?? new Date().toISOString(),
+      trigger,
+      scoring_version_id ?? null,
+      prev_weights_json   != null ? (typeof prev_weights_json    === 'string' ? prev_weights_json    : JSON.stringify(prev_weights_json))    : null,
+      new_weights_json    != null ? (typeof new_weights_json     === 'string' ? new_weights_json     : JSON.stringify(new_weights_json))     : null,
+      changed_weights_json != null ? (typeof changed_weights_json === 'string' ? changed_weights_json : JSON.stringify(changed_weights_json)) : null,
+      health_score     ?? null,
+      learning_velocity ?? null,
+      benchmark_snapshot_id ?? null,
+      notes            ?? null,
+      rollback_tag     ?? null,
+      rollback_source_version_id ?? null,
+    ],
+  );
+}
+
+function getAllIntelligenceVersions(db, limit) {
+  return db.all(
+    'SELECT * FROM intelligence_versions ORDER BY created_at DESC LIMIT ?',
+    [limit ?? 100],
+  );
+}
+
+// ── Evolution analytics queries ───────────────────────────────────────────────
+
+function getEvolutionAccuracyTimeline(db) {
+  return db.all(`
+    SELECT
+      strftime('%Y-W%W', last_refreshed_at) AS week,
+      COUNT(*)                                                           AS total,
+      SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)    AS accurate,
+      SUM(CASE WHEN predicted_score >= 70 AND actual_performance_score < 50  THEN 1 ELSE 0 END) AS fp,
+      SUM(CASE WHEN predicted_score < 40  AND actual_performance_score >= 70 THEN 1 ELSE 0 END) AS fn
+    FROM video_outcomes
+    WHERE actual_performance_score IS NOT NULL
+      AND last_refreshed_at >= datetime('now', '-90 days')
+    GROUP BY week
+    ORDER BY week ASC
+  `);
+}
+
+function getEvolutionFPFNStats(db, windowDays) {
+  const days = windowDays ?? 30;
+  return db.get(`
+    SELECT
+      COUNT(*)                                                                                 AS total,
+      SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END)                          AS accurate,
+      SUM(CASE WHEN predicted_score >= 70 AND actual_performance_score < 50  THEN 1 ELSE 0 END) AS fp_count,
+      SUM(CASE WHEN predicted_score < 40  AND actual_performance_score >= 70 THEN 1 ELSE 0 END) AS fn_count,
+      SUM(CASE WHEN predicted_score >= 70 THEN 1 ELSE 0 END)                                  AS strong_predictions,
+      SUM(CASE WHEN predicted_score < 40  THEN 1 ELSE 0 END)                                  AS weak_predictions
+    FROM video_outcomes
+    WHERE actual_performance_score IS NOT NULL
+      AND last_refreshed_at >= datetime('now', '-${days} days')
+  `);
+}
+
+function getEvolutionScoreDistribution(db, beforeDate, afterDate) {
+  function distQuery(dateCondition, params) {
+    return db.get(
+      `SELECT
+         SUM(CASE WHEN predicted_score < 40  THEN 1 ELSE 0 END) AS weak,
+         SUM(CASE WHEN predicted_score >= 40 AND predicted_score < 70 THEN 1 ELSE 0 END) AS average,
+         SUM(CASE WHEN predicted_score >= 70 THEN 1 ELSE 0 END) AS strong,
+         COUNT(*) AS total
+       FROM video_outcomes
+       WHERE predicted_score IS NOT NULL ${dateCondition}`,
+      params,
+    );
+  }
+  const before = beforeDate ? distQuery('AND created_at < ?', [beforeDate]) : null;
+  const after  = afterDate  ? distQuery('AND created_at >= ?', [afterDate]) : null;
+  const weekly = db.all(`
+    SELECT
+      strftime('%Y-W%W', created_at) AS week,
+      SUM(CASE WHEN predicted_score < 40  THEN 1 ELSE 0 END) AS weak,
+      SUM(CASE WHEN predicted_score >= 40 AND predicted_score < 70 THEN 1 ELSE 0 END) AS average,
+      SUM(CASE WHEN predicted_score >= 70 THEN 1 ELSE 0 END) AS strong
+    FROM video_outcomes
+    WHERE predicted_score IS NOT NULL
+      AND created_at >= datetime('now', '-90 days')
+    GROUP BY week ORDER BY week ASC
+  `);
+  return { before, after, weekly };
+}
+
+function getEvolutionSignalWeightHistory(db) {
+  return db.all(
+    `SELECT id, version_name, version_type, weights_json, thresholds_json,
+            active, created_at, created_by, notes
+     FROM scoring_versions ORDER BY created_at ASC`,
+  );
+}
+
+function getEvolutionConfidenceBins(db) {
+  return db.all(`
+    SELECT
+      COALESCE(LOWER(TRIM(confidence_state)), 'unknown') AS confidence_bucket,
+      COUNT(*)                                            AS total,
+      SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END) AS accurate,
+      AVG(ABS(calibration_error))                         AS mae,
+      SUM(CASE WHEN predicted_score >= 70 AND actual_performance_score < 50  THEN 1 ELSE 0 END) AS fp_count,
+      SUM(CASE WHEN predicted_score < 40  AND actual_performance_score >= 70 THEN 1 ELSE 0 END) AS fn_count
+    FROM video_outcomes
+    WHERE actual_performance_score IS NOT NULL
+    GROUP BY confidence_bucket
+    ORDER BY confidence_bucket
+  `);
+}
+
+function updateChannelNiche(db, id, niche) {
+  db.run('UPDATE ingested_channels SET niche = ? WHERE id = ?', [niche, id]);
+  db.run('UPDATE ingested_videos SET niche = ? WHERE channel_id = (SELECT channel_id FROM ingested_channels WHERE id = ?)', [niche, id]);
+}
+
+function setNicheOverride(db, id, niche) {
+  db.run('UPDATE ingested_channels SET niche = ?, niche_override = ?, identity_source = ? WHERE id = ?',
+    [niche, niche, 'operator_override', id]);
+  db.run('UPDATE ingested_videos SET niche = ? WHERE channel_id = (SELECT channel_id FROM ingested_channels WHERE id = ?)',
+    [niche, id]);
+}
+
+// ── Duration bucket helpers (canonical — matches patternMiner.js) ─────────────
+
+function classifyDurationBucket(seconds) {
+  if (seconds == null || seconds <= 0) return 'unknown';
+  if (seconds < 180) return 'short';
+  if (seconds < 600) return 'medium';
+  return 'long';
+}
+
+function getBenchmarkRow(db, niche, bucket, durationBucket) {
+  return db.get(
+    'SELECT * FROM niche_benchmarks WHERE niche = ? AND bucket = ? AND duration_bucket = ?',
+    [niche, bucket, durationBucket ?? 'unknown'],
+  );
+}
+
+// ── Synthetic calibration ─────────────────────────────────────────────────────
+
+function insertSyntheticOutcome(db, {
+  youtube_video_id, niche, title, predicted_score,
+  actual_performance_score, calibration_error, calibration_band,
+  actual_views_7d, velocity_7d, outcome_state,
+}) {
+  const now = new Date().toISOString();
+  return db.run(
+    `INSERT INTO video_outcomes
+       (youtube_video_id, pipeline_version, calibration_weight,
+        niche, title, predicted_score,
+        actual_views_7d, velocity_7d,
+        actual_performance_score, calibration_error, calibration_band,
+        outcome_state, last_refreshed_at, created_at, observed_at)
+     VALUES (?, 'synthetic_b', 0.5, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      youtube_video_id, niche ?? null, title ?? null, predicted_score ?? null,
+      actual_views_7d ?? null, velocity_7d ?? null,
+      actual_performance_score ?? null, calibration_error ?? null, calibration_band ?? null,
+      outcome_state ?? 'on_track', now, now, now,
+    ],
+  );
+}
+
+// ── Dashboard aggregate queries ───────────────────────────────────────────────
+
+function getCalibrationOverview(db) {
+  return db.all(
+    `SELECT
+       COALESCE(pipeline_version, 'unknown')         AS pipeline_version,
+       COUNT(*)                                       AS total,
+       AVG(ABS(calibration_error))                   AS mae,
+       SUM(CASE WHEN ABS(calibration_error) <= 10 THEN 1 ELSE 0 END) AS accurate_count
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY pipeline_version`,
+  );
+}
+
+function getOutcomeFreshnessHistogram(db) {
+  return db.get(
+    `SELECT
+       SUM(CASE WHEN last_refreshed_at >= datetime('now', '-1 days')  THEN 1 ELSE 0 END) AS fresh_1d,
+       SUM(CASE WHEN last_refreshed_at >= datetime('now', '-7 days')
+                AND last_refreshed_at < datetime('now', '-1 days')    THEN 1 ELSE 0 END) AS fresh_7d,
+       SUM(CASE WHEN last_refreshed_at >= datetime('now', '-30 days')
+                AND last_refreshed_at < datetime('now', '-7 days')    THEN 1 ELSE 0 END) AS fresh_30d,
+       SUM(CASE WHEN last_refreshed_at < datetime('now', '-30 days')
+                OR  last_refreshed_at IS NULL                         THEN 1 ELSE 0 END) AS stale,
+       COUNT(*) AS total
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL`,
+  );
+}
+
+function getNicheCalibrationDensity(db) {
+  return db.all(
+    `SELECT
+       COALESCE(LOWER(TRIM(niche)), 'unknown')        AS niche,
+       COUNT(*)                                       AS sample_count,
+       COALESCE(pipeline_version, 'unknown')          AS pipeline_version
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY niche, pipeline_version
+     ORDER BY sample_count DESC`,
+  );
+}
+
+// ── Learning Intelligence Dashboard queries ───────────────────────────────────
+
+function insertLearningSnapshot(db, {
+  snapshot_date, mae, calibration_trust_score, synthetic_ratio,
+  stale_outcomes, benchmark_health, learning_velocity,
+  total_calibration_rows, real_rows, synthetic_rows,
+  avg_confidence_score, benchmark_drift, weight_delta,
+}) {
+  return db.run(
+    `INSERT OR REPLACE INTO learning_health_snapshots
+       (snapshot_date, mae, calibration_trust_score, synthetic_ratio,
+        stale_outcomes, benchmark_health, learning_velocity,
+        total_calibration_rows, real_rows, synthetic_rows,
+        avg_confidence_score, benchmark_drift, weight_delta, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [snapshot_date, mae, calibration_trust_score, synthetic_ratio,
+     stale_outcomes, benchmark_health, learning_velocity,
+     total_calibration_rows, real_rows, synthetic_rows,
+     avg_confidence_score, benchmark_drift, weight_delta],
+  );
+}
+
+function getLearningHistory(db, days = 30) {
+  return db.all(
+    `SELECT * FROM learning_health_snapshots
+     WHERE snapshot_date >= date('now', ?)
+     ORDER BY snapshot_date ASC`,
+    [`-${days} days`],
+  );
+}
+
+function getNicheLearningStats(db) {
+  return db.all(
+    `SELECT
+       COALESCE(niche, 'unknown') AS niche,
+       COUNT(*) AS sample_count,
+       ROUND(AVG(calibration_error), 2) AS avg_error,
+       ROUND(AVG(actual_performance_score), 2) AS avg_actual,
+       ROUND(AVG(ABS(calibration_error)), 2) AS mae,
+       SUM(CASE WHEN pipeline_version = 'synthetic_b' THEN 1 ELSE 0 END) AS synthetic_count,
+       SUM(CASE WHEN pipeline_version != 'synthetic_b' THEN 1 ELSE 0 END) AS real_count,
+       MAX(last_refreshed_at) AS last_refreshed
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY niche
+     ORDER BY sample_count DESC`,
+  );
+}
+
+function getCalibrationDistributions(db) {
+  const actual = db.all(
+    `SELECT CAST(ROUND(actual_performance_score / 10) * 10 AS INTEGER) AS bucket, COUNT(*) AS n
+     FROM video_outcomes WHERE actual_performance_score IS NOT NULL
+     GROUP BY bucket ORDER BY bucket`,
+  );
+  const error = db.all(
+    `SELECT CAST(ROUND(calibration_error / 10) * 10 AS INTEGER) AS bucket, COUNT(*) AS n
+     FROM video_outcomes WHERE calibration_error IS NOT NULL
+     GROUP BY bucket ORDER BY bucket`,
+  );
+  const bands = db.all(
+    `SELECT calibration_band,
+       COUNT(*) AS total,
+       SUM(CASE WHEN pipeline_version = 'synthetic_b' THEN 1 ELSE 0 END) AS synthetic,
+       SUM(CASE WHEN pipeline_version != 'synthetic_b' THEN 1 ELSE 0 END) AS real
+     FROM video_outcomes WHERE calibration_band IS NOT NULL
+     GROUP BY calibration_band ORDER BY total DESC`,
+  );
+  return { actual, error, bands };
+}
+
+function getLearningEvents(db, limit = 60) {
+  const calibEvents = db.all(
+    `SELECT id, created_at, trigger, health_score, learning_velocity,
+       changed_weights_json, notes
+     FROM intelligence_versions
+     ORDER BY created_at DESC LIMIT ?`,
+    [limit],
+  );
+  const syntheticRuns = db.all(
+    `SELECT DATE(created_at) AS run_date, COUNT(*) AS rows_inserted,
+       AVG(ABS(calibration_error)) AS mae
+     FROM video_outcomes WHERE pipeline_version = 'synthetic_b'
+     GROUP BY DATE(created_at) ORDER BY run_date DESC LIMIT 10`,
+  );
+  return { calibration_events: calibEvents, synthetic_runs: syntheticRuns };
+}
+
+function getLatestLearningSnapshot(db) {
+  return db.get(`SELECT * FROM learning_health_snapshots ORDER BY snapshot_date DESC LIMIT 1`);
+}
+
+// ── Confidence metrics ────────────────────────────────────────────────────────
+
+function insertConfidenceMetric(db, {
+  feature, niche, confidence_score, sample_depth_score, recency_score,
+  coverage_score, real_ratio_score, stability_score, routing_decision, reasons_json,
+}) {
+  return db.run(
+    `INSERT INTO confidence_metrics
+       (feature, niche, confidence_score, sample_depth_score, recency_score,
+        coverage_score, real_ratio_score, stability_score, routing_decision, reasons_json, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      feature, niche ?? null, confidence_score, sample_depth_score, recency_score,
+      coverage_score, real_ratio_score, stability_score, routing_decision,
+      typeof reasons_json === 'string' ? reasons_json : JSON.stringify(reasons_json ?? []),
+    ],
+  );
+}
+
+function insertConfidenceHistorySnapshot(db, {
+  snapshot_date, feature, niche, avg_confidence, routing_distribution_json, fallback_rate,
+}) {
+  return db.run(
+    `INSERT OR REPLACE INTO learning_confidence_history
+       (snapshot_date, feature, niche, avg_confidence, routing_distribution_json, fallback_rate, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [
+      snapshot_date, feature,
+      niche ?? '__all__',
+      avg_confidence,
+      typeof routing_distribution_json === 'string' ? routing_distribution_json : JSON.stringify(routing_distribution_json ?? {}),
+      fallback_rate,
+    ],
+  );
+}
+
+function getConfidenceHistory(db, days = 30) {
+  return db.all(
+    `SELECT * FROM learning_confidence_history
+     WHERE snapshot_date >= date('now', ?)
+     ORDER BY snapshot_date ASC, feature ASC`,
+    [`-${days} days`],
+  );
+}
+
+function getLatestConfidenceMetrics(db, feature) {
+  return feature
+    ? db.all(
+        'SELECT * FROM confidence_metrics WHERE feature = ? ORDER BY created_at DESC LIMIT 25',
+        [feature])
+    : db.all(
+        'SELECT * FROM confidence_metrics ORDER BY created_at DESC LIMIT 100');
+}
+
+// ── Confidence correctness ────────────────────────────────────────────────────
+
+function updateConfidenceHistoryCorrectness(db, {
+  snapshot_date,
+  confidence_accuracy_correlation,
+  high_confidence_mae,
+  medium_confidence_mae,
+  low_confidence_mae,
+  routing_accuracy_score,
+}) {
+  return db.run(
+    `UPDATE learning_confidence_history
+     SET confidence_accuracy_correlation = ?,
+         high_confidence_mae             = ?,
+         medium_confidence_mae           = ?,
+         low_confidence_mae              = ?,
+         routing_accuracy_score          = ?
+     WHERE snapshot_date = ? AND feature = '__all__' AND niche = '__all__'`,
+    [
+      confidence_accuracy_correlation ?? null,
+      high_confidence_mae             ?? null,
+      medium_confidence_mae           ?? null,
+      low_confidence_mae              ?? null,
+      routing_accuracy_score          ?? null,
+      snapshot_date,
+    ],
+  );
+}
+
+// ── Routing log ───────────────────────────────────────────────────────────────
+
+function insertRoutingLog(db, {
+  feature, niche, route_type, confidence_score, correctness_score,
+  fallback_reason, tokens_saved_estimate, latency_ms, cache_hit, routing_version, payload_hash,
+}) {
+  return db.run(
+    `INSERT INTO routing_log
+       (feature, niche, route_type, confidence_score, correctness_score,
+        fallback_reason, tokens_saved_estimate, latency_ms, cache_hit, routing_version, payload_hash)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      feature, niche ?? null, route_type,
+      confidence_score  ?? null, correctness_score ?? null,
+      fallback_reason   ?? null,
+      tokens_saved_estimate ?? 0, latency_ms ?? null,
+      cache_hit ? 1 : 0, routing_version ?? 'v1', payload_hash ?? null,
+    ],
+  );
+}
+
+function getRoutingAnalytics(db, days = 7) {
+  const cutoff = `-${days} days`;
+  const dist = db.all(
+    `SELECT route_type, COUNT(*) AS n,
+            AVG(confidence_score) AS avg_confidence,
+            SUM(tokens_saved_estimate) AS total_tokens_saved,
+            AVG(latency_ms) AS avg_latency_ms
+     FROM routing_log
+     WHERE created_at >= datetime('now', ?)
+     GROUP BY route_type`,
+    [cutoff],
+  );
+  const timeline = db.all(
+    `SELECT date(created_at) AS day,
+            route_type, COUNT(*) AS n,
+            SUM(tokens_saved_estimate) AS tokens_saved
+     FROM routing_log
+     WHERE created_at >= datetime('now', ?)
+     GROUP BY day, route_type
+     ORDER BY day ASC`,
+    [cutoff],
+  );
+  const fallbacks = db.all(
+    `SELECT fallback_reason, COUNT(*) AS n
+     FROM routing_log
+     WHERE fallback_reason IS NOT NULL AND created_at >= datetime('now', ?)
+     GROUP BY fallback_reason
+     ORDER BY n DESC
+     LIMIT 10`,
+    [cutoff],
+  );
+  const total = dist.reduce((s, r) => s + (r.n ?? 0), 0);
+  const totalSaved = dist.reduce((s, r) => s + (r.total_tokens_saved ?? 0), 0);
+  return { days, dist, timeline, fallbacks, total, total_tokens_saved: totalSaved };
+}
+
+// ── Hook intelligence queries (Phase D) ──────────────────────────────────────
+
+function getTopHooks(db, { niche, duration_bucket, limit = 20 } = {}) {
+  const where = [];
+  const args  = [];
+  if (niche)           { where.push('niche = ?');           args.push(niche); }
+  if (duration_bucket) { where.push('duration_bucket = ?'); args.push(duration_bucket); }
+  where.push('sample_count >= 5');
+  const sql = `
+    SELECT * FROM hook_type_performance
+    ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY hook_score DESC
+    LIMIT ?`;
+  args.push(limit);
+  return db.all(sql, args).map(r => ({ ...r, example_titles: tryParseJson(r.example_titles_json, []) }));
+}
+
+function getRisingHooks(db, { niche, limit = 20 } = {}) {
+  const where = ["trend_direction = 'rising'", 'sample_count >= 5'];
+  const args  = [];
+  if (niche) { where.push('niche = ?'); args.push(niche); }
+  args.push(limit);
+  return db.all(
+    `SELECT * FROM hook_type_performance WHERE ${where.join(' AND ')} ORDER BY momentum_score DESC, hook_score DESC LIMIT ?`,
+    args,
+  ).map(r => ({ ...r, example_titles: tryParseJson(r.example_titles_json, []) }));
+}
+
+function getDecliningHooks(db, { niche, limit = 20 } = {}) {
+  const where = ["trend_direction = 'declining'", 'sample_count >= 5'];
+  const args  = [];
+  if (niche) { where.push('niche = ?'); args.push(niche); }
+  args.push(limit);
+  return db.all(
+    `SELECT * FROM hook_type_performance WHERE ${where.join(' AND ')} ORDER BY momentum_score ASC, hook_score ASC LIMIT ?`,
+    args,
+  ).map(r => ({ ...r, example_titles: tryParseJson(r.example_titles_json, []) }));
+}
+
+function getHooksByNiche(db, niche) {
+  return db.all(
+    `SELECT * FROM hook_type_performance WHERE niche = ? AND sample_count >= 3 ORDER BY hook_score DESC`,
+    [niche],
+  ).map(r => ({ ...r, example_titles: tryParseJson(r.example_titles_json, []) }));
+}
+
+function getHookSummaryStats(db) {
+  const total = db.get('SELECT COUNT(*) n FROM hook_type_performance')?.n ?? 0;
+  const niches = db.get('SELECT COUNT(DISTINCT niche) n FROM hook_type_performance')?.n ?? 0;
+  const hooks  = db.get('SELECT COUNT(DISTINCT hook_type) n FROM hook_type_performance')?.n ?? 0;
+  const updated = db.get('SELECT MAX(updated_at) t FROM hook_type_performance')?.t ?? null;
+  const rising  = db.get("SELECT COUNT(*) n FROM hook_type_performance WHERE trend_direction='rising'")?.n ?? 0;
+  const declining = db.get("SELECT COUNT(*) n FROM hook_type_performance WHERE trend_direction='declining'")?.n ?? 0;
+  return { total_rows: total, niches_covered: niches, hook_types_covered: hooks, last_updated: updated, rising, declining };
+}
+
+function tryParseJson(json, fallback) {
+  try { return JSON.parse(json || 'null') ?? fallback; } catch { return fallback; }
+}
+
+// ── Phase E: Niche Reliability ────────────────────────────────────────────────
+
+function upsertNicheReliability(db, {
+  niche, reliability_score, real_outcome_count, avg_mae,
+  mae_7d, mae_30d, mae_90d, trust_weight, synthetic_ratio, disagreement_rate,
+}) {
+  return db.run(
+    `INSERT INTO niche_reliability
+       (niche, reliability_score, real_outcome_count, avg_mae, mae_7d, mae_30d, mae_90d,
+        trust_weight, synthetic_ratio, disagreement_rate, computed_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+     ON CONFLICT(niche) DO UPDATE SET
+       reliability_score  = excluded.reliability_score,
+       real_outcome_count = excluded.real_outcome_count,
+       avg_mae            = excluded.avg_mae,
+       mae_7d             = excluded.mae_7d,
+       mae_30d            = excluded.mae_30d,
+       mae_90d            = excluded.mae_90d,
+       trust_weight       = excluded.trust_weight,
+       synthetic_ratio    = excluded.synthetic_ratio,
+       disagreement_rate  = excluded.disagreement_rate,
+       computed_at        = datetime('now')`,
+    [
+      niche, reliability_score ?? 0, real_outcome_count ?? 0,
+      avg_mae ?? null, mae_7d ?? null, mae_30d ?? null, mae_90d ?? null,
+      trust_weight ?? 1.0, synthetic_ratio ?? null, disagreement_rate ?? null,
+    ],
+  );
+}
+
+function getAllNicheReliability(db) {
+  return db.all('SELECT * FROM niche_reliability ORDER BY reliability_score DESC');
+}
+
+// ── Phase E: Learning Cohort Snapshots ────────────────────────────────────────
+
+function upsertCohortSnapshot(db, {
+  cohort_window, snapshot_date, niche,
+  total_outcomes, real_outcomes, mae, accuracy_rate,
+  avg_confidence, avg_freshness_weight, disagreement_rate, synthetic_ratio,
+}) {
+  return db.run(
+    `INSERT INTO learning_cohort_snapshots
+       (cohort_window, snapshot_date, niche, total_outcomes, real_outcomes,
+        mae, accuracy_rate, avg_confidence, avg_freshness_weight, disagreement_rate, synthetic_ratio)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT(cohort_window, snapshot_date, niche) DO UPDATE SET
+       total_outcomes       = excluded.total_outcomes,
+       real_outcomes        = excluded.real_outcomes,
+       mae                  = excluded.mae,
+       accuracy_rate        = excluded.accuracy_rate,
+       avg_confidence       = excluded.avg_confidence,
+       avg_freshness_weight = excluded.avg_freshness_weight,
+       disagreement_rate    = excluded.disagreement_rate,
+       synthetic_ratio      = excluded.synthetic_ratio`,
+    [
+      cohort_window, snapshot_date, niche ?? '__all__',
+      total_outcomes ?? 0, real_outcomes ?? 0,
+      mae ?? null, accuracy_rate ?? null, avg_confidence ?? null,
+      avg_freshness_weight ?? null, disagreement_rate ?? null, synthetic_ratio ?? null,
+    ],
+  );
+}
+
+function getCohortSnapshots(db, { window, niche, days = 90 } = {}) {
+  const conditions = [`snapshot_date >= date('now', ?)`];
+  const params = [`-${days} days`];
+  if (window) { conditions.push('cohort_window = ?'); params.push(window); }
+  if (niche)  { conditions.push('niche = ?');         params.push(niche); }
+  return db.all(
+    `SELECT * FROM learning_cohort_snapshots WHERE ${conditions.join(' AND ')} ORDER BY snapshot_date ASC, cohort_window ASC`,
+    params,
+  );
+}
+
+// Disagreement stats — aggregate from prediction_feedback
+function getDisagreementStats(db, days = 90) {
+  return db.all(
+    `SELECT
+       LOWER(TRIM(COALESCE(vo.niche, 'unknown'))) AS niche,
+       COUNT(pf.id) AS total_feedback,
+       SUM(CASE WHEN pf.score_override IS NOT NULL THEN 1 ELSE 0 END) AS overrides,
+       AVG(CASE WHEN pf.score_override IS NOT NULL THEN pf.disagreement_magnitude ELSE NULL END) AS avg_disagreement,
+       MAX(CASE WHEN pf.score_override IS NOT NULL THEN pf.disagreement_magnitude ELSE NULL END) AS max_disagreement
+     FROM prediction_feedback pf
+     LEFT JOIN video_outcomes vo ON vo.prediction_id = pf.prediction_id
+     WHERE pf.created_at >= datetime('now', ?)
+     GROUP BY niche
+     ORDER BY overrides DESC`,
+    [`-${days} days`],
+  );
+}
+
+// Freshness weight distribution — bucket by weight tier
+function getFreshnessDecayAnalysis(db) {
+  const buckets = db.all(
+    `SELECT
+       CASE
+         WHEN freshness_weight >= 0.9 THEN 'fresh (>=0.9)'
+         WHEN freshness_weight >= 0.7 THEN 'recent (0.7-0.9)'
+         WHEN freshness_weight >= 0.4 THEN 'aging (0.4-0.7)'
+         WHEN freshness_weight >= 0.1 THEN 'stale (0.1-0.4)'
+         ELSE 'expired (<0.1)'
+       END AS bucket,
+       COUNT(*) AS count,
+       AVG(ABS(calibration_error)) AS avg_mae
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+     GROUP BY bucket
+     ORDER BY MIN(freshness_weight) DESC`,
+  );
+
+  const timeline = db.all(
+    `SELECT
+       strftime('%Y-W%W', COALESCE(last_refreshed_at, created_at)) AS week,
+       AVG(freshness_weight) AS avg_freshness,
+       COUNT(*) AS n
+     FROM video_outcomes
+     WHERE actual_performance_score IS NOT NULL
+       AND COALESCE(last_refreshed_at, created_at) >= datetime('now', '-90 days')
+     GROUP BY week
+     ORDER BY week ASC`,
+  );
+
+  return { buckets, timeline };
+}
+
 function updateChannelQuality(db, id, { trust_score, weight_multiplier, ignore_from_benchmarks }) {
   const fields = [];
   const vals   = [];
@@ -1101,6 +1862,7 @@ module.exports = {
   updateChannelIngestMetadata,
   markChannelIngested,
   setChannelEnabled,
+  setOwnChannel,
   upsertIngestedVideo,
   getIngestedVideosByNiche,
   getIngestedVideoCount,
@@ -1115,5 +1877,398 @@ module.exports = {
   getSnapshotRowsForAggregation,
   getAggregatableCombinations,
   deleteIngestedChannel,
+  getChannelVideoTitles,
+  getChannelIdentity,
+  saveChannelIdentity,
+  updateChannelNiche,
+  setNicheOverride,
   updateChannelQuality,
+  insertBenchmarkHistory,
+  getLatestTwoSnapshotBatches,
+  getBenchmarkHistoryByBatch,
+  getBenchmarkTimelineForCombination,
+  getLatestBenchmarkSnapshotId,
+  insertIntelligenceVersion,
+  getAllIntelligenceVersions,
+  getEvolutionAccuracyTimeline,
+  getEvolutionFPFNStats,
+  getEvolutionScoreDistribution,
+  getEvolutionSignalWeightHistory,
+  getEvolutionConfidenceBins,
+  classifyDurationBucket,
+  getBenchmarkRow,
+  insertSyntheticOutcome,
+  getCalibrationOverview,
+  getOutcomeFreshnessHistogram,
+  getNicheCalibrationDensity,
+  insertLearningSnapshot,
+  getLearningHistory,
+  getNicheLearningStats,
+  getCalibrationDistributions,
+  getLearningEvents,
+  getLatestLearningSnapshot,
+  insertConfidenceMetric,
+  insertConfidenceHistorySnapshot,
+  getConfidenceHistory,
+  getLatestConfidenceMetrics,
+  updateConfidenceHistoryCorrectness,
+  insertRoutingLog,
+  getRoutingAnalytics,
+  insertDiscoveredChannel,
+  getDiscoveredChannels,
+  getDiscoveredChannelById,
+  updateDiscoveredChannelStatus,
+  bulkUpdateDiscoveredStatus,
+  updateDiscoveredChannelIdentity,
+  getDiscoveryStats,
+  isChannelKnown,
+  getTopHooks,
+  getRisingHooks,
+  getDecliningHooks,
+  getHooksByNiche,
+  getHookSummaryStats,
+  upsertNicheReliability,
+  getAllNicheReliability,
+  upsertCohortSnapshot,
+  getCohortSnapshots,
+  getDisagreementStats,
+  getFreshnessDecayAnalysis,
+  // Phase G — Semantic Intelligence
+  getSemanticCoverage,
+  getAllSemanticClusters,
+  getSemanticCluster,
+  upsertSemanticCluster,
+  cacheSemanticQuery,
+  getSemanticQueryCache,
+  getSemanticCacheStats,
+  // Phase H — Strategy Recommendations
+  upsertStrategyRecommendation,
+  getStrategyRecommendations,
+  getStrategyRecommendationById,
+  saveRecommendationFeedback,
+  getRecommendationFeedbackStats,
+  getStrategyAnalytics,
 };
+
+// ── Discovery ─────────────────────────────────────────────────────────────────
+
+function insertDiscoveredChannel(db, row) {
+  const toJson = v => Array.isArray(v) ? JSON.stringify(v) : (v ?? null);
+  db.run(
+    `INSERT OR IGNORE INTO discovered_channels
+       (id, channel_id, title, handle, thumbnail_url, subscriber_count, video_count,
+        discovery_source, discovered_from_channel_id, discovery_run_id, discovery_depth,
+        discovery_confidence, duplicate_risk, diversity_score, titles_sample,
+        primary_niche, secondary_niche, inferred_topics, behavior_tags,
+        content_archetype, audience_style, format_type,
+        identity_strength, identity_confidence, identity_reasoning)
+     VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
+    [
+      row.id, row.channel_id, row.title ?? null, row.handle ?? null,
+      row.thumbnail_url ?? null, row.subscriber_count ?? null, row.video_count ?? null,
+      row.discovery_source ?? null, row.discovered_from_channel_id ?? null,
+      row.discovery_run_id ?? null, row.discovery_depth ?? 1,
+      row.discovery_confidence ?? 0, row.duplicate_risk ?? 'none',
+      row.diversity_score ?? 0, toJson(row.titles_sample),
+      row.primary_niche ?? null, row.secondary_niche ?? null,
+      toJson(row.inferred_topics), toJson(row.behavior_tags),
+      row.content_archetype ?? null, row.audience_style ?? null, row.format_type ?? null,
+      row.identity_strength ?? null, row.identity_confidence ?? null,
+      row.identity_reasoning ?? null,
+    ],
+  );
+}
+
+function getDiscoveredChannels(db, { status, run_id, limit = 200, offset = 0 } = {}) {
+  const conditions = [];
+  const params     = [];
+  if (status)  { conditions.push('approval_status = ?'); params.push(status); }
+  if (run_id)  { conditions.push('discovery_run_id = ?'); params.push(run_id); }
+  const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+  params.push(limit, offset);
+  return db.all(
+    `SELECT * FROM discovered_channels ${where} ORDER BY discovered_at DESC LIMIT ? OFFSET ?`,
+    params,
+  );
+}
+
+function getDiscoveredChannelById(db, id) {
+  return db.get('SELECT * FROM discovered_channels WHERE id = ?', [id]);
+}
+
+function updateDiscoveredChannelStatus(db, id, status) {
+  db.run(
+    `UPDATE discovered_channels SET approval_status = ?, reviewed_at = datetime('now') WHERE id = ?`,
+    [status, id],
+  );
+}
+
+function bulkUpdateDiscoveredStatus(db, ids, status) {
+  const placeholders = ids.map(() => '?').join(',');
+  db.run(
+    `UPDATE discovered_channels SET approval_status = ?, reviewed_at = datetime('now')
+     WHERE id IN (${placeholders})`,
+    [status, ...ids],
+  );
+}
+
+function updateDiscoveredChannelIdentity(db, id, identity) {
+  const toJson = v => Array.isArray(v) ? JSON.stringify(v) : (v ?? null);
+  db.run(
+    `UPDATE discovered_channels SET
+       primary_niche = ?, secondary_niche = ?, inferred_topics = ?, behavior_tags = ?,
+       content_archetype = ?, audience_style = ?, format_type = ?,
+       identity_strength = ?, identity_confidence = ?, identity_reasoning = ?
+     WHERE id = ?`,
+    [
+      identity.primary_niche ?? null, identity.secondary_niche ?? null,
+      toJson(identity.inferred_topics), toJson(identity.behavior_tags),
+      identity.content_archetype ?? null, identity.audience_style ?? null,
+      identity.format_type ?? null, identity.identity_strength ?? null,
+      identity.identity_confidence ?? null, identity.identity_reasoning ?? null,
+      id,
+    ],
+  );
+}
+
+function getDiscoveryStats(db) {
+  const row = db.get(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN approval_status = 'pending'  THEN 1 ELSE 0 END) AS pending,
+      SUM(CASE WHEN approval_status = 'approved' THEN 1 ELSE 0 END) AS approved,
+      SUM(CASE WHEN approval_status = 'rejected' THEN 1 ELSE 0 END) AS rejected,
+      SUM(CASE WHEN approval_status = 'ignored'  THEN 1 ELSE 0 END) AS ignored,
+      SUM(CASE WHEN duplicate_risk IN ('high','medium') THEN 1 ELSE 0 END) AS duplicates
+    FROM discovered_channels
+  `);
+  return row ?? { total: 0, pending: 0, approved: 0, rejected: 0, ignored: 0, duplicates: 0 };
+}
+
+function isChannelKnown(db, channelId) {
+  const inIngested   = db.get('SELECT 1 FROM ingested_channels   WHERE channel_id = ?', [channelId]);
+  const inDiscovered = db.get('SELECT 1 FROM discovered_channels WHERE channel_id = ?', [channelId]);
+  return { ingested: !!inIngested, discovered: !!inDiscovered };
+}
+
+// ── Semantic Intelligence (Phase G) ──────────────────────────────────────────
+
+function getSemanticCoverage(db) {
+  try {
+    const byType   = db.all(`
+      SELECT source_type, embedding_model, COUNT(*) AS count, MAX(updated_at) AS last_updated
+      FROM semantic_embeddings
+      GROUP BY source_type, embedding_model
+    `);
+    const total    = db.get(`SELECT COUNT(*) AS n FROM semantic_embeddings`)?.n ?? 0;
+    const clusters = db.get(`SELECT COUNT(*) AS n FROM semantic_clusters`)?.n ?? 0;
+    const cacheHits = db.get(`SELECT COALESCE(SUM(cache_hit_count), 0) AS n FROM semantic_query_cache`)?.n ?? 0;
+    const totalTitles = db.get(`SELECT COUNT(*) AS n FROM ingested_videos WHERE title IS NOT NULL`)?.n ?? 0;
+    return { by_type: byType, total, clusters, cache_hits: cacheHits, total_titles: totalTitles };
+  } catch (e) {
+    return { by_type: [], total: 0, clusters: 0, cache_hits: 0, total_titles: 0, error: e.message };
+  }
+}
+
+function getAllSemanticClusters(db) {
+  try {
+    return db.all(`SELECT * FROM semantic_clusters ORDER BY sample_size DESC, confidence DESC`) ?? [];
+  } catch { return []; }
+}
+
+function getSemanticCluster(db, name) {
+  try {
+    return db.get(`SELECT * FROM semantic_clusters WHERE cluster_name = ?`, [name]) ?? null;
+  } catch { return null; }
+}
+
+function upsertSemanticCluster(db, { cluster_name, cluster_centroid, sample_size, avg_vph, confidence, niches_present, dominant_hooks, trend_direction, seeded }) {
+  const toJson = v => (v == null ? null : typeof v === 'string' ? v : JSON.stringify(v));
+  db.run(`
+    INSERT INTO semantic_clusters
+      (cluster_name, cluster_centroid, sample_size, avg_vph, confidence,
+       niches_present, dominant_hooks, trend_direction, seeded, updated_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(cluster_name) DO UPDATE SET
+      cluster_centroid = excluded.cluster_centroid,
+      sample_size      = excluded.sample_size,
+      avg_vph          = excluded.avg_vph,
+      confidence       = excluded.confidence,
+      niches_present   = excluded.niches_present,
+      dominant_hooks   = excluded.dominant_hooks,
+      trend_direction  = excluded.trend_direction,
+      updated_at       = datetime('now')
+  `, [
+    cluster_name, toJson(cluster_centroid ?? {}),
+    sample_size ?? 0, avg_vph ?? null, confidence ?? 0,
+    toJson(niches_present ?? []), toJson(dominant_hooks ?? []),
+    trend_direction ?? 'stable', seeded ? 1 : 0,
+  ]);
+}
+
+function cacheSemanticQuery(db, { query_hash, source_type, provider, query_text, result_json, latency_ms }) {
+  try {
+    db.run(`
+      INSERT INTO semantic_query_cache
+        (query_hash, source_type, provider, query_text, result_json, cache_hit_count, latency_ms)
+      VALUES (?, ?, ?, ?, ?, 0, ?)
+      ON CONFLICT(query_hash, provider) DO UPDATE SET
+        result_json     = excluded.result_json,
+        cache_hit_count = cache_hit_count + 1,
+        latency_ms      = excluded.latency_ms
+    `, [query_hash, source_type ?? null, provider, query_text ?? null,
+        typeof result_json === 'string' ? result_json : JSON.stringify(result_json),
+        latency_ms ?? null]);
+  } catch (e) { console.warn('[semanticCache] upsert failed:', e.message); }
+}
+
+function getSemanticQueryCache(db, queryHash, provider) {
+  try {
+    const row = db.get(
+      `SELECT * FROM semantic_query_cache WHERE query_hash = ? AND provider = ?`,
+      [queryHash, provider],
+    );
+    if (!row) return null;
+    try { db.run(`UPDATE semantic_query_cache SET cache_hit_count = cache_hit_count + 1 WHERE id = ?`, [row.id]); } catch { /* non-fatal */ }
+    return row;
+  } catch { return null; }
+}
+
+function getSemanticCacheStats(db) {
+  try {
+    return db.get(`
+      SELECT COUNT(*) AS entries,
+             COALESCE(SUM(cache_hit_count), 0) AS total_hits,
+             ROUND(AVG(latency_ms), 1) AS avg_latency_ms,
+             MAX(created_at) AS last_cached
+      FROM semantic_query_cache
+    `) ?? { entries: 0, total_hits: 0, avg_latency_ms: null, last_cached: null };
+  } catch { return { entries: 0, total_hits: 0, avg_latency_ms: null, last_cached: null }; }
+}
+
+// ── Phase H — Strategy Recommendations ───────────────────────────────────────
+
+function upsertStrategyRecommendation(db, rec) {
+  db.run(`
+    INSERT INTO strategy_recommendations
+      (id, niche, category, priority_score, confidence, expected_impact,
+       risk_level, estimated_uplift, time_horizon, title, reasoning,
+       supporting_evidence, source_signals, rank, created_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+    ON CONFLICT(id) DO UPDATE SET
+      priority_score      = excluded.priority_score,
+      confidence          = excluded.confidence,
+      expected_impact     = excluded.expected_impact,
+      risk_level          = excluded.risk_level,
+      estimated_uplift    = excluded.estimated_uplift,
+      time_horizon        = excluded.time_horizon,
+      title               = excluded.title,
+      reasoning           = excluded.reasoning,
+      supporting_evidence = excluded.supporting_evidence,
+      source_signals      = excluded.source_signals,
+      rank                = excluded.rank,
+      created_at          = datetime('now')
+  `, [
+    rec.recommendation_id, rec.niche ?? null, rec.category,
+    rec.priority ?? 0, rec.confidence ?? 0, rec.expected_impact ?? 0,
+    rec.risk_level ?? 'medium', rec.estimated_uplift ?? null, rec.time_horizon ?? null,
+    rec.title, rec.reasoning,
+    rec.supporting_evidence != null ? JSON.stringify(rec.supporting_evidence) : null,
+    rec.source_signals != null ? JSON.stringify(rec.source_signals) : null,
+    rec.rank ?? null,
+  ]);
+}
+
+function getStrategyRecommendations(db, { niche, category, limit = 50 } = {}) {
+  const conds = [];
+  const params = [];
+  if (niche)    { conds.push('niche = ?');    params.push(niche); }
+  if (category) { conds.push('category = ?'); params.push(category); }
+  const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  params.push(limit);
+  return db.all(
+    `SELECT * FROM strategy_recommendations ${where} ORDER BY priority_score DESC LIMIT ?`,
+    params,
+  );
+}
+
+function getStrategyRecommendationById(db, id) {
+  return db.get('SELECT * FROM strategy_recommendations WHERE id = ?', [id]);
+}
+
+function saveRecommendationFeedback(db, { recommendation_id, feedback_type, notes }) {
+  db.run(
+    `INSERT INTO recommendation_feedback (recommendation_id, feedback_type, notes)
+     VALUES (?, ?, ?)`,
+    [recommendation_id, feedback_type, notes ?? null],
+  );
+  db.run(
+    `UPDATE strategy_recommendations SET feedback = ?, feedback_at = datetime('now') WHERE id = ?`,
+    [feedback_type, recommendation_id],
+  );
+}
+
+function getRecommendationFeedbackStats(db) {
+  return {
+    by_type: db.all(`
+      SELECT feedback_type, COUNT(*) AS count
+      FROM recommendation_feedback
+      GROUP BY feedback_type ORDER BY count DESC
+    `),
+    total:    db.get('SELECT COUNT(*) AS n FROM recommendation_feedback')?.n ?? 0,
+    hit_rate: (() => {
+      const s = db.get(`SELECT
+        SUM(CASE WHEN feedback_type = 'successful' THEN 1 ELSE 0 END) AS successes,
+        SUM(CASE WHEN feedback_type = 'failed'     THEN 1 ELSE 0 END) AS failures
+        FROM recommendation_feedback`) ?? {};
+      const denom = (s.successes ?? 0) + (s.failures ?? 0);
+      return denom > 0 ? Math.round((s.successes / denom) * 100) : null;
+    })(),
+    recent: db.all(`
+      SELECT rf.recommendation_id, rf.feedback_type, rf.notes, rf.created_at, sr.title, sr.category
+      FROM recommendation_feedback rf
+      LEFT JOIN strategy_recommendations sr ON sr.id = rf.recommendation_id
+      ORDER BY rf.created_at DESC LIMIT 20
+    `),
+  };
+}
+
+function getStrategyAnalytics(db) {
+  const routing = db.get(`
+    SELECT COUNT(*) AS total_requests,
+      SUM(CASE WHEN route_type = 'local'  THEN 1 ELSE 0 END) AS local_count,
+      SUM(CASE WHEN route_type = 'claude' THEN 1 ELSE 0 END) AS claude_count,
+      SUM(CASE WHEN route_type = 'hybrid' THEN 1 ELSE 0 END) AS hybrid_count,
+      COALESCE(SUM(tokens_saved_estimate), 0) AS tokens_saved
+    FROM routing_log
+    WHERE created_at >= datetime('now', '-30 days')
+  `) ?? {};
+
+  const recStats = db.get(`
+    SELECT COUNT(*) AS total,
+      ROUND(AVG(priority_score), 3) AS avg_priority,
+      ROUND(AVG(confidence), 3)     AS avg_confidence,
+      ROUND(AVG(estimated_uplift), 1) AS avg_uplift_est
+    FROM strategy_recommendations
+  `) ?? {};
+
+  const byCategory = db.all(`
+    SELECT category, COUNT(*) AS count, ROUND(AVG(priority_score), 3) AS avg_priority
+    FROM strategy_recommendations
+    GROUP BY category ORDER BY count DESC
+  `);
+
+  const hookMatrix = db.all(`
+    SELECT niche, hook_type, median_vph, hook_score, sample_count, trend_direction, confidence_score
+    FROM hook_type_performance
+    WHERE duration_bucket = 'all' AND sample_count >= 3
+    ORDER BY niche, hook_score DESC NULLS LAST
+  `);
+
+  const nicheList = db.all(`
+    SELECT DISTINCT niche FROM ingested_channels WHERE ingest_enabled = 1 ORDER BY niche
+  `).map(r => r.niche).filter(Boolean);
+
+  return { routing, recStats, byCategory, hookMatrix, nicheList };
+}
+

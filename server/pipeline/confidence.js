@@ -1,8 +1,39 @@
-function buildConfidence({ ensemble, simResult }) {
+'use strict';
+
+// ── Semantic signal annotations ────────────────────────────────────────────────
+// Adds cluster-quality warnings to reasons/warnings arrays.
+// Called for all confidence states — never changes the state, only explains it.
+function _addSemanticAnnotations(reasons, warnings, semanticSignals) {
+  if (!semanticSignals) return;
+
+  const conf = semanticSignals.semantic_confidence ?? null;
+  if (conf !== null && conf < 0.3) {
+    warnings.push(
+      `semantic confidence weak (${Math.round(conf * 100)}%) — cluster priors carry high uncertainty`,
+    );
+  }
+
+  if (semanticSignals.resolution_path === 'keyword') {
+    warnings.push('semantic cluster resolved via keyword fallback — structural similarity not verified');
+  }
+
+  const n = semanticSignals.cluster_sample_size ?? null;
+  if (n !== null && n > 0 && n < 15) {
+    warnings.push(`cluster benchmark drawn from small sample (${n} videos)`);
+  }
+}
+
+// ── buildConfidence ────────────────────────────────────────────────────────────
+//
+// @param {{ ensemble, simResult, semanticSignals? }} params
+//   semanticSignals: { semantic_confidence, resolution_path, cluster_sample_size }
+//
+// @returns {{ score, state, reasons, degraded, warnings }}
+function buildConfidence({ ensemble, simResult, semanticSignals = null }) {
   const reasons  = [];
   const warnings = [];
 
-  // ── Degraded detection (takes priority over all states) ───────────────────
+  // ── Degraded detection (takes priority) ───────────────────────────────────
   const isDegraded =
     ensemble.degraded_mode === true ||
     simResult.peer_count === 0 ||
@@ -13,6 +44,7 @@ function buildConfidence({ ensemble, simResult }) {
   if (simResult.source === 'none')  reasons.push('similarity search returned no results');
 
   if (isDegraded) {
+    _addSemanticAnnotations(reasons, warnings, semanticSignals);
     return {
       score:    ensemble.confidence ?? 0,
       state:    'degraded',
@@ -33,6 +65,8 @@ function buildConfidence({ ensemble, simResult }) {
   if (ensembleConf < 0.4) {
     reasons.push(`ensemble confidence is low (${(ensembleConf * 100).toFixed(0)}%)`);
   }
+
+  _addSemanticAnnotations(reasons, warnings, semanticSignals);
 
   const isLow = ensembleConf < 0.4 || simResult.low_confidence === true;
   if (isLow) {

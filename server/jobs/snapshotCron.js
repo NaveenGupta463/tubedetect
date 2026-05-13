@@ -2,6 +2,7 @@ const cron   = require('node-cron');
 const crypto = require('crypto');
 const { getDb }      = require('../db/init');
 const quotaGuard     = require('../services/quotaGuard');
+const { setLastRun, hoursSinceLastRun } = require('../services/jobState');
 const { fetchVideoFullBatch } = require('../services/youtubeMetrics');
 const {
   getAllIngestedVideosForSnapshot,
@@ -40,7 +41,13 @@ function computeVelocity(views, ageHours, channelSubscribers) {
   };
 }
 
+let _running = false;
+
 async function runSnapshotCycle() {
+  if (_running) {
+    console.warn('[snapshot] Already running — skipping concurrent call');
+    return { skipped: true, reason: 'already_running' };
+  }
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY) {
     console.warn('[snapshot] YT_API_KEY not set — skipping');
     return { refreshed: 0, new_snapshots: 0, pattern_result: null };
@@ -49,6 +56,8 @@ async function runSnapshotCycle() {
     console.warn('[snapshot] Quota exhausted at cycle start — aborting');
     return { refreshed: 0, new_snapshots: 0, pattern_result: null };
   }
+  _running = true;
+  try {
 
   const db      = getDb();
   const videos  = getAllIngestedVideosForSnapshot(db);
@@ -81,77 +90,102 @@ async function runSnapshotCycle() {
       continue;
     }
 
-    for (const video of batch) {
-      const fresh = videoMap.get(video.youtube_video_id);
-      if (!fresh) continue;
+    // Wrap all DB writes for this batch in one transaction — keeps WAL small
+    db.exec('BEGIN');
+    try {
+      for (const video of batch) {
+        const fresh = videoMap.get(video.youtube_video_id);
+        if (!fresh) continue;
 
-      // Update latest stats in ingested_videos
-      upsertIngestedVideo(db, {
-        youtube_video_id:    video.youtube_video_id,
-        channel_id:          video.channel_id,
-        niche:               video.niche,
-        title:               fresh.title || video.title,
-        description:         fresh.description,
-        published_at:        video.published_at,
-        duration_seconds:    fresh.duration_seconds ?? video.duration_seconds,
-        category_id:         fresh.category_id,
-        views:               fresh.views,
-        likes:               fresh.likes,
-        comments:            fresh.comments,
-        channel_subscribers: video.channel_subscribers,
-      });
-      refreshed++;
-
-      // Insert newly eligible buckets only (existing ones are protected by UNIQUE constraint)
-      const eligible  = getEligibleBuckets(video.published_at);
-      const existing  = getExistingBucketsForVideo(db, video.youtube_video_id);
-      const newBuckets = eligible.filter(b => !existing.has(b));
-
-      if (!newBuckets.length) continue;
-
-      const ageHours = (Date.now() - new Date(video.published_at).getTime()) / 3600000;
-      const vel      = computeVelocity(fresh.views, ageHours, video.channel_subscribers ?? 0);
-
-      for (const bucket of newBuckets) {
-        const prevSnap = getPreviousBucketSnapshot(db, video.youtube_video_id, bucket);
-        const prevVph  = prevSnap?.views_per_hour ?? null;
-        const velocity_acceleration = (prevVph != null && vel.views_per_hour != null)
-          ? parseFloat(((vel.views_per_hour - prevVph) / prevVph).toFixed(4))
-          : null;
-
-        insertGrowthSnapshot(db, {
-          id:                          crypto.randomUUID(),
-          video_id:                    video.youtube_video_id,
-          bucket,
-          age_hours_at_snapshot:       parseFloat(ageHours.toFixed(2)),
-          views:                       fresh.views,
-          likes:                       fresh.likes,
-          comments:                    fresh.comments,
-          views_per_hour:              vel.views_per_hour,
-          subscriber_adjusted_velocity: vel.subscriber_adjusted_velocity,
-          views_to_subscriber_ratio:   vel.views_to_subscriber_ratio,
-          velocity_acceleration,
+        upsertIngestedVideo(db, {
+          youtube_video_id:    video.youtube_video_id,
+          channel_id:          video.channel_id,
+          niche:               video.niche,
+          title:               fresh.title || video.title,
+          description:         fresh.description,
+          published_at:        video.published_at,
+          duration_seconds:    fresh.duration_seconds ?? video.duration_seconds,
+          category_id:         fresh.category_id,
+          views:               fresh.views,
+          likes:               fresh.likes,
+          comments:            fresh.comments,
+          channel_subscribers: video.channel_subscribers,
         });
-        newSnapshots++;
+        refreshed++;
+
+        const eligible   = getEligibleBuckets(video.published_at);
+        const existing   = getExistingBucketsForVideo(db, video.youtube_video_id);
+        const newBuckets = eligible.filter(b => !existing.has(b));
+        if (!newBuckets.length) continue;
+
+        const ageHours = (Date.now() - new Date(video.published_at).getTime()) / 3600000;
+        const vel      = computeVelocity(fresh.views, ageHours, video.channel_subscribers ?? 0);
+
+        for (const bucket of newBuckets) {
+          const prevSnap = getPreviousBucketSnapshot(db, video.youtube_video_id, bucket);
+          const prevVph  = prevSnap?.views_per_hour ?? null;
+          const velocity_acceleration = (prevVph != null && vel.views_per_hour != null)
+            ? parseFloat(((vel.views_per_hour - prevVph) / prevVph).toFixed(4))
+            : null;
+
+          insertGrowthSnapshot(db, {
+            id:                           crypto.randomUUID(),
+            video_id:                     video.youtube_video_id,
+            bucket,
+            age_hours_at_snapshot:        parseFloat(ageHours.toFixed(2)),
+            views:                        fresh.views,
+            likes:                        fresh.likes,
+            comments:                     fresh.comments,
+            views_per_hour:               vel.views_per_hour,
+            subscriber_adjusted_velocity: vel.subscriber_adjusted_velocity,
+            views_to_subscriber_ratio:    vel.views_to_subscriber_ratio,
+            velocity_acceleration,
+          });
+          newSnapshots++;
+        }
       }
+      db.exec('COMMIT');
+    } catch (e) {
+      db.exec('ROLLBACK');
+      console.warn('[snapshot] Batch transaction rolled back:', e.message);
     }
 
     if (i + 50 < videos.length) await sleep(300);
   }
 
-  // After refreshing, recompute niche benchmarks from all snapshot data
+  // Checkpoint before pattern mining — flushes WAL to main DB so pattern mining
+  // works on a clean, small WAL rather than reading through thousands of pending entries
+  try {
+    db.exec('PRAGMA wal_checkpoint(PASSIVE)');
+    console.log('[snapshot] WAL checkpoint complete');
+  } catch (e) {
+    console.warn('[snapshot] WAL checkpoint failed (non-fatal):', e.message);
+  }
+
+  // Recompute niche benchmarks — wrapped in one transaction for atomicity
   let patternResult = null;
   try {
+    db.exec('BEGIN');
     patternResult = runPatternMining(db);
+    db.exec('COMMIT');
+    setLastRun('recompute_patterns');
     console.log(`[snapshot] Pattern mining: combinations=${patternResult.combinations} upserted=${patternResult.upserted} skipped=${patternResult.skipped}`);
   } catch (e) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
     console.warn('[snapshot] Pattern mining failed:', e.message);
   }
 
   const quota = quotaGuard.getStats();
   console.log(`[snapshot] Cycle complete — refreshed=${refreshed} new_snapshots=${newSnapshots} quota_used=${quota.used}/${quota.cutoff}`);
+  setLastRun('snapshot_refresh');
   return { refreshed, new_snapshots: newSnapshots, pattern_result: patternResult };
+
+  } finally {
+    _running = false;
+  }
 }
+
+function isSnapshotRunning() { return _running; }
 
 function startSnapshotCron() {
   cron.schedule('0 4 * * *', async () => {
@@ -159,6 +193,14 @@ function startSnapshotCron() {
     catch (e) { console.error('[snapshot] Cron error:', e.message); }
   });
   console.log('[Snapshot Cron] Scheduled — daily at 04:00 UTC');
+
+  if (hoursSinceLastRun('snapshot_refresh') > 23) {
+    console.log('[Snapshot Cron] Missed window detected — catch-up run in 2m');
+    setTimeout(async () => {
+      try { await runSnapshotCycle(); }
+      catch (e) { console.error('[snapshot] Catch-up error:', e.message); }
+    }, 120_000);
+  }
 }
 
-module.exports = { startSnapshotCron, runSnapshotCycle };
+module.exports = { startSnapshotCron, runSnapshotCycle, isSnapshotRunning };

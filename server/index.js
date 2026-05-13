@@ -25,7 +25,11 @@ try {
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY)
     logger.warn('STARTUP', 'Feedback cron and YouTube ingestion will not run');
 
+  const path          = require('path');
   const { getDb }     = require('./db/init');
+  logger.info('STARTUP', `__dirname : ${__dirname}`);
+  logger.info('STARTUP', `cwd       : ${process.cwd()}`);
+  logger.info('STARTUP', `DB_PATH   : ${path.resolve(__dirname, 'data/scoring.db')}`);
   const analyzeRoute  = require('./routes/analyze');
   const resultsRoute  = require('./routes/results');
   const feedbackRoute = require('./routes/feedback');
@@ -40,12 +44,25 @@ try {
   const experimentsRoute        = require('./routes/experiments');
   const adminRoute              = require('./routes/admin');
   const adminIntelligenceRoute  = require('./routes/adminIntelligence');
+  const adminEvolutionRoute     = require('./routes/adminEvolution');
+  const discoveryRoute          = require('./routes/discovery');
+  const creatorIntelRoute       = require('./routes/creatorIntel');
+  const intelligenceRoute       = require('./routes/intelligence');
+  const semanticRoute           = require('./routes/semantic');
+  const strategyRoute           = require('./routes/strategy');
   const { startCron }                    = require('./jobs/feedbackCron');
   const { startIngestCron }              = require('./jobs/youtubeIngest');
   const { startRefreshCron }             = require('./jobs/refreshCron');
   const { startOutcomeRefreshJob }       = require('./jobs/outcomeRefreshJob');
   const { startHistoricalIngestCron }    = require('./jobs/historicalIngest');
   const { startSnapshotCron }            = require('./jobs/snapshotCron');
+  const { startSyntheticCalibrationCron } = require('./jobs/syntheticCalibration');
+  const { startLearningSnapshotCron }     = require('./jobs/learningSnapshotCron');
+  const { startLearningConfidenceCron }   = require('./jobs/learningConfidenceCron');
+  const { startHookAggregationCron }      = require('./jobs/aggregateHookPerformance');
+  const { startLearningCohortCron }       = require('./jobs/learningCohortCron');
+  const { startEmbeddingIngestCron }      = require('./jobs/embeddingIngestJob');
+  const { startSemanticClusteringCron }   = require('./jobs/semanticClusteringJob');
 
   const app = express();
 
@@ -68,6 +85,12 @@ try {
   app.use('/api', experimentsRoute);
   app.use('/api', adminRoute);
   app.use('/api', adminIntelligenceRoute);
+  app.use('/api', adminEvolutionRoute);
+  app.use('/api', discoveryRoute);
+  app.use('/api/intel', creatorIntelRoute);
+  app.use('/api', intelligenceRoute);
+  app.use('/api', semanticRoute);
+  app.use('/api', strategyRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
@@ -76,34 +99,34 @@ try {
     res.status(500).json({ error: err.message || 'Internal server error' });
   });
 
-  let cronStarted = false;
-  const BASE_PORT = process.env.PORT || 3002;
+  const BASE_PORT = parseInt(process.env.PORT || '3002', 10);
 
-  function startServer(port) {
-    const server = app.listen(port, () => {
-      logger.info('STARTUP', `Scoring Server listening on port ${port}`);
-      if (!cronStarted) {
-        cronStarted = true;
-        startCron();
-        startIngestCron();
-        startRefreshCron();
-        startOutcomeRefreshJob();
-        startHistoricalIngestCron();
-        startSnapshotCron();
-      }
-    });
+  const server = app.listen(BASE_PORT, () => {
+    logger.info('STARTUP', `Scoring Server listening on port ${BASE_PORT}`);
+    startCron();
+    startIngestCron();
+    startRefreshCron();
+    startOutcomeRefreshJob();
+    startHistoricalIngestCron();
+    startSnapshotCron();
+    startSyntheticCalibrationCron();
+    startLearningSnapshotCron();
+    startLearningConfidenceCron();
+    startHookAggregationCron();
+    startLearningCohortCron();
+    startEmbeddingIngestCron();
+    startSemanticClusteringCron();
+  });
 
-    server.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        logger.warn('STARTUP', `Port ${port} busy, trying ${port + 1}...`);
-        startServer(port + 1);
-      } else {
-        logger.error('STARTUP', 'Server error', err);
-      }
-    });
-  }
-
-  startServer(BASE_PORT);
+  server.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      logger.error('STARTUP', `Port ${BASE_PORT} is already in use. Kill the existing process and restart. Exiting.`);
+      process.exit(1);
+    } else {
+      logger.error('STARTUP', 'Server error', err);
+      process.exit(1);
+    }
+  });
 
 } catch (err) {
   console.error('FATAL STARTUP ERROR:', err);

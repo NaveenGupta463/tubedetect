@@ -1,6 +1,8 @@
 import { useState } from 'react';
+import { motion, AnimatePresence } from 'framer-motion';
 import { meetsRequirement } from '../utils/tierConfig';
 import Tooltip from './Tooltip';
+import { spring } from '../motion/spring';
 
 const TIER_COLORS = { free: '#666', starter: '#3b82f6', pro: '#f97316', agency: '#22c55e' };
 const TIER_LABELS = { free: 'Free', starter: 'Starter', pro: 'Pro', agency: 'Agency' };
@@ -85,6 +87,15 @@ const NAV_GROUPS = [
       {
         id: 'myanalytics', icon: '📊', label: 'My Analytics', req: 'pro', oauthRequired: true,
         desc: 'Connect Google to see private YouTube Analytics — watch time, impressions, CTR, revenue.',
+      },
+    ],
+  },
+  {
+    label: 'Creator Intelligence',
+    items: [
+      {
+        id: 'creator_intel', icon: '🧭', label: 'Niche Pulse', req: null,
+        desc: 'Niche benchmarks, research any channel, what-to-post recommendations, and rising trend signals.',
       },
     ],
   },
@@ -216,7 +227,7 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                   : item.desc;
 
                 return (
-                  <div key={item.id}>
+                  <div key={item.id} style={{ position: 'relative' }}>
                     {isLastInPillar && visibleItems.length > 1 && (
                       <div style={{ height: 1, background: '#1e1e1e', margin: '6px 0' }} />
                     )}
@@ -225,14 +236,29 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                       desc={tooltipDesc}
                       placement="right"
                     >
-                      <button
+                      <motion.button
                         className={classes}
                         onClick={() => !disabled && onNavigate(item.id)}
+                        whileHover={disabled ? undefined : { x: 2, backgroundColor: 'rgba(255,255,255,0.05)' }}
+                        whileTap={disabled ? undefined : { scale: 0.98 }}
+                        transition={spring.snappy}
                         style={isCapstone ? {
+                          position: 'relative',
                           borderColor: '#00b89444',
                           background: active ? '#00b89422' : '#00b89411',
-                        } : {}}
+                        } : { position: 'relative' }}
                       >
+                        {active && (
+                          <motion.span
+                            layoutId="sidebar-active-bar"
+                            style={{
+                              position: 'absolute', left: 0, top: 0, bottom: 0,
+                              width: 2, background: 'var(--accent)',
+                              borderRadius: '0 2px 2px 0',
+                            }}
+                            transition={spring.layout}
+                          />
+                        )}
                         <span className="nav-icon">{item.icon}</span>
                         <span className="nav-label">{item.label}</span>
 
@@ -278,7 +304,7 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                             GATE
                           </span>
                         )}
-                      </button>
+                      </motion.button>
                     </Tooltip>
                   </div>
                 );

@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import { TIER_LIMITS } from '../utils/tierConfig';
 import { formatNum } from '../utils/analysis';
 import * as scoring from '../api/scoringApi';
+import * as storage from '../utils/storage';
 
 function slimVideos(videos) {
   return (videos || []).map(v => ({
@@ -44,12 +45,25 @@ function buildPayload(channel, videos, competitors) {
   };
 }
 
-export default function SavedWorkspaces({ tier, channel, videos, competitors, onLoadWorkspace }) {
+function ScoreChip({ score, decision }) {
+  const color = score >= 75 ? '#00b894' : score >= 50 ? '#f59e0b' : '#ef4444';
+  return (
+    <span style={{ fontSize: 11, fontWeight: 700, color, background: color + '11', border: `1px solid ${color}33`, borderRadius: 5, padding: '2px 7px' }}>
+      {score}/100 {decision}
+    </span>
+  );
+}
+
+export default function SavedWorkspaces({ tier, channel, videos, competitors, onLoadWorkspace, onLoadBrief }) {
   const [workspaces, setWorkspaces] = useState([]);
   const [loading, setLoading]       = useState(true);
   const [editId, setEditId]         = useState(null);
   const [editName, setEditName]     = useState('');
   const [saved, setSaved]           = useState(false);
+  const [briefs, setBriefs]               = useState(() => storage.getBriefs());
+  const [deleteConfirm, setDeleteConfirm] = useState(null);
+
+  useEffect(() => { setBriefs(storage.getBriefs()); }, []);
 
   const limit = TIER_LIMITS[tier]?.workspaces ?? 1;
 
@@ -107,6 +121,16 @@ export default function SavedWorkspaces({ tier, channel, videos, competitors, on
     if (ws.primary) onLoadWorkspace(ws);
   };
 
+  const handleDeleteBrief = (id) => {
+    storage.deleteBrief(id);
+    setBriefs(storage.getBriefs());
+    setDeleteConfirm(null);
+  };
+
+  const handleEditBrief = (brief) => {
+    if (onLoadBrief) onLoadBrief(brief);
+  };
+
   return (
     <div className="feature-page">
       <div className="feature-header">
@@ -115,6 +139,68 @@ export default function SavedWorkspaces({ tier, channel, videos, competitors, on
           Save channel contexts and switch between them instantly.
           <span className="tip-badge">{workspaces.length} / {limit} used</span>
         </p>
+      </div>
+
+      {/* ── Video Briefs ── */}
+      <div className="chart-card" style={{ marginBottom: 24 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: briefs.length ? 16 : 0 }}>
+          <h3 className="chart-title" style={{ margin: 0 }}>&#128196; Video Briefs</h3>
+          <span style={{ fontSize: 12, color: '#555' }}>{briefs.length} saved</span>
+        </div>
+        {briefs.length === 0 ? (
+          <div style={{ padding: '24px 0', textAlign: 'center', color: '#333', fontSize: 13 }}>
+            No video briefs yet. Complete the Wizard to auto-save one here.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+            {briefs.map(brief => {
+              const p         = brief.plan || {};
+              const titleObj  = p.brief?.titles?.titles?.[p.brief?.titles?.selectedTitle ?? 0];
+              const niche     = p.brief?.niche?.niche;
+              const tone      = p.brief?.voice?.tone;
+              const score     = p.brief?.validation?.score;
+              const decision  = p.brief?.validation?.decision;
+              const stepsCount = (p.completedSteps || []).length;
+              const isConfirm  = deleteConfirm === brief.id;
+              return (
+                <div key={brief.id} style={{ background: '#111', border: '1px solid #1a1a1a', borderRadius: 12, padding: '14px 16px' }}>
+                  <div style={{ display: 'flex', alignItems: 'flex-start', gap: 12 }}>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: '#e0e0e0', marginBottom: 4, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        {brief.name || p.topic}
+                      </div>
+                      {titleObj && (
+                        <div style={{ fontSize: 12, color: '#00b894', marginBottom: 8, lineHeight: 1.4, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {titleObj.title}
+                        </div>
+                      )}
+                      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+                        {niche && <span style={{ fontSize: 11, color: '#888', background: '#1a1a1a', borderRadius: 5, padding: '2px 7px' }}>{niche}</span>}
+                        {tone  && <span style={{ fontSize: 11, color: '#c084fc', background: '#1a0a2e', border: '1px solid #6d28d922', borderRadius: 5, padding: '2px 7px' }}>{tone}</span>}
+                        {score != null && <ScoreChip score={score} decision={decision} />}
+                        <span style={{ fontSize: 11, color: '#333' }}>{stepsCount}/6 steps &middot; {new Date(brief.updatedAt).toLocaleDateString()}</span>
+                      </div>
+                    </div>
+                    <div style={{ display: 'flex', gap: 6, flexShrink: 0, alignItems: 'center' }}>
+                      {isConfirm ? (
+                        <>
+                          <span style={{ fontSize: 12, color: '#ef4444', marginRight: 4 }}>Delete?</span>
+                          <button className="btn-small btn-danger" onClick={() => handleDeleteBrief(brief.id)}>Yes</button>
+                          <button className="btn-small" onClick={() => setDeleteConfirm(null)}>No</button>
+                        </>
+                      ) : (
+                        <>
+                          <button className="btn-small btn-primary" onClick={() => handleEditBrief(brief)}>Edit</button>
+                          <button className="btn-small btn-danger" onClick={() => setDeleteConfirm(brief.id)}>Delete</button>
+                        </>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
       {channel && (

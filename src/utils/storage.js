@@ -46,3 +46,21 @@ export function removeByPrefix(prefix) {
       .forEach(k => localStorage.removeItem(k));
   } catch {}
 }
+
+// ── Video Brief CRUD (wizard output, stored locally) ──────────────────────────
+const BRIEFS_KEY = 'tubeintel_briefs_v1';
+
+export function getBriefs() {
+  return getJSON(BRIEFS_KEY) || [];
+}
+
+export function saveBrief(brief) {
+  const list = getBriefs();
+  const idx  = list.findIndex(b => b.id === brief.id);
+  if (idx >= 0) list[idx] = brief; else list.unshift(brief);
+  setJSON(BRIEFS_KEY, list);
+}
+
+export function deleteBrief(id) {
+  setJSON(BRIEFS_KEY, getBriefs().filter(b => b.id !== id));
+}

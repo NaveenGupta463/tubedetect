@@ -205,34 +205,24 @@ Return exactly 3 hooks, 3 title patterns, 3 thumbnail insights. Reference actual
   return parsed;
 }
 
-export async function analyzeVoice({ channelName, channelDescription, topTitles, sampleDescriptions }) {
-  const system = `You are a YouTube content voice analyst. Extract a creator's unique tone, style, and patterns from their existing content so a ghostwriter could match it exactly. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
+export async function analyzeVoice({ sampleText }) {
+  const system = `You are a writing style analyst. Extract a creator's unique tone, vocabulary, and style from a writing sample so a ghostwriter could match it exactly when writing a YouTube script. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
 
-  const titlesBlock = topTitles.length
-    ? topTitles.map((t, i) => `${i + 1}. ${t}`).join('\n')
-    : 'No titles available.';
+  const user = `Here is a writing sample from the creator:
 
-  const descBlock = sampleDescriptions.length
-    ? sampleDescriptions.map((d, i) => `${i + 1}. ${d}`).join('\n')
-    : '';
+---
+${sampleText}
+---
 
-  const user = `Channel: ${channelName}
-${channelDescription ? `About the channel: ${channelDescription}` : ''}
-
-Top videos by view count (titles):
-${titlesBlock}
-
-${descBlock ? `Sample video descriptions (first 200 chars each):\n${descBlock}` : ''}
-
-Deeply analyze this creator's voice. Return this JSON:
+Analyze the writing style in detail. Return this JSON:
 {
   "tone": "2-4 word tone descriptor (e.g. 'casual and motivational')",
   "personality_tags": ["tag1", "tag2", "tag3"],
-  "title_style": "specific description of how they write titles — patterns, word choices, formulas they repeat",
+  "title_style": "specific description of how they likely write titles based on their word choices",
   "common_patterns": ["writing or structural pattern 1", "pattern 2", "pattern 3"],
   "avoid": ["thing that would feel off-brand 1", "thing 2"],
-  "voice_summary": "2 sentences a ghostwriter could use as their style brief",
-  "script_style_guide": "4 specific bullet-point instructions for writing a script that sounds exactly like them — cover sentence length, energy level, vocabulary, and pacing"
+  "voice_summary": "2 sentences a ghostwriter could use as their style brief — based only on what's present in this sample",
+  "script_style_guide": "4 specific bullet-point instructions for writing a YouTube script that sounds exactly like this person — cover sentence length, energy level, vocabulary choices, and pacing"
 }`;
 
   const text = await callClaude(system, user, 1200);
@@ -241,34 +231,25 @@ Deeply analyze this creator's voice. Return this JSON:
   return parsed;
 }
 
-export async function generateScript({ topic, audience, channelName, niche, recommendedAngle, hookIdea, hookFormulas, tone, scriptStyleGuide }) {
+export async function generateScript({ topic, audience, channelName, niche, recommendedAngle, tone, scriptStyleGuide }) {
   const system = `You are a YouTube scriptwriter. Write in the creator's exact voice. Return valid JSON only — no markdown, no backticks. Start with { and end with }.`;
 
   const contextLines = [
     `Channel: ${channelName || 'unknown'}`,
     `Topic: ${topic}`,
-    audience      ? `Target audience: ${audience}`             : null,
-    niche         ? `Niche: ${niche}`                          : null,
-    recommendedAngle ? `Recommended angle (from niche research): ${recommendedAngle}` : null,
+    audience         ? `Target audience: ${audience}`                                    : null,
+    niche            ? `Niche: ${niche}`                                                 : null,
+    recommendedAngle ? `Recommended angle (from niche research): ${recommendedAngle}`   : null,
   ].filter(Boolean).join('\n');
 
   const voiceLines = [
-    tone            ? `Tone: ${tone}`                          : null,
-    scriptStyleGuide ? `Style guide:\n${scriptStyleGuide}`    : null,
+    tone             ? `Tone: ${tone}`                   : null,
+    scriptStyleGuide ? `Style guide:\n${scriptStyleGuide}` : null,
   ].filter(Boolean).join('\n');
-
-  const hookContext = hookFormulas?.length
-    ? `Winning hook formulas in this niche:\n${hookFormulas.map(h => `- ${h.formula}: "${h.template}"`).join('\n')}`
-    : '';
-
-  const hookSuggestion = hookIdea ? `Research hook suggestion: "${hookIdea}"` : '';
 
   const user = `${contextLines}
 
 ${voiceLines ? `Voice profile:\n${voiceLines}` : ''}
-
-${hookContext}
-${hookSuggestion}
 
 Write 3 different opening hooks (word-for-word, 30 seconds when spoken), a 4-5 section chapter outline with talking points, and a closing CTA. Match the creator's voice exactly.
 
@@ -1425,7 +1406,13 @@ THUMBNAIL INPUT: ${
   : formData.thumbDescription ? `Text description: "${formData.thumbDescription}"`
   : 'None provided'
 }
-
+${(formData.semanticNeighbors?.length ?? 0) >= 3 ? `
+SEMANTIC REFERENCE — real high-performing titles with structurally similar patterns (for inference only, not to copy):
+${formData.semanticNeighbors.slice(0, 5).map((n, i) =>
+  `${i + 1}. "${n.title}"${n.semantic_cluster ? ` [archetype: ${n.semantic_cluster}]` : ''}${n.niche ? ` [niche: ${n.niche}]` : ''} — structural similarity: ${Math.round((n.similarity ?? 0) * 100)}%`
+).join('\n')}
+Inference: These are observed semantic neighbors from the corpus. Factor their hook type, framing, and structural patterns into hookPotential, titleStrength, and competitorIntelligence. Treat as probabilistic signal — not causal evidence. Do not name them directly.
+` : ''}
 Respond ONLY with this JSON (no markdown, start with {, end with }):
 {
   "viralScore": 72,

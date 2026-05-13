@@ -15,7 +15,92 @@ const { capturePrediction }    = require('../services/outcomeTracker');
 const scoreCache               = require('../services/scoreCache');
 const logger                   = require('../utils/logger');
 
+const { classifyHookTypeMulti } = require('../services/hookClassifier');
+
 const router = express.Router();
+
+const SEED_CENTROID_TEXTS = {
+  curiosity:      'what happens why nobody knows secret hidden truth revealed real reason behind',
+  fear:           'stop avoid danger warning biggest mistake ruining destroying never should',
+  authority:      'doctor expert scientist proven research study reveals according science facts',
+  controversy:    'controversial debate unpopular opinion wrong everyone disagrees truth exposed',
+  transformation: 'before after transformation journey changed completely progress results weeks months',
+  tutorial:       'how to learn step guide beginner complete walkthrough tutorial course explained',
+  urgency:        'now today immediately before too late last chance hurry urgent this week',
+  challenge:      'challenge days week month impossible extreme hardest attempted tried result',
+  myth:           'myth reality truth wrong misconception debunked actually really not true',
+  reaction:       'react reaction watching first time trying unboxing reviewing response',
+  comparison:     'vs versus better worse comparison which best choose between two options',
+  list:           'top reasons ways things tips signs facts mistakes habits steps tricks',
+  mistake:        'mistake error wrong fail avoid common biggest never make this again',
+  secret:         'secret nobody tells hidden truth unknown underground forbidden revealed',
+};
+
+function applySemanticBoundary(db, cluster, confidence, source) {
+  const benchmark = getSemanticBenchmark(db, cluster);
+  const cohesionDecay = benchmark?.cohesion_tier === 'weak'     ? 0.75
+                      : benchmark?.cohesion_tier === 'moderate'  ? 0.90
+                      : 1.0;
+  return {
+    cluster,
+    confidence:          parseFloat((confidence * cohesionDecay).toFixed(3)),
+    benchmark,
+    source,
+    secondary_archetypes: [],
+  };
+}
+
+function resolveSemanticCluster(db, title, youtube_video_id) {
+  try {
+    if (youtube_video_id) {
+      const row = db.get(
+        `SELECT semantic_cluster, semantic_confidence FROM semantic_embeddings
+         WHERE source_id = ? AND source_type = 'title_dna' ORDER BY created_at DESC LIMIT 1`,
+        [youtube_video_id],
+      );
+      if (row?.semantic_cluster) {
+        return applySemanticBoundary(db, row.semantic_cluster, row.semantic_confidence ?? 0.4, 'corpus');
+      }
+    }
+    const cls = classifyHookTypeMulti(title);
+    if (cls.primary_hook && cls.primary_hook !== 'unknown') {
+      const conf = parseFloat(((cls.probabilities?.[cls.primary_hook] ?? 0.4) * 0.7).toFixed(3));
+      return applySemanticBoundary(db, cls.primary_hook, conf, 'classifier');
+    }
+    const tl = title.toLowerCase();
+    let best = null, bestScore = 0;
+    for (const [cluster, text] of Object.entries(SEED_CENTROID_TEXTS)) {
+      const score = text.split(/\s+/).filter(t => t.length > 3).reduce((s, t) => s + (tl.includes(t) ? 1 : 0), 0);
+      if (score > bestScore) { bestScore = score; best = cluster; }
+    }
+    if (bestScore > 0) {
+      const conf = parseFloat(Math.min(0.28, 0.07 + bestScore * 0.04).toFixed(3));
+      return applySemanticBoundary(db, best, conf, 'keyword');
+    }
+    return null;
+  } catch { return null; }
+}
+
+function getSemanticBenchmark(db, clusterName) {
+  try {
+    const row = db.get(
+      `SELECT avg_vph, sample_size, confidence AS cluster_confidence, trend_direction,
+              cohesion_score, cohesion_tier
+       FROM semantic_clusters WHERE cluster_name = ? AND sample_size > 10`,
+      [clusterName],
+    );
+    if (!row) return null;
+    return {
+      cluster:            clusterName,
+      avg_vph:            row.avg_vph,
+      sample_size:        row.sample_size,
+      cluster_confidence: row.cluster_confidence,
+      trend:              row.trend_direction,
+      cohesion_score:     row.cohesion_score ?? null,
+      cohesion_tier:      row.cohesion_tier  ?? null,
+    };
+  } catch { return null; }
+}
 
 function readActiveWeights(db) {
   try {
@@ -58,6 +143,7 @@ router.post('/analyze', async (req, res) => {
 
     const db = getDb();
     const now = new Date().toISOString();
+    const semantic = resolveSemanticCluster(db, title, youtube_video_id);
 
     // 1. Read adaptive scoring weights (before cache key construction)
     const { activeEnsembleWeights, activeNicheBiasWeights } = readActiveWeights(db);
@@ -91,17 +177,18 @@ router.post('/analyze', async (req, res) => {
     const cacheKey    = scoreCache.makeKey(title, hook, niche);
     const cachedScore = scoreCache.get(cacheKey);
 
-    // ── NEW PIPELINE PATH (USE_NEW_PIPELINE=1) ────────────────────────────────
+    // ── NEW PIPELINE PATH (default — disable with USE_LEGACY_PIPELINE=1) ────────
     if (isNewPipelineEnabled()) {
       if (cachedScore && cachedScore._pipeline) {
         // Cache hit on pipeline path — result already has _pipeline shape
         console.log('[analyze][pipeline] cache hit:', cacheKey);
         const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
-          ml_score:         cachedScore.ml_score,
-          similarity_score: cachedScore.peer_context_score,
-          final_score:      cachedScore.final_score,
-          confidence:       cachedScore.confidence,
-          ensemble_weights: cachedScore.ensemble_weights ?? {},
+          ml_score:              cachedScore.ml_score,
+          similarity_score:      cachedScore.peer_context_score,
+          final_score:           cachedScore.final_score,
+          confidence:            cachedScore.confidence,
+          ensemble_weights:      cachedScore.ensemble_weights ?? {},
+          feature_snapshot_json: JSON.stringify(features),
         });
         setImmediate(() => {
           try {
@@ -118,7 +205,7 @@ router.post('/analyze', async (req, res) => {
             });
             insertPredictionFeedbackSnapshot(db, snap);
           } catch (e) {
-            logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+            logger.error('SNAPSHOT', `snapshot capture failed predictionId=${predictionId} videoId=${videoId}: ${e.message}`);
           }
         });
         const { ensemble_weights: _ew, ...responseFields } = cachedScore;
@@ -126,23 +213,28 @@ router.post('/analyze', async (req, res) => {
           video_id:      videoId,
           prediction_id: predictionId,
           ...responseFields,
-          _pipeline: { ...cachedScore._pipeline, cached: true },
-          cached: true,
+          _pipeline:           { ...cachedScore._pipeline, cached: true },
+          cached:              true,
+          semantic_cluster:    semantic?.cluster    ?? null,
+          semantic_confidence: semantic?.confidence ?? null,
+          semantic_benchmark:  semantic?.benchmark  ?? null,
+          semantic_source:     semantic?.source     ?? null,
         });
       }
 
       // Cache miss on pipeline path
-      const result = await orchestrator.run({ videoId, title, hook, niche, features, activeEnsembleWeights, activeNicheBiasWeights });
+      const result = await orchestrator.run({ videoId, title, hook, niche, features, activeEnsembleWeights, activeNicheBiasWeights, semanticCluster: semantic });
       scoreCache.set(cacheKey, result);
 
       console.log(`[analyze][pipeline] final_score=${result.final_score} confidence=${result._pipeline.confidence.state} peers=${result.peer_count}`);
 
       const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
-        ml_score:         result.ml_score,
-        similarity_score: result.peer_context_score,
-        final_score:      result.final_score,
-        confidence:       result.confidence,
-        ensemble_weights: result.ensemble_weights ?? {},
+        ml_score:              result.ml_score,
+        similarity_score:      result.peer_context_score,
+        final_score:           result.final_score,
+        confidence:            result.confidence,
+        ensemble_weights:      result.ensemble_weights ?? {},
+        feature_snapshot_json: JSON.stringify(features),
       });
 
       setImmediate(() => {
@@ -160,7 +252,7 @@ router.post('/analyze', async (req, res) => {
           });
           insertPredictionFeedbackSnapshot(db, snap);
         } catch (e) {
-          logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+          logger.error('SNAPSHOT', `snapshot capture failed predictionId=${predictionId} videoId=${videoId}: ${e.message}`);
         }
       });
 
@@ -169,14 +261,18 @@ router.post('/analyze', async (req, res) => {
         video_id:      videoId,
         prediction_id: predictionId,
         ...responseFields,
-        cached: false,
+        cached:              false,
+        semantic_cluster:    semantic?.cluster    ?? null,
+        semantic_confidence: semantic?.confidence ?? null,
+        semantic_benchmark:  semantic?.benchmark  ?? null,
+        semantic_source:     semantic?.source     ?? null,
         ...(result.low_confidence && {
           message: 'Accuracy improves as more videos are analyzed in this niche',
         }),
       });
     }
 
-    // ── EXISTING PIPELINE PATH (default) ─────────────────────────────────────
+    // ── LEGACY PIPELINE PATH (USE_LEGACY_PIPELINE=1 only) ────────────────────
     let simResult, ensemble;
 
     if (cachedScore) {
@@ -223,11 +319,12 @@ router.post('/analyze', async (req, res) => {
 
     // 7. Persist prediction
     const { lastInsertRowid: predictionId } = insertPrediction(db, videoId, {
-      ml_score:          ensemble.ml_score,
-      similarity_score:  simResult.peer_context_score,
-      final_score:       ensemble.final_score,
-      confidence:        ensemble.confidence,
-      ensemble_weights:  ensemble.ensemble_weights,
+      ml_score:              ensemble.ml_score,
+      similarity_score:      simResult.peer_context_score,
+      final_score:           ensemble.final_score,
+      confidence:            ensemble.confidence,
+      ensemble_weights:      ensemble.ensemble_weights,
+      feature_snapshot_json: JSON.stringify(features),
     });
 
     setImmediate(() => {
@@ -245,25 +342,29 @@ router.post('/analyze', async (req, res) => {
         });
         insertPredictionFeedbackSnapshot(db, snap);
       } catch (e) {
-        logger.error('SNAPSHOT', `capturePrediction failed: ${e.message}`);
+        logger.error('SNAPSHOT', `snapshot capture failed predictionId=${predictionId} videoId=${videoId}: ${e.message}`);
       }
     });
 
     res.json({
-      video_id:           videoId,
-      prediction_id:      predictionId,
-      final_score:        ensemble.final_score,
-      ml_score:           ensemble.ml_score,
-      rule_based_score:   ensemble.rule_based_score,
-      peer_context_score: simResult.peer_context_score,
-      peer_count:         simResult.peer_count,
-      confidence:         ensemble.confidence,
-      scoring_source:     ensemble.scoring_source,
-      similar_videos:     simResult.matches,
-      data_source:        simResult.source,
-      degraded_mode:      ensemble.degraded_mode,
-      low_confidence:     simResult.low_confidence,
-      cached:             !!cachedScore,
+      video_id:            videoId,
+      prediction_id:       predictionId,
+      final_score:         ensemble.final_score,
+      ml_score:            ensemble.ml_score,
+      rule_based_score:    ensemble.rule_based_score,
+      peer_context_score:  simResult.peer_context_score,
+      peer_count:          simResult.peer_count,
+      confidence:          ensemble.confidence,
+      scoring_source:      ensemble.scoring_source,
+      similar_videos:      simResult.matches,
+      data_source:         simResult.source,
+      degraded_mode:       ensemble.degraded_mode,
+      low_confidence:      simResult.low_confidence,
+      cached:              !!cachedScore,
+      semantic_cluster:    semantic?.cluster    ?? null,
+      semantic_confidence: semantic?.confidence ?? null,
+      semantic_benchmark:  semantic?.benchmark  ?? null,
+      semantic_source:     semantic?.source     ?? null,
       ...(simResult.low_confidence && {
         message: 'Accuracy improves as more videos are analyzed in this niche',
       }),

@@ -4,6 +4,7 @@ const {
   getSnapshotRowsForAggregation,
   upsertNicheBenchmark,
   getAllNicheBenchmarks,
+  insertBenchmarkHistory,
 } = require('../db/queries');
 
 const MIN_SAMPLE        = 5;
@@ -43,7 +44,9 @@ function roundStat(v) {
  * Pure SQL reads + in-process percentile computation.
  */
 function runPatternMining(db) {
-  const combinations = getAggregatableCombinations(db, MIN_SAMPLE);
+  const combinations      = getAggregatableCombinations(db, MIN_SAMPLE);
+  const snapshot_batch_id = crypto.randomUUID();
+  const snapshot_at       = new Date().toISOString();
   let upserted = 0, skipped = 0;
 
   for (const { niche, bucket } of combinations) {
@@ -79,8 +82,7 @@ function runPatternMining(db) {
         ? accels.sort((a, b) => a - b)[Math.floor(accels.length * 0.5)]
         : null;
 
-      upsertNicheBenchmark(db, {
-        id:             crypto.randomUUID(),
+      const benchRow = {
         niche,
         bucket,
         duration_bucket: durBucket,
@@ -94,12 +96,19 @@ function runPatternMining(db) {
         median_sav:      roundStat(medSav),
         median_vsr:      roundStat(medVsr),
         median_accel:    roundStat(medAccel),
+      };
+      upsertNicheBenchmark(db, { id: crypto.randomUUID(), ...benchRow });
+      insertBenchmarkHistory(db, {
+        id:               crypto.randomUUID(),
+        snapshot_batch_id,
+        snapshot_at,
+        ...benchRow,
       });
       upserted++;
     }
   }
 
-  return { combinations: combinations.length, upserted, skipped };
+  return { combinations: combinations.length, upserted, skipped, snapshot_batch_id };
 }
 
 /**

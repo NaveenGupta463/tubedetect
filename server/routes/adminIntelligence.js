@@ -7,15 +7,21 @@ const {
   upsertIngestedChannel,
   setChannelEnabled,
   deleteIngestedChannel,
+  updateChannelNiche,
   updateChannelQuality,
   getIngestedVideoCount,
   getSnapshotCountByBucket,
   getAllNicheBenchmarks,
   getNicheBenchmarksByNiche,
+  getChannelVideoTitles,
+  getChannelIdentity,
+  saveChannelIdentity,
 } = require('../db/queries');
+const { classifyChannel } = require('../services/channelClassifier');
 const { runHistoricalIngestCycle } = require('../jobs/historicalIngest');
-const { runSnapshotCycle }         = require('../jobs/snapshotCron');
+const { runSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
 const { runPatternMining }         = require('../services/patternMiner');
+const { getLastRun }               = require('../services/jobState');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
@@ -178,8 +184,9 @@ router.post('/admin/intelligence/channels/bulk', async (req, res) => {
 router.patch('/admin/intelligence/channels/:id', (req, res) => {
   try {
     const db = getDb();
-    const { ingest_enabled, trust_score, weight_multiplier, ignore_from_benchmarks } = req.body ?? {};
+    const { ingest_enabled, trust_score, weight_multiplier, ignore_from_benchmarks, niche } = req.body ?? {};
     if (ingest_enabled != null) setChannelEnabled(db, req.params.id, ingest_enabled);
+    if (niche?.trim()) updateChannelNiche(db, req.params.id, niche.trim());
     if (trust_score != null || weight_multiplier != null || ignore_from_benchmarks != null) {
       updateChannelQuality(db, req.params.id, { trust_score, weight_multiplier, ignore_from_benchmarks });
     }
@@ -217,17 +224,19 @@ router.post('/admin/intelligence/ingest/trigger', async (req, res) => {
 });
 
 // POST /api/admin/intelligence/snapshot/trigger
-// Manually trigger a snapshot + pattern mining cycle.
-router.post('/admin/intelligence/snapshot/trigger', async (req, res) => {
-  try {
-    if (!quotaGuard.quotaAvailable()) {
-      return res.status(429).json({ error: 'quota exhausted — try again after midnight Pacific' });
-    }
-    const result = await runSnapshotCycle();
-    res.json({ ok: true, result });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
+// Fires snapshot cycle in background and returns immediately.
+router.post('/admin/intelligence/snapshot/trigger', (req, res) => {
+  if (!quotaGuard.quotaAvailable()) {
+    return res.status(429).json({ error: 'quota exhausted — try again after midnight Pacific' });
   }
+  if (isSnapshotRunning()) {
+    return res.status(409).json({ error: 'Snapshot already running', running: true });
+  }
+  setImmediate(async () => {
+    try { await runSnapshotCycle(); }
+    catch (e) { console.error('[snapshot] Manual trigger error:', e.message); }
+  });
+  res.json({ ok: true, started: true, message: 'Snapshot running in background — check server logs for progress' });
 });
 
 // POST /api/admin/intelligence/patterns/recompute
@@ -284,6 +293,12 @@ router.get('/admin/intelligence/status', (_req, res) => {
       snapshots: {
         by_bucket: getSnapshotCountByBucket(db),
       },
+      job_last_run: {
+        historical_ingest:  getLastRun('historical_ingest')?.toISOString()  ?? null,
+        snapshot_refresh:   getLastRun('snapshot_refresh')?.toISOString()   ?? null,
+        recompute_patterns: getLastRun('recompute_patterns')?.toISOString() ?? null,
+        auto_calibrate:     getLastRun('auto_calibrate')?.toISOString()     ?? null,
+      },
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -308,6 +323,133 @@ router.get('/admin/intelligence/patterns', (req, res) => {
 // GET /api/admin/intelligence/quota
 router.get('/admin/intelligence/quota', (_req, res) => {
   res.json(quotaGuard.getStats());
+});
+
+// POST /api/admin/intelligence/channels/:id/detect-identity
+// Uses OpenAI gpt-4.1-mini to classify the channel from its ingested video titles.
+router.post('/admin/intelligence/channels/:id/detect-identity', async (req, res) => {
+  try {
+    const db      = getDb();
+    const channel = getChannelIdentity(db, req.params.id);
+    if (!channel) return res.status(404).json({ error: 'channel not found' });
+
+    let titles = getChannelVideoTitles(db, channel.channel_id, 50);
+
+    if (titles.length === 0) {
+      const key = getYtKey();
+      if (!key) return res.status(400).json({ error: 'No ingested videos and YT_API_KEY not set — cannot fetch titles' });
+      const url  = `${YT_BASE}/search?part=snippet&channelId=${encodeURIComponent(channel.channel_id)}&maxResults=25&order=date&type=video&key=${key}`;
+      const r    = await fetch(url);
+      const data = await r.json();
+      if (!r.ok) return res.status(502).json({ error: data?.error?.message || 'YouTube API error' });
+      titles = (data.items ?? []).map(i => i.snippet?.title).filter(Boolean);
+      quotaGuard.recordUsage(100, 'ingest');
+    }
+
+    if (titles.length === 0) return res.status(400).json({ error: 'No titles found for this channel' });
+
+    const result = await classifyChannel({ channelName: channel.channel_name, titles });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+function extractIdentityBody(body) {
+  const {
+    primary_niche, secondary_niche, behavior_tags, format_type, audience_style,
+    identity_confidence, identity_reasoning, identity_strength,
+    inferred_topics, content_archetype,
+  } = body ?? {};
+
+  const toArr = v => Array.isArray(v) ? v : (typeof v === 'string' ? (() => { try { return JSON.parse(v); } catch { return []; } })() : []);
+
+  return {
+    primary_niche,
+    secondary_niche:           secondary_niche ?? null,
+    behavior_tags:             toArr(behavior_tags),
+    format_type:               format_type ?? null,
+    audience_style:            audience_style ?? null,
+    identity_confidence:       identity_confidence ?? null,
+    identity_reasoning:        identity_reasoning ?? null,
+    identity_last_detected_at: new Date().toISOString(),
+    identity_strength:         identity_strength ?? null,
+    inferred_topics:           toArr(inferred_topics),
+    content_archetype:         content_archetype ?? null,
+  };
+}
+
+// POST /api/admin/intelligence/channels/:id/save-identity
+// Persists identity metadata. Silently syncs primary_niche → niche column.
+router.post('/admin/intelligence/channels/:id/save-identity', (req, res) => {
+  try {
+    const db = getDb();
+    const fields = extractIdentityBody(req.body);
+    if (!fields.primary_niche) return res.status(400).json({ error: 'primary_niche is required' });
+    saveChannelIdentity(db, req.params.id, { ...fields, identity_source: 'ai_detected' });
+    updateChannelNiche(db, req.params.id, fields.primary_niche);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/admin/intelligence/channels/:id/save-identity-manual
+// Operator manually overrides identity. Sets identity_source = 'operator_modified'.
+router.post('/admin/intelligence/channels/:id/save-identity-manual', (req, res) => {
+  try {
+    const db = getDb();
+    const fields = extractIdentityBody(req.body);
+    if (!fields.primary_niche) return res.status(400).json({ error: 'primary_niche is required' });
+    saveChannelIdentity(db, req.params.id, { ...fields, identity_source: 'operator_modified' });
+    updateChannelNiche(db, req.params.id, fields.primary_niche);
+    res.json({ ok: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/admin/intelligence/channels/bulk-detect-identity
+// Auto-detects and saves niche + identity for all channels where identity_last_detected_at IS NULL.
+// Skips channels that have already been auto-detected. Sequential to avoid rate-limiting.
+router.post('/admin/intelligence/channels/bulk-detect-identity', async (req, res) => {
+  try {
+    const db       = getDb();
+    const all      = getAllIngestedChannels(db);
+    const pending  = all.filter(ch => !ch.identity_last_detected_at);
+
+    if (!pending.length) {
+      return res.json({ ok: true, detected: 0, failed: 0, errors: [], message: 'All channels already detected.' });
+    }
+
+    let detected = 0;
+    const errors = [];
+
+    for (const ch of pending) {
+      try {
+        const titles = getChannelVideoTitles(db, ch.channel_id, 50);
+
+        // Never call YouTube API in bulk — only use locally ingested titles.
+        // Channels with no local titles haven't been ingested yet; skip them.
+        if (!titles.length) { errors.push({ channel_id: ch.channel_id, channel_name: ch.channel_name, reason: 'no ingested titles yet — run ingest first' }); continue; }
+
+        const result = await classifyChannel({ channelName: ch.channel_name, titles });
+        saveChannelIdentity(db, ch.id, {
+          ...result,
+          identity_last_detected_at: new Date().toISOString(),
+          identity_source: 'ai_detected',
+        });
+        if (result.primary_niche) updateChannelNiche(db, ch.id, result.primary_niche);
+        detected++;
+      } catch (e) {
+        errors.push({ channel_id: ch.channel_id, channel_name: ch.channel_name, reason: e.message });
+      }
+    }
+
+    res.json({ ok: true, detected, failed: errors.length, total_pending: pending.length, errors });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 module.exports = router;

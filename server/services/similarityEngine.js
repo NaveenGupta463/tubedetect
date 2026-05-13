@@ -1,3 +1,5 @@
+'use strict';
+
 const OpenAI    = require('openai');
 const { getDb } = require('../db/init');
 
@@ -5,6 +7,13 @@ const EMBEDDING_MODEL = 'text-embedding-3-small';
 const WINDOW_LIMIT    = 2000;
 const MIN_MATCHES     = 3;
 const DECAY_HALF_LIFE = 30;
+
+// Phase 7 — Deprecation threshold.
+// When the semantic corpus (semantic_embeddings, source_type='title_dna') reaches
+// this size, writes to the legacy embeddings table emit a deprecation warning.
+// Remove writes entirely once parallel-run validation confirms peer_context_score
+// distributions are stable using the semantic corpus path.
+const EMBEDDINGS_DEPRECATION_THRESHOLD = 500;
 
 let _openai = null;
 function getClient() {
@@ -173,6 +182,22 @@ async function processEmbeddingAndSearch(videoId, title, hook, niche) {
   if (hasEmbeddingSupport()) {
     try {
       const vector = await embed(`${title} ${hook} ${niche}`);
+
+      // Phase 7 deprecation warning: log when semantic corpus is large enough
+      // that we should switch to semantic_embeddings as the canonical source.
+      try {
+        const cov = db.get(
+          "SELECT COUNT(*) as cnt FROM semantic_embeddings WHERE source_type = 'title_dna'",
+        );
+        if ((cov?.cnt ?? 0) >= EMBEDDINGS_DEPRECATION_THRESHOLD) {
+          console.warn(
+            `[similarityEngine] DEPRECATED: Writing to legacy embeddings table ` +
+            `(semantic corpus has ${cov.cnt} vectors). ` +
+            `Migrate peer lookup to semantic_embeddings after parallel-run validation.`,
+          );
+        }
+      } catch {}
+
       db.run(
         'INSERT OR REPLACE INTO embeddings (video_id, vector, created_at) VALUES (?, ?, ?)',
         [videoId, JSON.stringify(vector), new Date().toISOString()],
