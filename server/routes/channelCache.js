@@ -167,13 +167,15 @@ router.get('/channel-cache/channel', async (req, res) => {
     // 3. Handle miss — try fuzzy name match against ingested_channels
     //    Normalise both sides: remove non-alphanum, lowercase
     //    e.g. handle "GrahamStephan" matches channel_name "Graham Stephan"
+    //    IMPORTANT: skip channels whose name normalises to "" (non-ASCII/Korean etc.)
+    //    to avoid matching every handle via startsWith("").
     if (handle) {
       const norm = handle.toLowerCase().replace(/[^a-z0-9]/g, '');
       const all  = db.all('SELECT * FROM ingested_channels WHERE ingest_enabled = 1');
-      const match = all.find(ic => {
+      const match = norm ? all.find(ic => {
         const n = (ic.channel_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-        return n === norm || n.startsWith(norm) || norm.startsWith(n);
-      });
+        return n && n === norm;
+      }) : null;
       if (match) {
         const synthetic = buildSyntheticChannel(match);
         refreshChannelFromYT(db, match.channel_id).catch(() => {});
