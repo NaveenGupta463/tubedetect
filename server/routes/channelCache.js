@@ -14,25 +14,169 @@ const {
   updateVideoCacheStats,
 } = require('../db/queries');
 
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function secondsToISO(secs) {
+  if (!secs) return 'PT0S';
+  const h = Math.floor(secs / 3600);
+  const m = Math.floor((secs % 3600) / 60);
+  const s = secs % 60;
+  let d = 'PT';
+  if (h) d += `${h}H`;
+  if (m) d += `${m}M`;
+  if (s || (!h && !m)) d += `${s}S`;
+  return d;
+}
+
+function buildSyntheticChannel(ic) {
+  return {
+    id: ic.channel_id,
+    snippet: {
+      title:        ic.channel_name || ic.channel_id,
+      description:  '',
+      customUrl:    '',
+      publishedAt:  '',
+      thumbnails: {
+        default: { url: '' },
+        medium:  { url: '' },
+        high:    { url: '' },
+      },
+    },
+    statistics: {
+      subscriberCount:     String(ic.channel_subscribers || 0),
+      videoCount:          '0',
+      viewCount:           '0',
+      hiddenSubscriberCount: false,
+    },
+    contentDetails: {
+      relatedPlaylists: {
+        uploads: ic.uploads_playlist_id || '',
+      },
+    },
+    brandingSettings: { channel: {}, image: {} },
+  };
+}
+
+function buildSyntheticVideo(iv) {
+  const vid = iv.youtube_video_id;
+  return {
+    id: vid,
+    snippet: {
+      title:       iv.title,
+      description: iv.description || '',
+      publishedAt: iv.published_at || '',
+      channelId:   iv.channel_id,
+      channelTitle: '',
+      thumbnails: {
+        default: { url: `https://i.ytimg.com/vi/${vid}/default.jpg` },
+        medium:  { url: `https://i.ytimg.com/vi/${vid}/mqdefault.jpg` },
+        high:    { url: `https://i.ytimg.com/vi/${vid}/hqdefault.jpg` },
+        maxres:  { url: `https://i.ytimg.com/vi/${vid}/maxresdefault.jpg` },
+      },
+      categoryId: iv.category_id || '',
+      tags: [],
+    },
+    statistics: {
+      viewCount:    String(iv.views    || 0),
+      likeCount:    String(iv.likes    || 0),
+      commentCount: String(iv.comments || 0),
+      favoriteCount: '0',
+    },
+    contentDetails: {
+      duration:   secondsToISO(iv.duration_seconds),
+      definition: 'hd',
+    },
+  };
+}
+
+// Fetch real channel data from YouTube and store in channel_cache (1 quota unit).
+async function refreshChannelFromYT(db, channelId) {
+  const apiKey = process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return;
+  try {
+    const url  = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings,contentDetails&id=${encodeURIComponent(channelId)}&key=${apiKey}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const item = data.items?.[0];
+    if (!item) return;
+    upsertChannelCache(db, item);
+    console.log(`[channel-cache] real data refreshed for ${channelId}`);
+  } catch (e) {
+    console.warn('[channel-cache] refreshChannelFromYT error:', e.message);
+  }
+}
+
+// One call per 50 channels — populate channel_cache for all ingested channels
+// not yet cached. Triggered lazily on first handle miss.
+let populateRunning = false;
+async function populateUncachedChannels(db) {
+  if (populateRunning) return;
+  const apiKey = process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return;
+  populateRunning = true;
+  try {
+    const uncached = db.all(`
+      SELECT ic.channel_id FROM ingested_channels ic
+      WHERE ic.ingest_enabled = 1
+        AND NOT EXISTS (SELECT 1 FROM channel_cache cc WHERE cc.channel_id = ic.channel_id)
+      LIMIT 50
+    `);
+    if (!uncached.length) return;
+    const ids  = uncached.map(r => r.channel_id).join(',');
+    const url  = `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,brandingSettings,contentDetails&id=${encodeURIComponent(ids)}&key=${apiKey}`;
+    const resp = await fetch(url);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    for (const item of (data.items || [])) upsertChannelCache(db, item);
+    console.log(`[channel-cache] bulk-populated ${(data.items || []).length} ingested channels`);
+  } catch (e) {
+    console.warn('[channel-cache] populateUncachedChannels error:', e.message);
+  } finally {
+    populateRunning = false;
+  }
+}
+
 // ── GET channel by id or handle ───────────────────────────────────────────────
 // Query params: ?id=UCxxx  OR  ?handle=mkbhd
+// Falls back to ingested_channels if channel_cache misses.
 
-router.get('/channel-cache/channel', (req, res) => {
+router.get('/channel-cache/channel', async (req, res) => {
   try {
     const db = getDb();
     const { id, handle } = req.query;
+
+    // 1. Check channel_cache (real YouTube data)
     let channel = null;
     if (id)             channel = getChannelCache(db, id);
     if (!channel && handle) channel = getChannelCacheByHandle(db, handle);
-    if (!channel) return res.status(404).json({ hit: false });
-    res.json({ hit: true, channel, cache_source: 'channel_cache' });
+    if (channel) return res.json({ hit: true, channel, cache_source: 'channel_cache' });
+
+    // 2. Fallback: check ingested_channels by channel_id
+    if (id) {
+      const ic = db.get('SELECT * FROM ingested_channels WHERE channel_id = ?', [id]);
+      if (ic) {
+        const synthetic = buildSyntheticChannel(ic);
+        // Background: fetch real data (thumbnail, handle, accurate stats) and cache it
+        refreshChannelFromYT(db, ic.channel_id).catch(() => {});
+        console.log(`[channel-cache] ingested_channels hit for ${id} (synthetic)`);
+        return res.json({ hit: true, channel: synthetic, cache_source: 'ingested_channels' });
+      }
+    }
+
+    // 3. Handle miss — kick off background population for all uncached ingested channels
+    //    so the next search (once quota recovers) will be a real hit
+    if (handle) {
+      populateUncachedChannels(db).catch(() => {});
+    }
+
+    res.status(404).json({ hit: false });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // ── POST store channel ────────────────────────────────────────────────────────
-// Body: { channel: <YouTube channels.list item> }
 
 router.post('/channel-cache/channel', (req, res) => {
   try {
@@ -47,20 +191,37 @@ router.post('/channel-cache/channel', (req, res) => {
 });
 
 // ── GET videos for channel ────────────────────────────────────────────────────
+// Falls back to ingested_videos if video_cache misses.
 
 router.get('/channel-cache/channel/:channelId/videos', (req, res) => {
   try {
-    const db     = getDb();
-    const videos = getVideoCache(db, req.params.channelId);
-    if (!videos.length) return res.status(404).json({ hit: false });
-    res.json({ hit: true, videos, count: videos.length, cache_source: 'video_cache' });
+    const db        = getDb();
+    const channelId = req.params.channelId;
+
+    // 1. Check video_cache (real YouTube data)
+    const videos = getVideoCache(db, channelId);
+    if (videos.length) {
+      return res.json({ hit: true, videos, count: videos.length, cache_source: 'video_cache' });
+    }
+
+    // 2. Fallback: check ingested_videos
+    const ingested = db.all(
+      'SELECT * FROM ingested_videos WHERE channel_id = ? ORDER BY published_at DESC LIMIT 200',
+      [channelId],
+    );
+    if (ingested.length) {
+      const syntheticVideos = ingested.map(buildSyntheticVideo);
+      console.log(`[channel-cache] ingested_videos hit for channel ${channelId} — ${ingested.length} videos (synthetic)`);
+      return res.json({ hit: true, videos: syntheticVideos, count: syntheticVideos.length, cache_source: 'ingested_videos' });
+    }
+
+    res.status(404).json({ hit: false });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
 
 // ── POST store videos ─────────────────────────────────────────────────────────
-// Body: { videos: [<YouTube videos.list items>] }
 
 router.post('/channel-cache/videos', (req, res) => {
   try {
@@ -88,8 +249,6 @@ router.get('/channel-cache/video/:videoId', (req, res) => {
 });
 
 // ── POST background stats refresh ─────────────────────────────────────────────
-// Responds immediately. Calls YouTube videos.list in background using
-// the server's own YT_API_KEY. Cost: 1 quota unit per 50 cached videos.
 
 router.post('/channel-cache/channel/:channelId/refresh-stats', async (req, res) => {
   res.json({ ok: true, queued: true });
@@ -124,17 +283,25 @@ router.get('/channel-cache/stats', (req, res) => {
     const videos   = db.get('SELECT COUNT(*) AS n FROM video_cache')   ?? { n: 0 };
     const stale    = db.get(
       `SELECT COUNT(*) AS n FROM channel_cache
-       WHERE stats_refreshed_at < datetime('now','-24 hours') OR stats_refreshed_at IS NULL`
+       WHERE stats_refreshed_at < datetime('now','-24 hours') OR stats_refreshed_at IS NULL`,
     ) ?? { n: 0 };
     const hitExample = db.all(
       `SELECT channel_id, title, cached_at, stats_refreshed_at
-       FROM channel_cache ORDER BY cached_at DESC LIMIT 5`
+       FROM channel_cache ORDER BY cached_at DESC LIMIT 5`,
     );
+    const ingested = db.get('SELECT COUNT(*) AS n FROM ingested_channels WHERE ingest_enabled = 1') ?? { n: 0 };
+    const uncached = db.get(`
+      SELECT COUNT(*) AS n FROM ingested_channels ic
+      WHERE ic.ingest_enabled = 1
+        AND NOT EXISTS (SELECT 1 FROM channel_cache cc WHERE cc.channel_id = ic.channel_id)
+    `) ?? { n: 0 };
     res.json({
-      cached_channels:  channels.n,
-      cached_videos:    videos.n,
-      stale_channels:   stale.n,
-      recent_channels:  hitExample,
+      cached_channels:   channels.n,
+      cached_videos:     videos.n,
+      stale_channels:    stale.n,
+      ingested_channels: ingested.n,
+      uncached_ingested: uncached.n,
+      recent_channels:   hitExample,
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
