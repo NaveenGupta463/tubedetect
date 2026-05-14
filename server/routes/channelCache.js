@@ -229,6 +229,18 @@ router.get('/channel-cache/channel/:channelId/videos', (req, res) => {
       return res.json({ hit: true, videos: syntheticVideos, count: syntheticVideos.length, cache_source: 'ingested_videos' });
     }
 
+    // Channel IS ingested but has no videos yet — return empty hit so the
+    // frontend doesn't fall through to YouTube and exhaust quota.
+    const knownChannel = db.get(
+      `SELECT channel_id FROM ingested_channels WHERE channel_id = ?
+       UNION SELECT channel_id FROM channel_cache WHERE channel_id = ? LIMIT 1`,
+      [channelId, channelId],
+    );
+    if (knownChannel) {
+      console.log(`[channel-cache] known channel ${channelId} but no videos — returning empty`);
+      return res.json({ hit: true, videos: [], count: 0, cache_source: 'no_videos' });
+    }
+
     res.status(404).json({ hit: false });
   } catch (e) {
     res.status(500).json({ error: e.message });

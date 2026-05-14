@@ -120,14 +120,21 @@ export async function fetchChannel(rawInput) {
 
 export async function fetchChannelVideos(channelId, maxResults = 50) {
   // ── Step 1: Check local DB cache (0 quota) ────────────────────────────────
+  // hit:true + videos  → return from DB (no YouTube call)
+  // hit:true + []      → channel is known but has no ingested videos yet; return [] instead of quota-burning YouTube call
+  // hit:false / error  → channel unknown to DB; fall through to YouTube
   try {
     const r = await fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/videos`);
     if (r.ok) {
       const { hit, videos } = await r.json();
-      if (hit && videos?.length >= 1) {
-        fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/refresh-stats`, { method: 'POST' }).catch(() => {});
-        console.log('[yt] cache_hit videos', channelId, videos.length);
-        return videos;
+      if (hit) {
+        if (videos?.length) {
+          fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/refresh-stats`, { method: 'POST' }).catch(() => {});
+          console.log('[yt] cache_hit videos', channelId, videos.length);
+        } else {
+          console.log('[yt] known channel, no videos in DB yet', channelId);
+        }
+        return videos || [];
       }
     }
   } catch { /* DB unavailable — fall through to YouTube */ }
