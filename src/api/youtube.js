@@ -124,7 +124,7 @@ export async function fetchChannelVideos(channelId, maxResults = 50) {
     const r = await fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/videos`);
     if (r.ok) {
       const { hit, videos } = await r.json();
-      if (hit && videos?.length >= 10) {
+      if (hit && videos?.length >= 1) {
         fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/refresh-stats`, { method: 'POST' }).catch(() => {});
         console.log('[yt] cache_hit videos', channelId, videos.length);
         return videos;

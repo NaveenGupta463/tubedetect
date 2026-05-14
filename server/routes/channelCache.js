@@ -164,9 +164,23 @@ router.get('/channel-cache/channel', async (req, res) => {
       }
     }
 
-    // 3. Handle miss — kick off background population for all uncached ingested channels
-    //    so the next search (once quota recovers) will be a real hit
+    // 3. Handle miss — try fuzzy name match against ingested_channels
+    //    Normalise both sides: remove non-alphanum, lowercase
+    //    e.g. handle "GrahamStephan" matches channel_name "Graham Stephan"
     if (handle) {
+      const norm = handle.toLowerCase().replace(/[^a-z0-9]/g, '');
+      const all  = db.all('SELECT * FROM ingested_channels WHERE ingest_enabled = 1');
+      const match = all.find(ic => {
+        const n = (ic.channel_name || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+        return n === norm || n.startsWith(norm) || norm.startsWith(n);
+      });
+      if (match) {
+        const synthetic = buildSyntheticChannel(match);
+        refreshChannelFromYT(db, match.channel_id).catch(() => {});
+        console.log(`[channel-cache] name-fuzzy hit handle="${handle}" → ${match.channel_id}`);
+        return res.json({ hit: true, channel: synthetic, cache_source: 'ingested_channels_fuzzy' });
+      }
+      // Still nothing — background-populate so next search works after quota resets
       populateUncachedChannels(db).catch(() => {});
     }
 
