@@ -50,6 +50,7 @@ try {
   const intelligenceRoute       = require('./routes/intelligence');
   const semanticRoute           = require('./routes/semantic');
   const strategyRoute           = require('./routes/strategy');
+  const channelCacheRoute       = require('./routes/channelCache');
   const { startCron }                    = require('./jobs/feedbackCron');
   const { startIngestCron }              = require('./jobs/youtubeIngest');
   const { startRefreshCron }             = require('./jobs/refreshCron');
@@ -91,6 +92,7 @@ try {
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
   app.use('/api', strategyRoute);
+  app.use('/api', channelCacheRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 

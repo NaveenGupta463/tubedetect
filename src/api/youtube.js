@@ -1,4 +1,4 @@
-import { ROUTES } from '../config';
+import { ROUTES, SCORING_URL } from '../config';
 import * as storage from '../utils/storage';
 
 const CACHE_TTL    = 30 * 60 * 1000;
@@ -78,29 +78,77 @@ export async function fetchChannel(rawInput) {
   const parsed = parseChannelInput(rawInput);
   if (!parsed) throw new Error('Please enter a valid channel URL or @handle');
 
-  const params = { part: 'snippet,statistics,brandingSettings' };
+  // ── Step 1: Check local DB cache (0 quota) ────────────────────────────────
+  try {
+    const params = new URLSearchParams();
+    if (parsed.type === 'id') params.set('id', parsed.value);
+    else params.set('handle', parsed.value);
+    const r = await fetch(`${SCORING_URL}/api/channel-cache/channel?${params}`);
+    if (r.ok) {
+      const { hit, channel } = await r.json();
+      if (hit && channel) {
+        // Fire background stats refresh — non-blocking, best-effort
+        fetch(`${SCORING_URL}/api/channel-cache/channel/${channel.id}/refresh-stats`, { method: 'POST' }).catch(() => {});
+        console.log('[yt] cache_hit channel', channel.id);
+        return channel;
+      }
+    }
+  } catch { /* DB unavailable — fall through to YouTube */ }
 
+  // ── Step 2: Fetch from YouTube ────────────────────────────────────────────
+  const params = { part: 'snippet,statistics,brandingSettings,contentDetails' };
   if (parsed.type === 'id') params.id = parsed.value;
   else if (parsed.type === 'handle') params.forHandle = parsed.value;
   else if (parsed.type === 'username') params.forUsername = parsed.value;
 
   const data = await apiFetch('channels', params);
-
   if (!data.items?.length) {
     throw new Error(`Channel not found. Try using the @handle directly, e.g. @${parsed.value}`);
   }
-  return data.items[0];
+  const channel = data.items[0];
+
+  // ── Step 3: Persist to DB cache permanently ───────────────────────────────
+  fetch(`${SCORING_URL}/api/channel-cache/channel`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ channel }),
+  }).catch(() => {});
+
+  console.log('[yt] cache_miss channel', channel.id, '— fetched from YouTube + cached');
+  return channel;
 }
 
 export async function fetchChannelVideos(channelId, maxResults = 50) {
-  const channelData = await apiFetch('channels', {
-    part: 'contentDetails',
-    id: channelId,
-  });
+  // ── Step 1: Check local DB cache (0 quota) ────────────────────────────────
+  try {
+    const r = await fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/videos`);
+    if (r.ok) {
+      const { hit, videos } = await r.json();
+      if (hit && videos?.length >= 10) {
+        fetch(`${SCORING_URL}/api/channel-cache/channel/${channelId}/refresh-stats`, { method: 'POST' }).catch(() => {});
+        console.log('[yt] cache_hit videos', channelId, videos.length);
+        return videos;
+      }
+    }
+  } catch { /* DB unavailable — fall through to YouTube */ }
 
-  const uploadsId = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  // ── Step 2: Get uploads playlist (prefer channel_cache, avoid extra API call) ──
+  let uploadsId;
+  try {
+    const r = await fetch(`${SCORING_URL}/api/channel-cache/channel?id=${channelId}`);
+    if (r.ok) {
+      const { hit, channel } = await r.json();
+      uploadsId = channel?.contentDetails?.relatedPlaylists?.uploads;
+    }
+  } catch { /* ignore */ }
+
+  if (!uploadsId) {
+    const channelData = await apiFetch('channels', { part: 'contentDetails', id: channelId });
+    uploadsId = channelData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;
+  }
   if (!uploadsId) throw new Error('Could not find uploads playlist for this channel');
 
+  // ── Step 3: Fetch from YouTube ────────────────────────────────────────────
   const playlistData = await apiFetch('playlistItems', {
     part: 'contentDetails',
     playlistId: uploadsId,
@@ -115,7 +163,19 @@ export async function fetchChannelVideos(channelId, maxResults = 50) {
     id: videoIds,
   });
 
-  return videosData.items || [];
+  const videos = videosData.items || [];
+
+  // ── Step 4: Persist to DB cache (fire-and-forget) ─────────────────────────
+  if (videos.length) {
+    fetch(`${SCORING_URL}/api/channel-cache/videos`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ videos }),
+    }).catch(() => {});
+    console.log('[yt] cache_miss videos', channelId, '— fetched from YouTube + cached', videos.length);
+  }
+
+  return videos;
 }
 
 export async function fetchChannelVideosExpanded(channelId, maxVideos = 200) {
@@ -195,12 +255,35 @@ export async function searchChannels(query, maxResults = 8) {
 }
 
 export async function fetchVideoById(id) {
+  // ── Step 1: Check local DB cache (0 quota) ────────────────────────────────
+  try {
+    const r = await fetch(`${SCORING_URL}/api/channel-cache/video/${id}`);
+    if (r.ok) {
+      const { hit, video } = await r.json();
+      if (hit && video) {
+        console.log('[yt] cache_hit video', id);
+        return video;
+      }
+    }
+  } catch { /* DB unavailable — fall through to YouTube */ }
+
+  // ── Step 2: Fetch from YouTube ────────────────────────────────────────────
   const data = await apiFetch('videos', {
     part: 'snippet,statistics,contentDetails',
     id,
   });
   if (!data.items?.length) throw new Error('Video not found');
-  return data.items[0];
+  const video = data.items[0];
+
+  // ── Step 3: Persist to DB cache (fire-and-forget) ─────────────────────────
+  fetch(`${SCORING_URL}/api/channel-cache/videos`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ videos: [video] }),
+  }).catch(() => {});
+  console.log('[yt] cache_miss video', id, '— fetched from YouTube + cached');
+
+  return video;
 }
 
 export async function fetchVideoComments(videoId, maxResults = 100) {

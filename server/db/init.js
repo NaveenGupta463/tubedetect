@@ -356,6 +356,33 @@ function migrate(database) {
       CREATE INDEX IF NOT EXISTS idx_dc_run_id          ON discovered_channels(discovery_run_id);
     `);
   } catch (_) {}
+
+  // ── Local-first cache: user-searched channels and their videos ────────────
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_cache (
+        channel_id          TEXT PRIMARY KEY,
+        handle              TEXT,
+        title               TEXT,
+        raw_json            TEXT NOT NULL,
+        uploads_playlist_id TEXT,
+        subscriber_count    INTEGER,
+        cached_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        stats_refreshed_at  TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cc_handle ON channel_cache(handle);
+
+      CREATE TABLE IF NOT EXISTS video_cache (
+        video_id           TEXT PRIMARY KEY,
+        channel_id         TEXT NOT NULL,
+        raw_json           TEXT NOT NULL,
+        view_count         INTEGER,
+        cached_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        stats_refreshed_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_vc_channel ON video_cache(channel_id);
+    `);
+  } catch (_) {}
 }
 
 function migrateNiches(database) {

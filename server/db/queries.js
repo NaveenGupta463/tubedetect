@@ -1948,6 +1948,15 @@ module.exports = {
   saveRecommendationFeedback,
   getRecommendationFeedbackStats,
   getStrategyAnalytics,
+  // Local-first channel/video cache
+  getChannelCache,
+  getChannelCacheByHandle,
+  upsertChannelCache,
+  getVideoCache,
+  getVideoCacheById,
+  getVideoCacheIds,
+  upsertVideoCache,
+  updateVideoCacheStats,
 };
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
@@ -2270,5 +2279,78 @@ function getStrategyAnalytics(db) {
   `).map(r => r.niche).filter(Boolean);
 
   return { routing, recStats, byCategory, hookMatrix, nicheList };
+}
+
+// ── Local-first channel/video cache ──────────────────────────────────────────
+
+function getChannelCache(db, channelId) {
+  const row = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [channelId]);
+  return row ? JSON.parse(row.raw_json) : null;
+}
+
+function getChannelCacheByHandle(db, handle) {
+  if (!handle) return null;
+  const normalized = handle.toLowerCase().replace(/^@/, '');
+  const row = db.get(
+    `SELECT raw_json FROM channel_cache WHERE lower(replace(coalesce(handle,''),'@','')) = ?`,
+    [normalized]
+  );
+  return row ? JSON.parse(row.raw_json) : null;
+}
+
+function upsertChannelCache(db, channelItem) {
+  const handle      = channelItem.snippet?.customUrl?.replace(/^@/, '') ?? null;
+  const uploadsId   = channelItem.contentDetails?.relatedPlaylists?.uploads ?? null;
+  const subscribers = parseInt(channelItem.statistics?.subscriberCount ?? '0', 10) || 0;
+  db.run(
+    `INSERT OR REPLACE INTO channel_cache
+       (channel_id, handle, title, raw_json, uploads_playlist_id, subscriber_count, cached_at)
+     VALUES (?, ?, ?, ?, ?, ?, datetime('now'))`,
+    [channelItem.id, handle, channelItem.snippet?.title ?? null,
+     JSON.stringify(channelItem), uploadsId, subscribers]
+  );
+}
+
+function getVideoCache(db, channelId) {
+  const rows = db.all(
+    'SELECT raw_json FROM video_cache WHERE channel_id = ? ORDER BY cached_at DESC',
+    [channelId]
+  );
+  return rows.map(r => JSON.parse(r.raw_json));
+}
+
+function getVideoCacheById(db, videoId) {
+  const row = db.get('SELECT raw_json FROM video_cache WHERE video_id = ?', [videoId]);
+  return row ? JSON.parse(row.raw_json) : null;
+}
+
+function getVideoCacheIds(db, channelId) {
+  return db.all(
+    'SELECT video_id FROM video_cache WHERE channel_id = ?', [channelId]
+  ).map(r => r.video_id);
+}
+
+function upsertVideoCache(db, videoItem) {
+  if (!videoItem?.id) return;
+  const channelId = videoItem.snippet?.channelId ?? null;
+  const views     = parseInt(videoItem.statistics?.viewCount ?? '0', 10) || 0;
+  db.run(
+    `INSERT OR REPLACE INTO video_cache
+       (video_id, channel_id, raw_json, view_count, cached_at)
+     VALUES (?, ?, ?, ?, datetime('now'))`,
+    [videoItem.id, channelId, JSON.stringify(videoItem), views]
+  );
+}
+
+function updateVideoCacheStats(db, videoId, statistics) {
+  const row = db.get('SELECT raw_json FROM video_cache WHERE video_id = ?', [videoId]);
+  if (!row) return;
+  const item = JSON.parse(row.raw_json);
+  item.statistics = { ...item.statistics, ...statistics };
+  db.run(
+    `UPDATE video_cache SET raw_json = ?, view_count = ?, stats_refreshed_at = datetime('now')
+     WHERE video_id = ?`,
+    [JSON.stringify(item), parseInt(statistics.viewCount ?? '0', 10) || 0, videoId]
+  );
 }
 

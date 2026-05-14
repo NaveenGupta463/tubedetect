@@ -198,4 +198,13 @@ export const ROUTES = {
   intelAllowedNiches:       `${SCORING_URL}/api/intel/allowed-niches`,
   intelRedetectAll:         `${SCORING_URL}/api/intel/channels/redetect-all`,
   intelRedetectAllJob:      (id) => `${SCORING_URL}/api/intel/channels/redetect-all/${id}`,
+
+  // Channel / Video DB cache (zero-quota local-first reads)
+  channelCacheLookup:       `${SCORING_URL}/api/channel-cache/channel`,
+  channelCacheStore:        `${SCORING_URL}/api/channel-cache/channel`,
+  channelCacheVideos:       (id) => `${SCORING_URL}/api/channel-cache/channel/${id}/videos`,
+  channelCacheStoreVideos:  `${SCORING_URL}/api/channel-cache/videos`,
+  channelCacheVideoById:    (id) => `${SCORING_URL}/api/channel-cache/video/${id}`,
+  channelCacheRefreshStats: (id) => `${SCORING_URL}/api/channel-cache/channel/${id}/refresh-stats`,
+  channelCacheStats:        `${SCORING_URL}/api/channel-cache/stats`,
 };
