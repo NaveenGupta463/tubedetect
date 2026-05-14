@@ -239,42 +239,44 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                       <motion.button
                         className={classes}
                         onClick={() => !disabled && onNavigate(item.id)}
-                        whileHover={disabled ? undefined : { x: 2, backgroundColor: 'rgba(255,255,255,0.05)' }}
+                        whileHover={disabled ? undefined : { backgroundColor: 'rgba(255,255,255,0.045)' }}
                         whileTap={disabled ? undefined : { scale: 0.98 }}
                         transition={spring.snappy}
                         style={isCapstone ? {
                           position: 'relative',
-                          borderColor: '#00b89444',
-                          background: active ? '#00b89422' : '#00b89411',
+                          boxShadow: active ? 'inset 0 0 0 1px rgba(34,197,94,0.2)' : 'inset 0 0 0 1px rgba(34,197,94,0.1)',
+                          background: active ? 'rgba(34,197,94,0.1)' : 'rgba(34,197,94,0.04)',
                         } : { position: 'relative' }}
                       >
                         {active && (
                           <motion.span
-                            layoutId="sidebar-active-bar"
+                            layoutId="sidebar-active-pill"
                             style={{
-                              position: 'absolute', left: 0, top: 0, bottom: 0,
-                              width: 2, background: 'var(--accent)',
-                              borderRadius: '0 2px 2px 0',
+                              position: 'absolute', inset: 0,
+                              background: 'rgba(229,62,62,0.1)',
+                              borderRadius: 7,
+                              boxShadow: 'inset 0 0 0 1px rgba(229,62,62,0.18)',
+                              zIndex: 0,
                             }}
                             transition={spring.layout}
                           />
                         )}
-                        <span className="nav-icon">{item.icon}</span>
-                        <span className="nav-label">{item.label}</span>
+                        <span className="nav-icon" style={{ position: 'relative', zIndex: 1 }}>{item.icon}</span>
+                        <span className="nav-label" style={{ position: 'relative', zIndex: 1 }}>{item.label}</span>
 
                         {locked && (
-                          <span className="nav-lock">
+                          <span className="nav-lock" style={{ position: 'relative', zIndex: 1 }}>
                             {item.req === 'agency' ? 'Agency' : item.req === 'pro' ? 'Pro' : 'Starter'}
                           </span>
                         )}
                         {!locked && needsChannel && (
-                          <span className="nav-lock" style={{ background: '#1a1a1a', color: '#444', borderColor: '#2a2a2a' }}>
+                          <span className="nav-lock" style={{ background: 'rgba(255,255,255,0.04)', color: '#383838', borderColor: '#282828', position: 'relative', zIndex: 1 }}>
                             Channel
                           </span>
                         )}
 
                         {!locked && item.oauthRequired && isOAuthConnected && (
-                          <span style={{ width: 7, height: 7, borderRadius: '50%', background: '#22c55e', flexShrink: 0 }} />
+                          <span style={{ width: 6, height: 6, borderRadius: '50%', background: '#22c55e', flexShrink: 0, position: 'relative', zIndex: 1, boxShadow: '0 0 6px rgba(34,197,94,0.5)' }} />
                         )}
 
                         {item.id === 'myanalytics' && (
@@ -285,9 +287,10 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                               onNavigate('myanalytics');
                             }}
                             style={{
-                              fontSize: 9, fontWeight: 800, background: '#f9731699',
+                              fontSize: 9, fontWeight: 800, background: 'rgba(249,115,22,0.6)',
                               color: '#fff', borderRadius: 4, padding: '2px 5px',
                               cursor: 'pointer', flexShrink: 0, letterSpacing: 0.3,
+                              position: 'relative', zIndex: 1,
                             }}
                           >
                             DEMO
@@ -297,9 +300,10 @@ export default function Sidebar({ activeView, onNavigate, hasChannel, tier, isOA
                         {isCapstone && (
                           <span style={{
                             fontSize: 8, fontWeight: 800,
-                            background: '#00b89433', color: '#00b894',
+                            background: 'rgba(34,197,94,0.15)', color: '#22c55e',
                             borderRadius: 4, padding: '2px 6px',
                             flexShrink: 0, letterSpacing: 0.4,
+                            position: 'relative', zIndex: 1,
                           }}>
                             GATE
                           </span>

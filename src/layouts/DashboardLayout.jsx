@@ -16,13 +16,15 @@ export default function DashboardLayout({ aiProps, channel, videos, activeTab = 
       {/* Tab strip — negative margin breaks out of main-scroll's side padding */}
       <div style={{
         display: 'flex',
-        borderBottom: '1px solid #202020',
+        borderBottom: '1px solid rgba(255,255,255,0.055)',
         margin: '0 -24px',
         padding: '0 24px',
-        background: '#0d0d0d',
+        background: 'rgba(8,8,8,0.98)',
         position: 'sticky',
         top: 0,
         zIndex: 50,
+        backdropFilter: 'blur(12px)',
+        gap: 2,
       }}>
         {TABS.map(tab => {
           const active = activeTab === tab.id;
@@ -30,38 +32,26 @@ export default function DashboardLayout({ aiProps, channel, videos, activeTab = 
             <motion.button
               key={tab.id}
               onClick={() => onTabChange(tab.navId)}
-              whileHover={{ color: active ? '#ffffff' : '#aaa' }}
+              whileHover={{ color: active ? '#f2f2f2' : '#a8a8a8' }}
               whileTap={{ scale: 0.98 }}
               transition={spring.snappy}
               style={{
                 position:     'relative',
-                background:   active ? 'rgba(255,0,0,0.07)' : 'none',
+                background:   'none',
                 border:       'none',
-                color:        active ? '#ffffff' : '#555',
-                padding:      '13px 20px',
+                borderBottom: active ? '2px solid #e53e3e' : '2px solid transparent',
+                color:        active ? '#f2f2f2' : '#585858',
+                padding:      '11px 18px 13px',
                 fontSize:     13,
                 fontWeight:   active ? 600 : 400,
                 cursor:       'pointer',
                 marginBottom: -1,
                 letterSpacing: active ? '-0.2px' : 0,
                 whiteSpace:   'nowrap',
-                borderRadius: active ? '6px 6px 0 0' : 0,
+                transition:   'color 0.16s, border-color 0.16s',
               }}
             >
               {tab.label}
-              {active && (
-                <motion.span
-                  layoutId="dashboard-tab-indicator"
-                  style={{
-                    position: 'absolute',
-                    bottom: -1, left: 0, right: 0,
-                    height: 3,
-                    background: '#ff0000',
-                    borderRadius: '2px 2px 0 0',
-                  }}
-                  transition={spring.layout}
-                />
-              )}
             </motion.button>
           );
         })}
