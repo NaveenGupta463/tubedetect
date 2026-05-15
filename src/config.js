@@ -64,7 +64,8 @@ export const ROUTES = {
   adminIntelChannelPatch:    (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}`,
   adminIntelChannelDelete:   (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}`,
   adminIntelIngestTrigger:   `${SCORING_URL}/api/admin/intelligence/ingest/trigger`,
-  adminIntelSnapshotTrigger: `${SCORING_URL}/api/admin/intelligence/snapshot/trigger`,
+  adminIntelSnapshotTrigger:       `${SCORING_URL}/api/admin/intelligence/snapshot/trigger`,
+  adminIntelSnapshotRecentTrigger: `${SCORING_URL}/api/admin/intelligence/snapshot/trigger-recent`,
   adminIntelPatternsRecompute: `${SCORING_URL}/api/admin/intelligence/patterns/recompute`,
   adminIntelStatus:          `${SCORING_URL}/api/admin/intelligence/status`,
   adminIntelPatterns:        `${SCORING_URL}/api/admin/intelligence/patterns`,
@@ -75,6 +76,12 @@ export const ROUTES = {
   adminIntelSaveIdentity:         (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}/save-identity`,
   adminIntelSaveIdentityManual:   (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}/save-identity-manual`,
   adminIntelBulkDetectIdentity:   `${SCORING_URL}/api/admin/intelligence/channels/bulk-detect-identity`,
+  adminIntelAutoPromoted:         `${SCORING_URL}/api/admin/intelligence/channels/auto-promoted`,
+  adminIntelLouvainRun:           `${SCORING_URL}/api/admin/intelligence/louvain/run`,
+  adminIntelCommunities:          `${SCORING_URL}/api/admin/intelligence/communities`,
+  adminIntelCommunityBackfill:    `${SCORING_URL}/api/admin/intelligence/community/backfill`,
+  corpusSeenChannel:              `${SCORING_URL}/api/corpus/seen-channel`,
+  communityInfer:                 `${SCORING_URL}/api/intel/community/infer`,
 
   // Evolution observability
   adminEvolutionCalibrationHistory: `${SCORING_URL}/api/admin/evolution/calibration-history`,
@@ -207,4 +214,63 @@ export const ROUTES = {
   channelCacheVideoById:    (id) => `${SCORING_URL}/api/channel-cache/video/${id}`,
   channelCacheRefreshStats: (id) => `${SCORING_URL}/api/channel-cache/channel/${id}/refresh-stats`,
   channelCacheStats:        `${SCORING_URL}/api/channel-cache/stats`,
+
+  // Phase XI — Corpus Observability (admin only)
+  corpusComposition:        `${SCORING_URL}/api/corpus/composition`,
+  corpusStats:              `${SCORING_URL}/api/corpus/stats`,
+  corpusChannels:           `${SCORING_URL}/api/corpus/channels`,
+  corpusQualityDist:        `${SCORING_URL}/api/corpus/quality-distribution`,
+  corpusTrainingSet:        `${SCORING_URL}/api/corpus/training-set`,
+  corpusDiscoveryGraph:     `${SCORING_URL}/api/corpus/discovery-graph`,
+  corpusNicheGaps:          `${SCORING_URL}/api/corpus/niche-gaps`,
+  corpusEmbeddingQueue:     `${SCORING_URL}/api/corpus/embedding-queue`,
+  corpusEvaluateChannel:    (id) => `${SCORING_URL}/api/corpus/evaluate-channel/${id}`,
+  corpusPromote:            (id) => `${SCORING_URL}/api/corpus/promote/${id}`,
+  corpusForcePromote:       (id) => `${SCORING_URL}/api/corpus/force-promote/${id}`,
+  corpusDemote:             (id) => `${SCORING_URL}/api/corpus/demote/${id}`,
+  corpusSyncFromIngested:   `${SCORING_URL}/api/corpus/sync-from-ingested`,
+  corpusSchedulerStatus:    `${SCORING_URL}/api/corpus/scheduler/status`,
+  corpusSchedulerRun:       `${SCORING_URL}/api/corpus/scheduler/run`,
+  corpusRunHistory:         `${SCORING_URL}/api/corpus/scheduler/status`, // history included in status response
+
+  // Phase XII — Semantic Governance Observability (admin only)
+  governanceOverview:          `${SCORING_URL}/api/corpus/governance/overview`,
+  governanceTopology:          `${SCORING_URL}/api/corpus/governance/topology`,
+  governanceTopologySnapshot:  `${SCORING_URL}/api/corpus/governance/topology/snapshot`,
+  governanceDrift:             `${SCORING_URL}/api/corpus/governance/drift`,
+  governanceDriftDetect:       `${SCORING_URL}/api/corpus/governance/drift/detect`,
+  governanceDriftAcknowledge:  (id) => `${SCORING_URL}/api/corpus/governance/drift/acknowledge/${id}`,
+  governanceDiversity:         `${SCORING_URL}/api/corpus/governance/diversity`,
+  governanceDiversityRefresh:  `${SCORING_URL}/api/corpus/governance/diversity/refresh`,
+  governanceTrust:             `${SCORING_URL}/api/corpus/governance/trust`,
+  governanceRelationships:     `${SCORING_URL}/api/corpus/governance/relationships`,
+  governanceRelationshipsDecay:`${SCORING_URL}/api/corpus/governance/relationships/decay`,
+  governanceFeedback:          `${SCORING_URL}/api/corpus/governance/feedback`,
+  governanceFeedbackStats:     `${SCORING_URL}/api/corpus/governance/feedback/stats`,
+
+  // Phase XIII — AI Discovery Observability
+  governanceAIDiscoveryStats:  `${SCORING_URL}/api/corpus/governance/ai-discovery/stats`,
+  governanceAIDiscoveryLog:    `${SCORING_URL}/api/corpus/governance/ai-discovery/log`,
+  governanceAIDiscoveryRun:    `${SCORING_URL}/api/corpus/governance/ai-discovery/run`,
+  governanceCreatorTiers:      `${SCORING_URL}/api/corpus/governance/creator-tiers`,
+
+  // Phase XIV — Attention Ecology Observability (admin only, read-only)
+  governanceEcologyOverview:      `${SCORING_URL}/api/corpus/governance/ecology/overview`,
+  governanceEcologyDistribution:  `${SCORING_URL}/api/corpus/governance/ecology/distribution`,
+  governanceEcologyChannel:       (id) => `${SCORING_URL}/api/corpus/governance/ecology/channel/${id}`,
+  governanceEcologyDrift:         `${SCORING_URL}/api/corpus/governance/ecology/drift`,
+  governanceEcologyUncertain:     `${SCORING_URL}/api/corpus/governance/ecology/uncertain`,
+  governanceEcologyRun:           `${SCORING_URL}/api/corpus/governance/ecology/run`,
+  governanceEcologyOverride:      (id) => `${SCORING_URL}/api/corpus/governance/ecology/channel/${id}/override`,
+  governanceEcologyProbe:         `${SCORING_URL}/api/corpus/governance/ecology/probe`,
+
+  // Phase XIII — Governance Maturity Roadmap
+  governanceMaturity:          `${SCORING_URL}/api/corpus/governance/maturity`,
+  governanceMaturityCheck:     `${SCORING_URL}/api/corpus/governance/maturity/check`,
+  governanceMaturityReport:    `${SCORING_URL}/api/corpus/governance/maturity-report`,
+  governanceRoadmap:           `${SCORING_URL}/api/corpus/governance/roadmap`,
+  governanceRoadmapLayer:      (id) => `${SCORING_URL}/api/corpus/governance/roadmap/${id}`,
+  governanceRoadmapHistory:    (id) => `${SCORING_URL}/api/corpus/governance/roadmap/${id}/history`,
+  governanceRoadmapEvaluate:   (id) => `${SCORING_URL}/api/corpus/governance/roadmap/${id}/evaluate`,
+  governanceRoadmapStatus:     (id) => `${SCORING_URL}/api/corpus/governance/roadmap/${id}/status`,
 };

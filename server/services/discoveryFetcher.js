@@ -1,19 +1,23 @@
 const quotaGuard = require('./quotaGuard');
+const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
-function getYtKey() {
-  const key = process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
-  if (!key) throw new Error('YT_API_KEY not set');
-  return key;
-}
-
 async function ytGet(path, params) {
-  const qs  = new URLSearchParams({ ...params, key: getYtKey() }).toString();
-  const res = await fetch(`${YT_BASE}/${path}?${qs}`);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `YouTube API error ${res.status}`);
-  return data;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const key = getApiKey();
+    if (!key) throw new Error('all_api_keys_exhausted');
+    const qs  = new URLSearchParams({ ...params, key }).toString();
+    const res = await fetch(`${YT_BASE}/${path}?${qs}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = data?.error?.message || `YouTube API error ${res.status}`;
+      if (isQuotaError(msg)) { markExhausted(key); continue; }
+      throw new Error(msg);
+    }
+    return data;
+  }
+  throw new Error('all_api_keys_exhausted');
 }
 
 // Resolve a raw handle/URL/channel-id to a channel ID + basic metadata
@@ -51,7 +55,7 @@ async function resolveSeedChannel(raw) {
 async function fetchChannelMeta(channelId) {
   quotaGuard.recordUsage(1, 'ingest');
   const data = await ytGet('channels', {
-    part: 'snippet,statistics,brandingSettings,contentDetails',
+    part: 'snippet,statistics,brandingSettings,contentDetails,topicDetails,localizations',
     id:   channelId,
   });
   const item = data.items?.[0];
@@ -60,16 +64,23 @@ async function fetchChannelMeta(channelId) {
   const featured = (item.brandingSettings?.channel?.featuredChannelsUrls ?? [])
     .filter(u => /^UC[A-Za-z0-9_-]{22}$/.test(u));
 
+  const topicCategories = item.topicDetails?.topicCategories ?? [];
+
   return {
-    channel_id:       item.id,
-    title:            item.snippet?.title ?? null,
-    handle:           item.snippet?.customUrl ?? null,
-    thumbnail_url:    item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
-    subscriber_count: parseInt(item.statistics?.subscriberCount ?? '0', 10) || null,
-    video_count:      parseInt(item.statistics?.videoCount ?? '0', 10) || null,
-    description:      item.snippet?.description ?? '',
-    featured_channel_ids: featured,
-    uploads_playlist_id:  item.contentDetails?.relatedPlaylists?.uploads ?? null,
+    channel_id:            item.id,
+    title:                 item.snippet?.title ?? null,
+    handle:                item.snippet?.customUrl ?? null,
+    thumbnail_url:         item.snippet?.thumbnails?.medium?.url ?? item.snippet?.thumbnails?.default?.url ?? null,
+    subscriber_count:      parseInt(item.statistics?.subscriberCount ?? '0', 10) || null,
+    video_count:           parseInt(item.statistics?.videoCount ?? '0', 10) || null,
+    description:           item.snippet?.description ?? '',
+    featured_channel_ids:  featured,
+    uploads_playlist_id:   item.contentDetails?.relatedPlaylists?.uploads ?? null,
+    yt_default_language:   item.snippet?.defaultLanguage ?? null,
+    yt_default_audio_lang: item.snippet?.defaultAudioLanguage ?? null,
+    yt_country:            item.snippet?.country ?? null,
+    yt_topic_ids:          topicCategories.length ? JSON.stringify(topicCategories) : null,
+    raw_json:              item,
   };
 }
 

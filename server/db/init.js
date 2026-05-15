@@ -383,6 +383,287 @@ function migrate(database) {
       CREATE INDEX IF NOT EXISTS idx_vc_channel ON video_cache(channel_id);
     `);
   } catch (_) {}
+
+  // ── Corpus Layer: durable semantic memory (Phase XI) ─────────────────────
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS corpus_channels (
+        channel_id          TEXT    PRIMARY KEY,
+        title               TEXT,
+        handle              TEXT,
+        thumbnail_url       TEXT,
+        uploads_playlist_id TEXT,
+        niche               TEXT,
+        language            TEXT    DEFAULT 'en',
+        country             TEXT,
+        subscriber_count    INTEGER DEFAULT 0,
+        total_views         INTEGER DEFAULT 0,
+        video_count         INTEGER DEFAULT 0,
+        last_ingested_at    TEXT,
+        last_refreshed_at   TEXT,
+        ingest_depth        INTEGER DEFAULT 0,
+        semantic_status     TEXT    DEFAULT 'pending',
+        quality_score       REAL    DEFAULT 0,
+        training_eligible   INTEGER DEFAULT 0,
+        training_promoted_at TEXT,
+        training_demoted_at  TEXT,
+        discovery_source    TEXT    DEFAULT 'manual',
+        priority_score      REAL    DEFAULT 50,
+        is_spam             INTEGER DEFAULT 0,
+        is_low_quality      INTEGER DEFAULT 0,
+        quality_flags       TEXT,
+        raw_json            TEXT,
+        created_at          TEXT    DEFAULT (datetime('now')),
+        updated_at          TEXT    DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_niche    ON corpus_channels(niche);
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_quality  ON corpus_channels(quality_score);
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_training ON corpus_channels(training_eligible);
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_status   ON corpus_channels(semantic_status);
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_priority ON corpus_channels(priority_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_corp_ch_handle   ON corpus_channels(handle);
+
+      CREATE TABLE IF NOT EXISTS corpus_videos (
+        video_id          TEXT    PRIMARY KEY,
+        channel_id        TEXT    NOT NULL,
+        title             TEXT    NOT NULL,
+        description       TEXT,
+        thumbnail_url     TEXT,
+        published_at      TEXT,
+        duration_seconds  INTEGER,
+        views             INTEGER DEFAULT 0,
+        likes             INTEGER DEFAULT 0,
+        comments          INTEGER DEFAULT 0,
+        vph               REAL,
+        semantic_cluster  TEXT,
+        embedding_status  TEXT    DEFAULT 'pending',
+        training_weight   REAL    DEFAULT 1.0,
+        performance_tier  TEXT,
+        quality_score     REAL,
+        raw_json          TEXT,
+        ingested_at       TEXT    DEFAULT (datetime('now')),
+        refreshed_at      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_corp_vid_channel  ON corpus_videos(channel_id);
+      CREATE INDEX IF NOT EXISTS idx_corp_vid_cluster  ON corpus_videos(semantic_cluster);
+      CREATE INDEX IF NOT EXISTS idx_corp_vid_embed    ON corpus_videos(embedding_status);
+      CREATE INDEX IF NOT EXISTS idx_corp_vid_published ON corpus_videos(published_at DESC);
+
+      CREATE TABLE IF NOT EXISTS corpus_discovery_graph (
+        id                 TEXT    PRIMARY KEY,
+        source_channel_id  TEXT    NOT NULL,
+        target_channel_id  TEXT    NOT NULL,
+        relationship_type  TEXT    NOT NULL,
+        confidence         REAL    DEFAULT 0,
+        discovered_via     TEXT,
+        discovered_at      TEXT    DEFAULT (datetime('now')),
+        UNIQUE(source_channel_id, target_channel_id, relationship_type)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cdg_source ON corpus_discovery_graph(source_channel_id);
+      CREATE INDEX IF NOT EXISTS idx_cdg_target ON corpus_discovery_graph(target_channel_id);
+      CREATE INDEX IF NOT EXISTS idx_cdg_type   ON corpus_discovery_graph(relationship_type);
+
+      CREATE TABLE IF NOT EXISTS corpus_embeddings_queue (
+        id           TEXT    PRIMARY KEY,
+        entity_type  TEXT    NOT NULL,
+        entity_id    TEXT    NOT NULL,
+        priority     INTEGER DEFAULT 5,
+        status       TEXT    DEFAULT 'pending',
+        attempts     INTEGER DEFAULT 0,
+        queued_at    TEXT    DEFAULT (datetime('now')),
+        processed_at TEXT,
+        error        TEXT,
+        UNIQUE(entity_type, entity_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ceq_status   ON corpus_embeddings_queue(status, priority DESC);
+      CREATE INDEX IF NOT EXISTS idx_ceq_type     ON corpus_embeddings_queue(entity_type);
+
+      CREATE TABLE IF NOT EXISTS corpus_quality_state (
+        channel_id               TEXT    PRIMARY KEY,
+        quality_score            REAL    DEFAULT 0,
+        semantic_consistency     REAL    DEFAULT 0,
+        engagement_authenticity  REAL    DEFAULT 0,
+        clickbait_score          REAL    DEFAULT 0,
+        performance_stability    REAL    DEFAULT 0,
+        title_quality            REAL    DEFAULT 0,
+        authority_score          REAL    DEFAULT 0,
+        sample_size              INTEGER DEFAULT 0,
+        is_spam                  INTEGER DEFAULT 0,
+        is_ai_slop               INTEGER DEFAULT 0,
+        is_unstable              INTEGER DEFAULT 0,
+        flags_json               TEXT,
+        training_eligible        INTEGER DEFAULT 0,
+        evaluated_at             TEXT,
+        promoted_at              TEXT,
+        demoted_at               TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS corpus_refresh_schedule (
+        channel_id             TEXT    PRIMARY KEY,
+        refresh_priority       INTEGER DEFAULT 5,
+        last_refresh_at        TEXT,
+        next_refresh_at        TEXT,
+        refresh_count          INTEGER DEFAULT 0,
+        stale_threshold_hours  INTEGER DEFAULT 168
+      );
+
+      CREATE TABLE IF NOT EXISTS corpus_run_log (
+        id              TEXT    PRIMARY KEY,
+        started_at      TEXT    NOT NULL,
+        completed_at    TEXT,
+        status          TEXT    DEFAULT 'running',
+        quota_used      INTEGER DEFAULT 0,
+        quota_budget    INTEGER DEFAULT 0,
+        channels_ingested INTEGER DEFAULT 0,
+        channels_evaluated INTEGER DEFAULT 0,
+        channels_promoted INTEGER DEFAULT 0,
+        channels_demoted  INTEGER DEFAULT 0,
+        discovery_synced  INTEGER DEFAULT 0,
+        error           TEXT,
+        log_json        TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_crl_started ON corpus_run_log(started_at DESC);
+    `);
+  } catch (_) {}
+}
+
+function migratePhaseXII(database) {
+  // New columns on corpus_channels (each in own try/catch — column-already-exists is silent)
+  const channelCols = [
+    `ALTER TABLE corpus_channels ADD COLUMN training_trust_score  REAL    DEFAULT NULL`,
+    `ALTER TABLE corpus_channels ADD COLUMN probation_state       INTEGER DEFAULT 1`,
+    `ALTER TABLE corpus_channels ADD COLUMN probation_started_at  TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN trust_maturity_score  REAL    DEFAULT NULL`,
+    `ALTER TABLE corpus_channels ADD COLUMN semantic_novelty_score REAL   DEFAULT NULL`,
+    `ALTER TABLE corpus_channels ADD COLUMN ingest_tier           INTEGER DEFAULT 1`,
+    `ALTER TABLE corpus_channels ADD COLUMN creator_size_tier     TEXT    DEFAULT NULL`,
+  ];
+  // New columns on corpus_discovery_graph
+  const graphCols = [
+    `ALTER TABLE corpus_discovery_graph ADD COLUMN edge_strength       REAL DEFAULT 1.0`,
+    `ALTER TABLE corpus_discovery_graph ADD COLUMN decay_rate          REAL DEFAULT 0.85`,
+    `ALTER TABLE corpus_discovery_graph ADD COLUMN last_reinforced_at  TEXT DEFAULT (datetime('now'))`,
+  ];
+  for (const sql of [...channelCols, ...graphCols]) {
+    try { database.run(sql); } catch (_) {}
+  }
+
+  // New governance tables
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS app_metadata (
+        metadata_key   TEXT PRIMARY KEY,
+        metadata_value TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS topology_health_snapshots (
+        id                   TEXT PRIMARY KEY,
+        cluster_name         TEXT NOT NULL,
+        snapshot_at          TEXT NOT NULL,
+        video_count          INTEGER DEFAULT 0,
+        channel_count        INTEGER DEFAULT 0,
+        entropy              REAL    DEFAULT 0,
+        cohesion             REAL    DEFAULT 0,
+        overlap_pressure     REAL    DEFAULT 0,
+        outlier_ratio        REAL    DEFAULT 0,
+        archetype_inflation  REAL    DEFAULT 0,
+        giant_cluster_size   INTEGER DEFAULT 0,
+        centroid_instability REAL    DEFAULT 0,
+        semantic_bleed       REAL    DEFAULT 0,
+        health_status        TEXT    DEFAULT 'healthy',
+        metrics_json         TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ths_cluster ON topology_health_snapshots(cluster_name, snapshot_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ths_status  ON topology_health_snapshots(health_status, snapshot_at DESC);
+
+      CREATE TABLE IF NOT EXISTS governance_alerts (
+        id           TEXT    PRIMARY KEY,
+        alert_type   TEXT    NOT NULL,
+        severity     TEXT    DEFAULT 'medium',
+        cluster      TEXT,
+        drift_score  REAL    DEFAULT 0,
+        explanation  TEXT,
+        acknowledged INTEGER DEFAULT 0,
+        created_at   TEXT    DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_ga_type     ON governance_alerts(alert_type, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ga_severity ON governance_alerts(severity, acknowledged);
+      CREATE INDEX IF NOT EXISTS idx_ga_cluster  ON governance_alerts(cluster, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS ai_discovery_log (
+        id                TEXT PRIMARY KEY,
+        run_id            TEXT,
+        handle            TEXT NOT NULL,
+        channel_id        TEXT,
+        niche             TEXT,
+        region            TEXT,
+        suggestion_status TEXT,
+        validation_status TEXT,
+        admission_status  TEXT,
+        rejection_reason  TEXT,
+        novelty_score     REAL,
+        creator_size_tier TEXT,
+        hallucinated      INTEGER DEFAULT 0,
+        created_at        TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_adl_run      ON ai_discovery_log(run_id);
+      CREATE INDEX IF NOT EXISTS idx_adl_niche    ON ai_discovery_log(niche, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_adl_admitted ON ai_discovery_log(admission_status, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_adl_region   ON ai_discovery_log(region);
+
+      CREATE TABLE IF NOT EXISTS behavioral_feedback_log (
+        id             TEXT    PRIMARY KEY,
+        event_type     TEXT    NOT NULL,
+        session_id     TEXT,
+        channel_id     TEXT,
+        video_id       TEXT,
+        suggestion_id  TEXT,
+        payload_json   TEXT,
+        created_at     TEXT    DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_bfl_type    ON behavioral_feedback_log(event_type, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_bfl_channel ON behavioral_feedback_log(channel_id);
+
+      CREATE TABLE IF NOT EXISTS governance_roadmap (
+        id                      TEXT    PRIMARY KEY,
+        governance_layer        TEXT    NOT NULL UNIQUE,
+        description             TEXT,
+        category                TEXT,
+        maturity_stage          TEXT    DEFAULT 'future',
+        readiness_conditions    TEXT,
+        activation_thresholds   TEXT,
+        dependencies            TEXT,
+        risks_if_missing        TEXT,
+        implementation_priority INTEGER DEFAULT 5,
+        current_status          TEXT    DEFAULT 'future',
+        recommended_action      TEXT,
+        readiness_pct           REAL    DEFAULT 0,
+        last_evaluated_at       TEXT,
+        created_at              TEXT    DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_grm_status   ON governance_roadmap(current_status);
+      CREATE INDEX IF NOT EXISTS idx_grm_priority ON governance_roadmap(implementation_priority DESC);
+
+      CREATE TABLE IF NOT EXISTS governance_layer_history (
+        id                  TEXT PRIMARY KEY,
+        layer_id            TEXT NOT NULL,
+        governance_layer    TEXT NOT NULL,
+        previous_status     TEXT,
+        new_status          TEXT,
+        triggering_metrics  TEXT,
+        topology_conditions TEXT,
+        relevant_alerts     TEXT,
+        maturity_score_before REAL,
+        maturity_score_after  REAL,
+        maturity_delta        REAL,
+        rationale           TEXT,
+        changed_by          TEXT DEFAULT 'system_evaluation',
+        changed_at          TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_glh_layer   ON governance_layer_history(layer_id, changed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_glh_changed ON governance_layer_history(changed_at DESC);
+    `);
+  } catch (_) {}
 }
 
 function migrateNiches(database) {
@@ -454,7 +735,17 @@ function getDb() {
   checkForSpuriousDbFiles();
   clearStaleLock();
 
-  db = new Database(DB_PATH);
+  try {
+    db = new Database(DB_PATH);
+  } catch (e) {
+    if (e.message?.includes('unable to open database file')) {
+      console.warn('[DB] CANTOPEN on first attempt — forcing lock clear and retrying:', e.message);
+      try { fs.rmSync(LOCK_PATH, { recursive: true, force: true }); } catch (_) {}
+      db = new Database(DB_PATH);
+    } else {
+      throw e;
+    }
+  }
 
   db.exec('PRAGMA journal_mode=WAL');
   db.exec('PRAGMA synchronous=NORMAL');        // WAL mode default; fewer fsyncs on Windows
@@ -470,8 +761,151 @@ function getDb() {
   backfillIdentityPrimaryNiche(db);
   backfillNewFeatures(db);
   seedDefaultScoringVersion(db);
+  migratePhaseXII(db);
+  seedGovernanceRoadmap(db);
+  migratePhaseXIV(db);
+  migratePhaseXV(db);
+  migrateMultilingual(db);
+  migratePhaseXVI(db);
 
   return db;
+}
+
+function migratePhaseXVI(database) {
+  try {
+    database.exec(`ALTER TABLE ingested_channels ADD COLUMN community_id TEXT`);
+  } catch (_) {}
+  console.log('[DB] Phase XVI migration complete (community_id on ingested_channels)');
+}
+
+function migratePhaseXIV(database) {
+  // Ecology columns on corpus_channels (each in own try/catch — silently skips if already exists)
+  const ecologyCols = [
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_profile          TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_confidence       REAL`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_entropy          REAL`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_last_updated_at  TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_source           TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_version          INTEGER`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_manual_override  INTEGER DEFAULT 0`,
+    `ALTER TABLE corpus_channels ADD COLUMN ecology_override_notes   TEXT`,
+  ];
+  for (const sql of ecologyCols) {
+    try { database.exec(sql); } catch (_) {}
+  }
+
+  // Longitudinal history table for drift detection and spot-check audit
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS corpus_ecology_history (
+        id                 TEXT    PRIMARY KEY,
+        channel_id         TEXT    NOT NULL,
+        ecology_profile    TEXT    NOT NULL,
+        ecology_confidence REAL,
+        ecology_entropy    REAL,
+        ecology_source     TEXT,
+        ecology_version    INTEGER,
+        drift_distance     REAL,
+        drift_alert        INTEGER DEFAULT 0,
+        recorded_at        TEXT    NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_corpus_ecology_history_channel
+       ON corpus_ecology_history(channel_id)`,
+    );
+    database.exec(
+      `CREATE INDEX IF NOT EXISTS idx_corpus_ecology_history_drift
+       ON corpus_ecology_history(drift_alert, recorded_at)`,
+    );
+  } catch (_) {}
+
+  console.log('[DB] Phase XIV migration complete (attention ecology observability)');
+}
+
+function migratePhaseXV(database) {
+  try {
+    database.exec(`ALTER TABLE corpus_channels ADD COLUMN auto_promoted_at TEXT`);
+  } catch (_) {}
+}
+
+function migrateMultilingual(database) {
+  const cols = [
+    `ALTER TABLE corpus_channels ADD COLUMN language_profile    TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN dna_features        TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN community_id        TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN yt_default_language TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN yt_country          TEXT`,
+    `ALTER TABLE corpus_channels ADD COLUMN yt_topic_ids        TEXT`,
+  ];
+  for (const sql of cols) {
+    try { database.exec(sql); } catch (_) {}
+  }
+
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_events (
+        id          INTEGER PRIMARY KEY,
+        channel_id  TEXT NOT NULL,
+        event_type  TEXT NOT NULL,
+        event_data  TEXT NOT NULL,
+        recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_ce_ch ON channel_events(channel_id, event_type, recorded_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ce_ty ON channel_events(event_type, recorded_at DESC);
+    `);
+  } catch (_) {}
+
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_edges (
+        id             INTEGER PRIMARY KEY,
+        source_channel TEXT NOT NULL,
+        target_channel TEXT NOT NULL,
+        edge_type      TEXT NOT NULL,
+        weight         REAL DEFAULT 1.0,
+        observed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        edge_data      TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_edge_src ON creator_edges(source_channel, edge_type);
+      CREATE INDEX IF NOT EXISTS idx_edge_tgt ON creator_edges(target_channel, observed_at DESC);
+    `);
+  } catch (_) {}
+  try {
+    database.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_edge_unique ON creator_edges(source_channel, target_channel, edge_type)`);
+  } catch (_) {}
+
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS discovery_provenance (
+        channel_id        TEXT PRIMARY KEY,
+        discovered_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        discovery_source  TEXT NOT NULL,
+        source_channel_id TEXT,
+        search_query      TEXT,
+        search_language   TEXT,
+        search_region     TEXT,
+        quality_at_entry  REAL,
+        eligible_at_entry INTEGER,
+        entry_data        TEXT
+      );
+    `);
+  } catch (_) {}
+
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS discovery_seeds (
+        channel_id    TEXT PRIMARY KEY,
+        language_code TEXT NOT NULL,
+        niche_hint    TEXT,
+        seed_quality  TEXT DEFAULT 'candidate',
+        added_at      TEXT DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_ds_lang ON discovery_seeds(language_code);
+    `);
+  } catch (_) {}
+
+  console.log('[DB] Multilingual infrastructure migration complete');
 }
 
 function seedDefaultScoringVersion(db) {
@@ -499,6 +933,164 @@ function seedDefaultScoringVersion(db) {
     console.log('[DB] Seeded scoring baseline v1.0.0');
   } catch (e) {
     console.warn('[DB] Could not seed scoring version:', e.message);
+  }
+}
+
+function seedGovernanceRoadmap(db) {
+  const layers = [
+    {
+      id: 'grm-001',
+      governance_layer: 'creator_influence_normalization',
+      description: 'Prevent giant creators from becoming semantic gravity wells that warp niche benchmarks and recommendation priors.',
+      category: 'topology_protection',
+      readiness_conditions: JSON.stringify({
+        training_corpus_size: { gte: 300 },
+        archetype_dominance_pct: { gte: 30 },
+        graph_centralization_risk: { eq: true },
+      }),
+      activation_thresholds: JSON.stringify({ top_creator_influence_pct: 15, graph_hub_concentration: 0.4 }),
+      dependencies: JSON.stringify(['trainingTrustEngine', 'diversityPressureEngine']),
+      risks_if_missing: 'Top 5 creators may represent >40% of training signal, warping validator scoring and semantic priors toward their style.',
+      implementation_priority: 2,
+      current_status: 'monitoring',
+      recommended_action: 'Monitor top-creator influence concentration. Activate when any single creator exceeds 15% of training corpus influence.',
+    },
+    {
+      id: 'grm-002',
+      governance_layer: 'cross_archetype_bridge_detection',
+      description: 'Identify creators who connect semantically distant clusters — rare topology bridges that add structural diversity value.',
+      category: 'topology_intelligence',
+      readiness_conditions: JSON.stringify({
+        cluster_count: { gte: 15 },
+        training_corpus_size: { gte: 200 },
+        topology_cohesion_stable: { eq: true },
+      }),
+      activation_thresholds: JSON.stringify({ min_clusters: 15, min_bridge_candidates: 5 }),
+      dependencies: JSON.stringify(['topologyHealthEngine', 'semanticDriftEngine']),
+      risks_if_missing: 'Multi-niche creators with cross-cluster semantic value may be underweighted or misclassified as noisy/unstable.',
+      implementation_priority: 3,
+      current_status: 'monitoring',
+      recommended_action: 'Begin identifying bridge candidates once cluster count stabilizes above 15.',
+    },
+    {
+      id: 'grm-003',
+      governance_layer: 'semantic_ecosystem_balance',
+      description: 'Actively rebalance the training corpus when emotional/archetype concentration exceeds safe thresholds.',
+      category: 'diversity_governance',
+      readiness_conditions: JSON.stringify({
+        corpus_channels: { gte: 3000 },
+        training_corpus_size: { gte: 300 },
+        archetype_dominance_pct: { gte: 30 },
+      }),
+      activation_thresholds: JSON.stringify({ max_single_archetype_pct: 35, min_archetype_count: 8 }),
+      dependencies: JSON.stringify(['diversityPressureEngine', 'trainingTrustEngine']),
+      risks_if_missing: 'Training corpus converges on 2-3 dominant archetypes, reducing recommendation diversity and semantic range.',
+      implementation_priority: 3,
+      current_status: 'future',
+      recommended_action: 'Activate when corpus reaches 3K channels and any archetype exceeds 35% of training set.',
+    },
+    {
+      id: 'grm-004',
+      governance_layer: 'temporal_semantic_weighting',
+      description: 'Weight semantic signals by recency to distinguish stable persuasion structures from temporary trends.',
+      category: 'temporal_intelligence',
+      readiness_conditions: JSON.stringify({
+        corpus_channels: { gte: 2000 },
+        cluster_count: { gte: 25 },
+        corpus_data_span_days: { gte: 365 },
+      }),
+      activation_thresholds: JSON.stringify({ min_data_span_days: 365, min_temporal_snapshots: 52 }),
+      dependencies: JSON.stringify(['topologyHealthEngine', 'corpusScheduler']),
+      risks_if_missing: 'Viral/seasonal content may temporarily warp semantic priors if trend signals are treated equally with stable patterns.',
+      implementation_priority: 4,
+      current_status: 'future',
+      recommended_action: 'Requires at least one year of corpus snapshot history before temporal patterns are statistically meaningful.',
+    },
+    {
+      id: 'grm-005',
+      governance_layer: 'recommendation_diversity_injection',
+      description: 'Prevent recommendation loops by enforcing archetype diversity constraints at the output layer.',
+      category: 'recommendation_safety',
+      readiness_conditions: JSON.stringify({
+        recommendation_engine_exists: { eq: true },
+        training_corpus_size: { gte: 500 },
+        archetype_dominance_pct: { gte: 25 },
+      }),
+      activation_thresholds: JSON.stringify({ max_same_archetype_pct: 40, min_archetype_spread: 4 }),
+      dependencies: JSON.stringify(['diversityPressureEngine', 'trainingTrustEngine', 'recommendation_engine']),
+      risks_if_missing: 'Recommendation outputs may recursively surface the same archetype, creating persuasion monoculture visible to end users.',
+      implementation_priority: 2,
+      current_status: 'future',
+      recommended_action: 'Activate when a discrete recommendation engine exists and diversity pressure signals show archetype compression.',
+    },
+    {
+      id: 'grm-006',
+      governance_layer: 'trend_seasonality_awareness',
+      description: 'Detect cyclical persuasion structures (annual events, news cycles, seasonal virality) to prevent misclassification as stable patterns.',
+      category: 'temporal_intelligence',
+      readiness_conditions: JSON.stringify({
+        corpus_videos: { gte: 50000 },
+        corpus_data_span_days: { gte: 365 },
+        cluster_count: { gte: 20 },
+      }),
+      activation_thresholds: JSON.stringify({ min_video_count: 50000, min_data_span_days: 365 }),
+      dependencies: JSON.stringify(['temporal_semantic_weighting']),
+      risks_if_missing: 'Seasonal content spikes (elections, holidays, events) may be absorbed into stable semantic clusters, distorting archetype baselines.',
+      implementation_priority: 5,
+      current_status: 'future',
+      recommended_action: 'Implement after temporal_semantic_weighting is active and at least 1 year of data exists.',
+    },
+    {
+      id: 'grm-007',
+      governance_layer: 'semantic_wild_zones',
+      description: 'Experimental semantic regions that accept noisy/uncategorized channels without contaminating the trusted training topology.',
+      category: 'topology_architecture',
+      readiness_conditions: JSON.stringify({
+        corpus_channels: { gte: 5000 },
+        governance_maturity_score: { gte: 60 },
+        topology_health_stable_days: { gte: 30 },
+      }),
+      activation_thresholds: JSON.stringify({ min_corpus_size: 5000, min_governance_maturity: 60 }),
+      dependencies: JSON.stringify(['trainingTrustEngine', 'topologyHealthEngine', 'semanticDriftEngine']),
+      risks_if_missing: 'Experimental or borderline channels are either rejected entirely or admitted to the trusted topology — no middle ground for probabilistic exploration.',
+      implementation_priority: 6,
+      current_status: 'future',
+      recommended_action: 'Requires mature governance infrastructure and stable topology before experimental regions can be safely isolated.',
+    },
+    {
+      id: 'grm-008',
+      governance_layer: 'topology_mutation_safeguards',
+      description: 'Protect the semantic topology from runaway self-modification if future autonomous cluster-rewriting systems are added.',
+      category: 'system_safety',
+      readiness_conditions: JSON.stringify({
+        governance_maturity_score: { gte: 70 },
+        autonomous_topology_mutation: { eq: true },
+      }),
+      activation_thresholds: JSON.stringify({ min_governance_maturity: 70 }),
+      dependencies: JSON.stringify(['topologyHealthEngine', 'semanticDriftEngine', 'governanceMaturityEngine']),
+      risks_if_missing: 'Any future self-modifying topology system could recursively destabilize semantic clusters without human oversight.',
+      implementation_priority: 7,
+      current_status: 'future',
+      recommended_action: 'Pre-register now. Activate only if autonomous topology mutation is ever implemented.',
+    },
+  ];
+
+  for (const layer of layers) {
+    try {
+      db.run(
+        `INSERT OR IGNORE INTO governance_roadmap
+           (id, governance_layer, description, category, readiness_conditions,
+            activation_thresholds, dependencies, risks_if_missing,
+            implementation_priority, current_status, recommended_action)
+         VALUES (?,?,?,?,?,?,?,?,?,?,?)`,
+        [
+          layer.id, layer.governance_layer, layer.description, layer.category,
+          layer.readiness_conditions, layer.activation_thresholds, layer.dependencies,
+          layer.risks_if_missing, layer.implementation_priority,
+          layer.current_status, layer.recommended_action,
+        ],
+      );
+    } catch (_) {}
   }
 }
 

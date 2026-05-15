@@ -2,6 +2,7 @@ const crypto = require('crypto');
 const { getDb }               = require('../db/init');
 const { discoverFromSeed, fetchChannelTitles } = require('./discoveryFetcher');
 const quotaGuard = require('./quotaGuard');
+const { getApiKey } = require('./apiKeyManager');
 const { classifyChannel }     = require('./channelClassifier');
 const { computeDiversityScore } = require('./diversityScorer');
 const { assessDuplicateRisk } = require('./duplicateDetector');
@@ -85,7 +86,7 @@ async function runDiscoveryJob(jobId) {
         if (candidate.discovery_source === 'featured_channels' && quotaGuard.quotaAvailable()) {
           try {
             quotaGuard.recordUsage(1, 'ingest');
-            const qs  = new URLSearchParams({ part: 'contentDetails', id: candidate.channel_id, key: process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY }).toString();
+            const qs  = new URLSearchParams({ part: 'contentDetails', id: candidate.channel_id, key: getApiKey() }).toString();
             const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?${qs}`);
             const chData = await res.json();
             const uploadsId = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;

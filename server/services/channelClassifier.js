@@ -4,7 +4,9 @@ const OpenAI = require('openai');
 const ALLOWED_NICHES = [
   'technology', 'business', 'education', 'entertainment', 'gaming',
   'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
-  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty', 'other',
+  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty',
+  'yoga', 'meditation', 'philosophy',
+  'other',
 ];
 
 // ── Layer 3: Content mechanics (controlled vocabulary, not semantic topics) ────

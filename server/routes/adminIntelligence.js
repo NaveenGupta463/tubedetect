@@ -2,6 +2,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const { getDb }    = require('../db/init');
 const quotaGuard   = require('../services/quotaGuard');
+const { getApiKey, markExhausted, isQuotaError } = require('../services/apiKeyManager');
 const {
   getAllIngestedChannels,
   upsertIngestedChannel,
@@ -19,33 +20,40 @@ const {
 } = require('../db/queries');
 const { classifyChannel } = require('../services/channelClassifier');
 const { runHistoricalIngestCycle } = require('../jobs/historicalIngest');
-const { runSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
+const { runSnapshotCycle, runNeverRefreshedSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
 const { runPatternMining }         = require('../services/patternMiner');
 const { getLastRun }               = require('../services/jobState');
+const { detectCommunities, summarizeCommunities } = require('../services/louvainClustering');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
-function getYtKey() {
-  return process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY || null;
+async function ytFetchAdmin(url) {
+  for (let attempt = 0; attempt < 12; attempt++) {
+    const key = getApiKey();
+    if (!key) throw new Error('all_api_keys_exhausted');
+    const sep = url.includes('?') ? '&' : '?';
+    const res  = await fetch(`${url}${sep}key=${key}`);
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = data?.error?.message || String(res.status);
+      if (isQuotaError(msg)) { markExhausted(key); continue; }
+      throw new Error(msg);
+    }
+    return data;
+  }
+  throw new Error('all_api_keys_exhausted');
 }
 
-// Parse raw operator input into { type, value }
-// type: 'channel_id' | 'handle' | 'url'
 function parseChannelInput(raw) {
   const s = (raw ?? '').trim();
   if (!s) return null;
-  // Raw channel ID
   if (/^UC[A-Za-z0-9_-]{22}$/.test(s)) return { type: 'channel_id', value: s };
-  // youtube.com/channel/UC...
   const channelMatch = s.match(/youtube\.com\/channel\/(UC[A-Za-z0-9_-]{22})/);
   if (channelMatch) return { type: 'channel_id', value: channelMatch[1] };
-  // @handle or youtube.com/@handle
   const handleMatch = s.match(/(?:youtube\.com\/)?@([\w.-]+)/);
   if (handleMatch) return { type: 'handle', value: '@' + handleMatch[1] };
-  // youtube.com/c/name or youtube.com/user/name
   const customMatch = s.match(/youtube\.com\/(?:c|user)\/([\w.-]+)/);
   if (customMatch) return { type: 'handle', value: customMatch[1] };
-  // Bare @handle without URL
   if (s.startsWith('@')) return { type: 'handle', value: s };
   return { type: 'handle', value: s };
 }
@@ -54,18 +62,13 @@ async function resolveToChannelId(parsed) {
   if (parsed.type === 'channel_id') {
     return { channel_id: parsed.value, channel_name: null, resolved_via: 'direct' };
   }
-  const key = getYtKey();
-  if (!key) throw new Error('YT_API_KEY not set — cannot resolve handles');
+  if (!getApiKey()) throw new Error('No API keys available — cannot resolve handles');
 
   const param = parsed.value.startsWith('@')
     ? `forHandle=${encodeURIComponent(parsed.value)}`
     : `forUsername=${encodeURIComponent(parsed.value)}`;
 
-  const url  = `${YT_BASE}/channels?part=id,snippet&${param}&key=${key}`;
-  const res  = await fetch(url);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data?.error?.message || `YouTube API error ${res.status}`);
-
+  const data = await ytFetchAdmin(`${YT_BASE}/channels?part=id,snippet&${param}`);
   const item = data.items?.[0];
   if (!item) throw new Error(`Channel not found: ${parsed.value}`);
 
@@ -110,9 +113,26 @@ router.post('/admin/intelligence/channels', (req, res) => {
     if (!channel_id || !niche) {
       return res.status(400).json({ error: 'channel_id and niche are required' });
     }
+
+    // Try direct corpus match first, then niche majority fallback
+    const corpusRow = db.get(
+      `SELECT community_id FROM corpus_channels WHERE channel_id = ? AND community_id IS NOT NULL`,
+      [channel_id],
+    );
+    let community_id = corpusRow?.community_id ?? null;
+    if (!community_id && niche) {
+      const majority = db.get(
+        `SELECT community_id FROM corpus_channels
+         WHERE niche = ? AND community_id IS NOT NULL
+         GROUP BY community_id ORDER BY COUNT(*) DESC LIMIT 1`,
+        [niche],
+      );
+      community_id = majority?.community_id ?? null;
+    }
+
     const id = crypto.randomUUID();
-    upsertIngestedChannel(db, { id, channel_id, niche, added_by: 'admin', notes });
-    res.json({ ok: true, id, channel_id, niche });
+    upsertIngestedChannel(db, { id, channel_id, niche, added_by: 'admin', notes, community_id });
+    res.json({ ok: true, id, channel_id, niche, community_id });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -163,12 +183,26 @@ router.post('/admin/intelligence/channels/bulk', async (req, res) => {
       }
       try {
         const resolved = await resolveToChannelId(parsed);
+        const corpusRow = db.get(
+          `SELECT community_id FROM corpus_channels WHERE channel_id = ? AND community_id IS NOT NULL`,
+          [resolved.channel_id],
+        );
+        let community_id = corpusRow?.community_id ?? null;
+        if (!community_id && niche) {
+          const majority = db.get(
+            `SELECT community_id FROM corpus_channels
+             WHERE niche = ? AND community_id IS NOT NULL
+             GROUP BY community_id ORDER BY COUNT(*) DESC LIMIT 1`,
+            [niche],
+          );
+          community_id = majority?.community_id ?? null;
+        }
         const id = crypto.randomUUID();
         upsertIngestedChannel(db, {
           id, channel_id: resolved.channel_id,
-          channel_name: resolved.channel_name, niche, added_by: 'admin', notes,
+          channel_name: resolved.channel_name, niche, added_by: 'admin', notes, community_id,
         });
-        results.push({ raw: input, channel_id: resolved.channel_id, niche, ok: true });
+        results.push({ raw: input, channel_id: resolved.channel_id, niche, community_id, ok: true });
       } catch (e) {
         results.push({ raw: input, ok: false, reason: e.message });
       }
@@ -237,6 +271,22 @@ router.post('/admin/intelligence/snapshot/trigger', (req, res) => {
     catch (e) { console.error('[snapshot] Manual trigger error:', e.message); }
   });
   res.json({ ok: true, started: true, message: 'Snapshot running in background — check server logs for progress' });
+});
+
+// POST /api/admin/intelligence/snapshot/trigger-recent
+// Only processes videos where last_refreshed_at IS NULL (never been refreshed).
+router.post('/admin/intelligence/snapshot/trigger-recent', (req, res) => {
+  if (!quotaGuard.quotaAvailable()) {
+    return res.status(429).json({ error: 'quota exhausted — try again after midnight Pacific' });
+  }
+  if (isSnapshotRunning()) {
+    return res.status(409).json({ error: 'Snapshot already running', running: true });
+  }
+  setImmediate(async () => {
+    try { await runNeverRefreshedSnapshotCycle(); }
+    catch (e) { console.error('[snapshot] Never-refreshed trigger error:', e.message); }
+  });
+  res.json({ ok: true, started: true, message: 'Never-refreshed snapshot running — check server logs' });
 });
 
 // POST /api/admin/intelligence/patterns/recompute
@@ -449,6 +499,196 @@ router.post('/admin/intelligence/channels/bulk-detect-identity', async (req, res
     res.json({ ok: true, detected, failed: errors.length, total_pending: pending.length, errors });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/intelligence/channels/auto-promoted
+// Returns all ingested_channels added via corpus auto-promotion.
+router.get('/admin/intelligence/channels/auto-promoted', (req, res) => {
+  try {
+    const db = getDb();
+    const rows = db.all(
+      `SELECT * FROM ingested_channels WHERE added_by = 'auto_promote' ORDER BY added_at DESC`,
+    );
+    res.json({ channels: rows });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Community viewer ──────────────────────────────────────────────────────────
+router.get('/admin/intelligence/communities', adminAuth, (req, res) => {
+  try {
+    const db = getDb();
+
+    const assigned = db.all(`
+      SELECT channel_id, title, niche, subscriber_count, community_id
+      FROM corpus_channels
+      WHERE community_id IS NOT NULL
+      ORDER BY subscriber_count DESC
+    `);
+
+    if (assigned.length === 0) {
+      return res.json({ ok: true, total_communities: 0, total_assigned: 0, communities: [] });
+    }
+
+    // Aggregate per community in JS
+    const commMap = new Map();
+    for (const ch of assigned) {
+      if (!commMap.has(ch.community_id)) {
+        commMap.set(ch.community_id, { size: 0, niches: new Map(), top_channels: [] });
+      }
+      const c = commMap.get(ch.community_id);
+      c.size++;
+      if (ch.niche) c.niches.set(ch.niche, (c.niches.get(ch.niche) || 0) + 1);
+      if (c.top_channels.length < 5) c.top_channels.push({ title: ch.title, subscriber_count: ch.subscriber_count, niche: ch.niche });
+    }
+
+    const communities = Array.from(commMap.entries())
+      .map(([id, { size, niches, top_channels }]) => {
+        const sorted = [...niches.entries()].sort((a, b) => b[1] - a[1]);
+        return {
+          community_id: id,
+          size,
+          top_niche:    sorted[0]?.[0] ?? 'unknown',
+          niches:       Object.fromEntries(sorted),
+          top_channels,
+        };
+      })
+      .sort((a, b) => b.size - a.size);
+
+    res.json({ ok: true, total_communities: communities.length, total_assigned: assigned.length, communities });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── Louvain community detection ───────────────────────────────────────────────
+router.post('/admin/intelligence/louvain/run', adminAuth, async (req, res) => {
+  try {
+    const db    = getDb();
+    const start = Date.now();
+
+    // Load all channels (nodes)
+    const channels = db.all('SELECT channel_id, niche FROM corpus_channels');
+    const nodeIds  = channels.map(c => c.channel_id);
+    const nicheMap = new Map(channels.map(c => [c.channel_id, c.niche]));
+
+    // Load all edges — use edge_strength as weight (falls back to confidence then 1.0)
+    const edges = db.all(`
+      SELECT source_channel_id AS source,
+             target_channel_id AS target,
+             COALESCE(edge_strength, confidence, 1.0) AS weight
+      FROM corpus_discovery_graph
+    `);
+
+    console.log(`[louvain] Running on ${nodeIds.length} nodes, ${edges.length} edges`);
+
+    // Run algorithm (synchronous, ~1-5s for 5K nodes)
+    const assignments = detectCommunities(nodeIds, edges);
+    const summary     = summarizeCommunities(assignments, nicheMap);
+    const elapsed     = Date.now() - start;
+
+    // Write community_id back to corpus_channels in one transaction
+    db.run('BEGIN');
+    try {
+      for (const [channelId, commId] of assignments) {
+        db.run('UPDATE corpus_channels SET community_id = ? WHERE channel_id = ?', [commId, channelId]);
+      }
+      db.run('COMMIT');
+    } catch (e) {
+      db.run('ROLLBACK');
+      throw e;
+    }
+
+    console.log(`[louvain] Done — ${summary.length} communities in ${elapsed}ms`);
+    res.json({
+      ok:           true,
+      channels:     nodeIds.length,
+      edges:        edges.length,
+      communities:  summary.length,
+      duration_ms:  elapsed,
+      top_communities: summary.slice(0, 20),
+    });
+  } catch (e) {
+    console.error('[louvain] Error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/admin/intelligence/community/backfill
+// Step 1: copy community_id from corpus_channels WHERE channel_id matches ingested_channels
+// Step 2: for ingested_channels still NULL, assign most common community_id for their niche
+router.post('/admin/intelligence/community/backfill', (req, res) => {
+  try {
+    const db = getDb();
+
+    // Step 1: direct corpus match
+    db.run(`
+      UPDATE ingested_channels
+      SET community_id = (
+        SELECT corpus_channels.community_id
+        FROM corpus_channels
+        WHERE corpus_channels.channel_id = ingested_channels.channel_id
+          AND corpus_channels.community_id IS NOT NULL
+      )
+      WHERE community_id IS NULL
+    `);
+
+    const afterDirect = db.get(`SELECT COUNT(*) AS n FROM ingested_channels WHERE community_id IS NULL`);
+
+    // Step 2: niche majority fallback for channels not in corpus
+    // Build niche → most common community_id map from corpus_channels
+    const nicheMajority = db.all(`
+      SELECT niche, community_id, COUNT(*) AS cnt
+      FROM corpus_channels
+      WHERE community_id IS NOT NULL AND niche IS NOT NULL
+      GROUP BY niche, community_id
+      ORDER BY niche, cnt DESC
+    `);
+
+    const nicheTop = new Map();
+    for (const row of nicheMajority) {
+      if (!nicheTop.has(row.niche)) nicheTop.set(row.niche, row.community_id);
+    }
+
+    let fallbackAssigned = 0;
+    const unassigned = db.all(`
+      SELECT channel_id, niche FROM ingested_channels WHERE community_id IS NULL
+    `);
+    db.run('BEGIN');
+    try {
+      for (const ch of unassigned) {
+        const commId = nicheTop.get(ch.niche);
+        if (commId) {
+          db.run(
+            `UPDATE ingested_channels SET community_id = ? WHERE channel_id = ?`,
+            [commId, ch.channel_id],
+          );
+          fallbackAssigned++;
+        }
+      }
+      db.run('COMMIT');
+    } catch (e) {
+      db.run('ROLLBACK');
+      throw e;
+    }
+
+    const afterFallback = db.get(`SELECT COUNT(*) AS n FROM ingested_channels WHERE community_id IS NULL`);
+    const total         = db.get(`SELECT COUNT(*) AS n FROM ingested_channels`);
+    const assigned      = db.get(`SELECT COUNT(*) AS n FROM ingested_channels WHERE community_id IS NOT NULL`);
+
+    res.json({
+      ok:               true,
+      total_channels:   total.n,
+      assigned:         assigned.n,
+      still_unassigned: afterFallback.n,
+      direct_from_corpus: total.n - afterFallback.n - fallbackAssigned,
+      fallback_assigned: fallbackAssigned,
+    });
+  } catch (e) {
+    console.error('[community-backfill] Error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

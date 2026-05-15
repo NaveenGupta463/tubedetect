@@ -5,7 +5,7 @@
 // Disable API at 80% = 8,000 units
 
 const DAILY_LIMIT = 10000;
-const CUTOFF      = Math.floor(DAILY_LIMIT * 0.80); // 8000
+const CUTOFF      = 10000;
 
 const state = {
   date:          new Date().toDateString(),

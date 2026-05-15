@@ -11,3 +11,4 @@ backend/cache.json
 server/.env
 server/*.sqlite
 *.sqlite
+*.log

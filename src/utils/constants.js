@@ -2,9 +2,11 @@
 // Score thresholds, cache key prefixes, and lookup lists live here.
 
 export const NICHES = [
-  'finance', 'fitness', 'business', 'technology', 'gaming',
-  'cooking', 'travel', 'education', 'entertainment', 'health',
-  'productivity', 'ai tools', 'entrepreneurship', 'lifestyle', 'other',
+  'technology', 'business', 'education', 'entertainment', 'gaming',
+  'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
+  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty',
+  'yoga', 'meditation', 'philosophy',
+  'other',
 ];
 
 export const CACHE_KEYS = {

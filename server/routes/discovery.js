@@ -79,18 +79,24 @@ router.patch('/admin/discovery/candidates/:id', (req, res) => {
 
     updateDiscoveredChannelStatus(db, req.params.id, status);
 
-    // If approved: add to ingested_channels and queue for historical ingest
+    // If approved: add to ingested_channels only if English (non-English channels
+    // stay in corpus_channels for intelligence but don't feed the scoring benchmarks)
     if (status === 'approved') {
       const candidate = getDiscoveredChannelById(db, req.params.id);
       if (candidate) {
-        upsertIngestedChannel(db, {
-          id:           crypto.randomUUID(),
-          channel_id:   candidate.channel_id,
-          channel_name: candidate.title,
-          niche:        candidate.primary_niche ?? 'other',
-          added_by:     'discovery',
-          notes:        `Discovered from ${candidate.discovered_from_channel_id ?? 'unknown'} via ${candidate.discovery_source ?? 'unknown'}`,
-        });
+        const corpusCh  = db.get('SELECT language, yt_default_language FROM corpus_channels WHERE channel_id = ?', [candidate.channel_id]);
+        const lang      = corpusCh?.language ?? corpusCh?.yt_default_language ?? 'en';
+        const isEnglish = !lang || lang === 'en' || lang === 'en-US' || lang === 'en-GB';
+        if (isEnglish) {
+          upsertIngestedChannel(db, {
+            id:           crypto.randomUUID(),
+            channel_id:   candidate.channel_id,
+            channel_name: candidate.title,
+            niche:        candidate.primary_niche ?? 'other',
+            added_by:     'discovery',
+            notes:        `Discovered from ${candidate.discovered_from_channel_id ?? 'unknown'} via ${candidate.discovery_source ?? 'unknown'}`,
+          });
+        }
       }
     }
 

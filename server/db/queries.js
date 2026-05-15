@@ -478,16 +478,19 @@ function getPredictionTrendBuckets(db) {
 function getLearningOutcomeRows(db) {
   return db.all(
     `SELECT
-       COALESCE(LOWER(TRIM(niche)), 'unknown')            AS niche,
-       calibration_error,
-       COALESCE(LOWER(TRIM(confidence_state)), 'unknown') AS confidence_state,
-       pipeline_version,
-       video_id,
-       COALESCE(calibration_weight, 1.0)                  AS calibration_weight
-     FROM video_outcomes
-     WHERE actual_performance_score IS NOT NULL
-       AND calibration_error IS NOT NULL
-     ORDER BY created_at DESC
+       COALESCE(LOWER(TRIM(vo.niche)), 'unknown')            AS niche,
+       vo.calibration_error,
+       COALESCE(LOWER(TRIM(vo.confidence_state)), 'unknown') AS confidence_state,
+       vo.pipeline_version,
+       vo.video_id,
+       COALESCE(vo.calibration_weight, 1.0)                  AS calibration_weight
+     FROM video_outcomes vo
+     JOIN ingested_videos iv ON iv.youtube_video_id = vo.youtube_video_id
+     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+     JOIN corpus_channels cc ON cc.channel_id = ic.channel_id AND cc.training_eligible = 1
+     WHERE vo.actual_performance_score IS NOT NULL
+       AND vo.calibration_error IS NOT NULL
+     ORDER BY vo.created_at DESC
      LIMIT 500`,
   );
 }
@@ -800,17 +803,18 @@ function getAllIngestedChannels(db) {
   return db.all('SELECT * FROM ingested_channels ORDER BY added_at DESC');
 }
 
-function upsertIngestedChannel(db, { id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes }) {
+function upsertIngestedChannel(db, { id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes, ignore_from_benchmarks = 0, community_id = null }) {
   return db.run(
     `INSERT INTO ingested_channels
-       (id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+       (id, channel_id, channel_name, niche, uploads_playlist_id, channel_subscribers, added_by, notes, ignore_from_benchmarks, community_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(channel_id) DO UPDATE SET
-       channel_name        = COALESCE(excluded.channel_name, channel_name),
-       uploads_playlist_id = COALESCE(excluded.uploads_playlist_id, uploads_playlist_id),
-       channel_subscribers = COALESCE(excluded.channel_subscribers, channel_subscribers)`,
+       channel_name          = COALESCE(excluded.channel_name, channel_name),
+       uploads_playlist_id   = COALESCE(excluded.uploads_playlist_id, uploads_playlist_id),
+       channel_subscribers   = COALESCE(excluded.channel_subscribers, channel_subscribers),
+       community_id          = COALESCE(ingested_channels.community_id, excluded.community_id)`,
     [id, channel_id, channel_name ?? null, niche, uploads_playlist_id ?? null,
-     channel_subscribers ?? null, added_by ?? 'system', notes ?? null],
+     channel_subscribers ?? null, added_by ?? 'system', notes ?? null, ignore_from_benchmarks ? 1 : 0, community_id],
   );
 }
 
@@ -929,6 +933,19 @@ function getAllIngestedVideosForSnapshot(db) {
   `);
 }
 
+function getNeverRefreshedVideosForSnapshot(db) {
+  return db.all(`
+    SELECT iv.youtube_video_id, iv.channel_id, iv.niche, iv.published_at,
+           iv.duration_seconds, iv.views, iv.likes, iv.comments,
+           ic.channel_subscribers
+    FROM ingested_videos iv
+    JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+    WHERE iv.published_at IS NOT NULL
+      AND iv.last_refreshed_at IS NULL
+    ORDER BY iv.ingested_at DESC
+  `);
+}
+
 // Returns buckets already filled for a video (to determine which are new).
 function getExistingBucketsForVideo(db, videoId) {
   const rows = db.all(
@@ -995,8 +1012,10 @@ function getSnapshotRowsForAggregation(db, niche, bucket) {
             iv.duration_seconds
      FROM video_growth_snapshots vgs
      JOIN ingested_videos iv ON iv.youtube_video_id = vgs.video_id
+     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
      WHERE iv.niche = ? AND vgs.bucket = ?
        AND vgs.views IS NOT NULL
+       AND ic.ignore_from_benchmarks = 0
      ORDER BY vgs.views DESC`,
     [niche, bucket],
   );
@@ -1870,6 +1889,7 @@ module.exports = {
   getPreviousBucketSnapshot,
   getSnapshotCountByBucket,
   getAllIngestedVideosForSnapshot,
+  getNeverRefreshedVideosForSnapshot,
   getExistingBucketsForVideo,
   upsertNicheBenchmark,
   getAllNicheBenchmarks,

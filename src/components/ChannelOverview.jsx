@@ -7,6 +7,7 @@ import { formatNum, calcEngagement, parseDuration } from '../utils/analysis';
 import { fetchChannel, fetchChannelVideos, searchChannels } from '../api/youtube';
 import VideoList from './VideoList';
 import TITooltip from './Tooltip';
+import { ROUTES } from '../config';
 
 const STAT_TIPS = {
   'Subscribers':      'Total number of people subscribed to this channel.',
@@ -502,6 +503,16 @@ export default function ChannelOverview({ channel, videos, onVideoSelect, compet
   const [selectedPattern, setSelectedPattern] = useState(null);
   const stats = channel?.statistics || {};
   const snippet = channel?.snippet || {};
+
+  // Silently save every viewed channel to corpus so it gets clustered on next Louvain run
+  useEffect(() => {
+    if (!channel?.id) return;
+    fetch(ROUTES.corpusSeenChannel, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(channel),
+    }).catch(() => {});
+  }, [channel?.id]);
 
   const totalViews = videos.reduce((s, v) => s + parseInt(v.statistics?.viewCount || 0), 0);
   const avgEngagement = videos.length

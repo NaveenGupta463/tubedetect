@@ -127,8 +127,61 @@ async function ingestChannel(channel) {
     videoIds = result.videoIds;
     quotaGuard.recordUsage(1, 'ingest');
   } catch (e) {
-    console.warn(`[historical:${channel.channel_id}] playlistItems failed:`, e.message);
-    return { inserted: 0, skipped: 0, snapshots: 0 };
+    const isNotFound = e.message?.toLowerCase().includes('cannot be found')
+                    || e.message?.toLowerCase().includes('playlistnotfound')
+                    || e.message?.toLowerCase().includes('not found');
+
+    if (isNotFound) {
+      // Stale playlist ID — clear it and re-fetch from channels.list
+      updateChannelIngestMetadata(db, channel.channel_id, { uploadsPlaylistId: null });
+
+      if (!quotaGuard.quotaAvailable()) {
+        console.warn(`[historical:${channel.channel_id}] Stale playlist, quota exhausted — deferring`);
+        return { inserted: 0, skipped: 0, snapshots: 0 };
+      }
+
+      let freshPlaylistId = null;
+      try {
+        const details = await fetchChannelContentDetails(channel.channel_id);
+        quotaGuard.recordUsage(1, 'ingest');
+        freshPlaylistId = details.uploadsPlaylistId;
+        if (freshPlaylistId) {
+          updateChannelIngestMetadata(db, channel.channel_id, {
+            uploadsPlaylistId:  freshPlaylistId,
+            channelName:        details.channelName,
+            channelSubscribers: details.subscriberCount,
+          });
+          channelSubs = details.subscriberCount ?? channelSubs;
+        }
+      } catch (ce) {
+        // Channel itself is gone — disable ingest
+        console.warn(`[historical:${channel.channel_id}] Channel not found on re-check — disabling`);
+        db.run(`UPDATE ingested_channels SET ingest_enabled = 0 WHERE channel_id = ?`, [channel.channel_id]);
+        return { inserted: 0, skipped: 0, snapshots: 0 };
+      }
+
+      if (!freshPlaylistId || freshPlaylistId === playlistId) {
+        // Playlist is permanently inaccessible
+        console.warn(`[historical:${channel.channel_id}] Uploads playlist inaccessible — disabling`);
+        db.run(`UPDATE ingested_channels SET ingest_enabled = 0 WHERE channel_id = ?`, [channel.channel_id]);
+        return { inserted: 0, skipped: 0, snapshots: 0 };
+      }
+
+      // Retry with the fresh playlist ID
+      try {
+        const result = await fetchPlaylistItems(freshPlaylistId, null, VIDEOS_PER_CHANNEL);
+        videoIds = result.videoIds;
+        quotaGuard.recordUsage(1, 'ingest');
+        playlistId = freshPlaylistId;
+      } catch (re) {
+        console.warn(`[historical:${channel.channel_id}] Retry with fresh playlist also failed:`, re.message);
+        db.run(`UPDATE ingested_channels SET ingest_enabled = 0 WHERE channel_id = ?`, [channel.channel_id]);
+        return { inserted: 0, skipped: 0, snapshots: 0 };
+      }
+    } else {
+      console.warn(`[historical:${channel.channel_id}] playlistItems failed:`, e.message);
+      return { inserted: 0, skipped: 0, snapshots: 0 };
+    }
   }
 
   if (!videoIds.length) {

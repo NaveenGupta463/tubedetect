@@ -8,12 +8,7 @@ import { ROUTES } from '../config';
 import SemanticIntelligenceTab  from './SemanticIntelligenceTab';
 import StrategyIntelligenceTab from './StrategyIntelligenceTab';
 import { spring } from '../motion/spring';
-
-const NICHES = [
-  'technology', 'business', 'education', 'entertainment', 'gaming',
-  'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
-  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty', 'other',
-];
+import { NICHES } from '../utils/constants';
 
 const FORMAT_TYPES    = ['tutorial','vlog','review','documentary','interview','podcast','livestream','compilation','essay','shorts','other'];
 const AUDIENCE_STYLES = ['general','beginner','intermediate','expert','children','teens','professional'];
@@ -28,7 +23,7 @@ const ARCHETYPES = [
   'entertainer','commentator','debater','interviewer',
   'personality_host','investigative_creator',
 ];
-const TABS   = ['Channels', 'Ingest Status', 'Quota', 'Cron Health', 'Patterns', 'Controls', 'Evolution', 'Discovery', 'Learning', 'Semantic', 'Strategy'];
+const TABS   = ['Channels', 'Auto-Ingested', 'Ingest Status', 'Quota', 'Cron Health', 'Patterns', 'Controls', 'Evolution', 'Discovery', 'Learning', 'Semantic', 'Strategy', 'Corpus', 'Communities'];
 const BUCKET_LABELS = ['1d', '3d', '7d', '14d', '30d', '90d', '365d'];
 
 const S = {
@@ -739,6 +734,249 @@ function ChannelsTab({ token, channels, onRefresh }) {
   );
 }
 
+// ── Tab: Auto-Ingested ────────────────────────────────────────────────────────
+function AutoIngestedTab({
+  token,
+  discoverRunning,   discoverResult,   discoverErr,   onDiscover,
+  promoteRunning,    promoteResult,    promoteErr,    onPromote,
+  ingestOnlyRunning, ingestOnlyResult, ingestOnlyErr, onIngestOnly,
+}) {
+  const [channels, setChannels] = useState(null);
+  const [err, setErr]           = useState('');
+  const [corpusStats, setCorpusStats] = useState(null);
+
+  function load() {
+    apiFetch(ROUTES.adminIntelAutoPromoted, token)
+      .then(d => setChannels(d.channels ?? []))
+      .catch(e => setErr(e.message));
+    apiFetch(ROUTES.corpusStats, token)
+      .then(d => { if (d.ok) setCorpusStats(d.stats); })
+      .catch(() => {});
+  }
+
+  useEffect(() => { load(); }, [token]);
+  useEffect(() => { if (!promoteRunning && promoteResult) load(); }, [promoteRunning]);
+
+  const byNiche = channels
+    ? channels.reduce((acc, ch) => {
+        const n = ch.niche || 'unknown';
+        acc[n] = (acc[n] || 0) + 1;
+        return acc;
+      }, {})
+    : {};
+
+  function RunResultPanel({ result, accentColor }) {
+    if (!result) return null;
+    const ingestLog    = result.log?.find(e => e.step === 'light_ingest')?.data;
+    const promoteLog   = result.log?.find(e => e.step === 'auto_promote')?.data;
+    const searchLog    = result.log?.find(e => e.step === 'discovery_search')?.data;
+    const classifyLog  = result.log?.find(e => e.step === 'niche_classify')?.data;
+    const evalLog      = result.log?.find(e => e.step === 'quality_eval')?.data;
+    const trainingLog  = result.log?.find(e => e.step === 'training_gate')?.data;
+    const ingestedChs  = ingestLog?.channels ?? [];
+    const byNicheRun   = ingestedChs.reduce((a, c) => { a[c.niche || 'unknown'] = (a[c.niche || 'unknown'] || 0) + 1; return a; }, {});
+    return (
+      <div style={{ marginTop: 10 }}>
+        <div style={{ background: '#0a0f0a', border: `1px solid ${accentColor}33`, borderRadius: 6, padding: '10px 14px', marginBottom: 10, fontSize: '0.7rem', color: accentColor, display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          {result._ran_at && <span style={{ color: '#555' }}>Last run: {new Date(result._ran_at).toLocaleString()}</span>}
+          <span>Quota: <strong>{result.quota_used}</strong></span>
+          <span>Duration: <strong>{((result.duration_ms ?? 0) / 1000).toFixed(1)}s</strong></span>
+          {ingestLog  && <span>Ingested: <strong>{ingestLog.ok ?? 0}</strong></span>}
+          {searchLog  && <span>Discovered: <strong>{searchLog.search_discovered ?? 0}</strong></span>}
+          {classifyLog && classifyLog.attempted > 0 && <span>Classified: <strong>{classifyLog.classified ?? 0}</strong> / {classifyLog.attempted}</span>}
+          {evalLog    && <span>Evaluated: <strong>{evalLog.evaluated ?? 0}</strong></span>}
+          {trainingLog && (trainingLog.promoted > 0
+            ? <span>Newly eligible: <strong style={{ color: '#4ade80' }}>+{trainingLog.promoted}</strong></span>
+            : evalLog?.evaluated > 0
+              ? <span style={{ color: '#555' }}>Confirmed: <strong>{trainingLog.unchanged ?? evalLog.evaluated}</strong></span>
+              : null
+          )}
+          {trainingLog && trainingLog.demoted > 0 && <span style={{ color: '#f87171' }}>Demoted: <strong>{trainingLog.demoted}</strong></span>}
+          {promoteLog && promoteLog.candidates > 0 && <span>Added to DB: <strong>{promoteLog.promoted ?? 0}</strong> / {promoteLog.candidates}</span>}
+        </div>
+        {Object.keys(byNicheRun).length > 0 && (
+          <div style={{ ...S.row, marginBottom: 10, flexWrap: 'wrap' }}>
+            {Object.entries(byNicheRun).map(([niche, count]) => (
+              <span key={niche} style={{ ...S.tag, color: '#8888ff', borderColor: '#2a2a4e' }}>{niche}: {count}</span>
+            ))}
+          </div>
+        )}
+        {ingestedChs.length > 0 && (
+          <table style={S.table}>
+            <thead>
+              <tr>
+                <th style={S.th}>Channel</th>
+                <th style={S.th}>Niche</th>
+                <th style={S.th}>Subscribers</th>
+                <th style={S.th}>Videos</th>
+                <th style={S.th}>Source</th>
+              </tr>
+            </thead>
+            <tbody>
+              {ingestedChs.map((ch, i) => (
+                <tr key={i}>
+                  <td style={S.td}>
+                    <div style={{ color: '#ccc', fontWeight: 600 }}>{ch.title}</div>
+                    {ch.handle && <div style={{ fontSize: '0.62rem', color: '#555' }}>@{ch.handle}</div>}
+                    <div style={{ fontSize: '0.6rem', color: '#444' }}>{ch.channel_id}</div>
+                  </td>
+                  <td style={S.td}><span style={S.tag}>{ch.niche || '—'}</span></td>
+                  <td style={{ ...S.td, color: '#888' }}>{ch.subscriber_count ? ch.subscriber_count.toLocaleString() : '—'}</td>
+                  <td style={{ ...S.td, color: '#4ade80', fontWeight: 600 }}>{ch.videos_ingested}</td>
+                  <td style={{ ...S.td, color: '#555', fontSize: '0.68rem' }}>{ch.discovery_source || '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      {/* ── Corpus health bar ─────────────────────────────────────────────── */}
+      {corpusStats && (
+        <div style={{ background: '#0a0a0f', border: '1px solid #1a1a2e', borderRadius: 6, padding: '8px 14px', marginBottom: 12, fontSize: '0.68rem', color: '#555', display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          <span style={{ color: '#333', fontWeight: 700, letterSpacing: '0.1em', textTransform: 'uppercase', fontSize: '0.6rem' }}>Corpus</span>
+          <span><strong style={{ color: '#888' }}>{corpusStats.channels?.toLocaleString()}</strong> channels</span>
+          <span><strong style={{ color: '#4ade80' }}>{corpusStats.training?.toLocaleString()}</strong> training-eligible
+            {corpusStats.channels > 0 && <span style={{ color: '#333' }}> ({Math.round(corpusStats.training / corpusStats.channels * 100)}%)</span>}
+          </span>
+          <span><strong style={{ color: '#888' }}>{corpusStats.videos?.toLocaleString()}</strong> videos</span>
+          {corpusStats.pendingQuality > 0 && <span style={{ color: '#f59e0b' }}>{corpusStats.pendingQuality} unscored</span>}
+        </div>
+      )}
+      {/* ── Action buttons ──────────────────────────────────────────────────── */}
+      <div style={{ ...S.row, gap: 12, marginBottom: 16 }}>
+        {/* Discover & Ingest */}
+        <div style={{ ...S.card, flex: 1 }}>
+          <div style={{ ...S.row, justifyContent: 'space-between', marginBottom: 6 }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#8888ff' }}>Discover &amp; Ingest</div>
+              <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 2 }}>
+                Find new channels in underrepresented niches via YouTube search + AI discovery, then light-ingest them into the corpus. (up to 5,000 quota)
+              </div>
+            </div>
+            <button
+              style={discoverRunning ? { ...S.btnGreen, opacity: 0.6, cursor: 'default', whiteSpace: 'nowrap' } : { ...S.btnGreen, whiteSpace: 'nowrap' }}
+              onClick={discoverRunning ? undefined : onDiscover}
+              disabled={discoverRunning}
+            >
+              {discoverRunning ? 'Running…' : 'Discover & Ingest'}
+            </button>
+          </div>
+          {discoverErr && <div style={S.err}>{discoverErr}</div>}
+          <RunResultPanel result={discoverResult} accentColor="#8888ff" />
+        </div>
+
+        {/* Ingest Only */}
+        <div style={{ ...S.card, flex: 1 }}>
+          <div style={{ ...S.row, justifyContent: 'space-between', marginBottom: 6 }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#f59e0b' }}>Ingest Only</div>
+              <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 2 }}>
+                Light-ingest queued channels without running new searches. Use this to process the backlog of discovered channels. (up to 8,000 quota)
+              </div>
+            </div>
+            <button
+              style={ingestOnlyRunning ? { ...S.btnGreen, opacity: 0.6, cursor: 'default', whiteSpace: 'nowrap', background: '#78350f', borderColor: '#92400e' } : { ...S.btnGreen, whiteSpace: 'nowrap', background: '#78350f', borderColor: '#92400e' }}
+              onClick={ingestOnlyRunning ? undefined : onIngestOnly}
+              disabled={ingestOnlyRunning}
+            >
+              {ingestOnlyRunning ? 'Running…' : 'Ingest Only'}
+            </button>
+          </div>
+          {ingestOnlyErr && <div style={S.err}>{ingestOnlyErr}</div>}
+          <RunResultPanel result={ingestOnlyResult} accentColor="#f59e0b" />
+        </div>
+
+        {/* Evaluate & Promote */}
+        <div style={{ ...S.card, flex: 1 }}>
+          <div style={{ ...S.row, justifyContent: 'space-between', marginBottom: 6 }}>
+            <div>
+              <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#4ade80' }}>Evaluate &amp; Promote</div>
+              <div style={{ fontSize: '0.65rem', color: '#444', marginTop: 2 }}>
+                Run quality evaluation on corpus channels, then auto-promote those passing the gate (quality_score≥60) into your channel database.
+              </div>
+            </div>
+            <button
+              style={promoteRunning ? { ...S.btnGreen, opacity: 0.6, cursor: 'default', whiteSpace: 'nowrap' } : { ...S.btnGreen, whiteSpace: 'nowrap' }}
+              onClick={promoteRunning ? undefined : onPromote}
+              disabled={promoteRunning}
+            >
+              {promoteRunning ? 'Running…' : 'Evaluate & Promote'}
+            </button>
+          </div>
+          {promoteErr && <div style={S.err}>{promoteErr}</div>}
+          <RunResultPanel result={promoteResult} accentColor="#4ade80" />
+        </div>
+      </div>
+
+      {/* ── Promoted channels list ────────────────────────────────────────────── */}
+      <div style={S.card}>
+        {err && <div style={S.err}>{err}</div>}
+        {!channels && !err && <div style={{ fontSize: '0.72rem', color: '#444' }}>Loading…</div>}
+        {channels && (
+          <>
+            <div style={{ ...S.row, marginBottom: 16 }}>
+              <div style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 18px' }}>
+                <div style={{ fontSize: '0.6rem', color: '#444', textTransform: 'uppercase', letterSpacing: '0.1em' }}>Total Auto-Ingested</div>
+                <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#8888ff' }}>{channels.length}</div>
+              </div>
+              {Object.entries(byNiche).sort((a, b) => b[1] - a[1]).slice(0, 6).map(([niche, count]) => (
+                <div key={niche} style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '12px 18px' }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{niche}</div>
+                  <div style={{ fontSize: '1.2rem', fontWeight: 700, color: '#4ade80' }}>{count}</div>
+                </div>
+              ))}
+            </div>
+            {channels.length === 0 ? (
+              <div style={{ fontSize: '0.75rem', color: '#444', padding: '20px 0' }}>
+                No auto-promoted channels yet. The corpus scheduler promotes channels once they pass quality evaluation (usually takes a few daily cycles after ingestion).
+              </div>
+            ) : (
+              <table style={S.table}>
+                <thead>
+                  <tr>
+                    <th style={S.th}>Channel</th>
+                    <th style={S.th}>Niche</th>
+                    <th style={S.th}>Subscribers</th>
+                    <th style={S.th}>Notes</th>
+                    <th style={S.th}>Promoted At</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {channels.map(ch => (
+                    <tr key={ch.id}>
+                      <td style={S.td}>
+                        <div style={{ color: '#ccc', fontWeight: 600 }}>{ch.channel_name || ch.channel_id}</div>
+                        <div style={{ fontSize: '0.62rem', color: '#555', marginTop: 2 }}>{ch.channel_id}</div>
+                      </td>
+                      <td style={S.td}>
+                        <span style={S.tag}>{ch.niche}</span>
+                      </td>
+                      <td style={{ ...S.td, color: '#888' }}>
+                        {ch.channel_subscribers ? ch.channel_subscribers.toLocaleString() : '—'}
+                      </td>
+                      <td style={S.td}>
+                        <span style={{ fontSize: '0.65rem', color: '#555' }}>{ch.notes || '—'}</span>
+                      </td>
+                      <td style={{ ...S.td, color: '#555', fontSize: '0.68rem' }}>
+                        {ch.added_at ? new Date(ch.added_at).toLocaleDateString() : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 // ── Tab: Ingest Status ────────────────────────────────────────────────────────
 function IngestStatusTab({ status, channels }) {
   const snapshots = status?.snapshots?.by_bucket ?? [];
@@ -1008,13 +1246,164 @@ function PatternsTab({ token }) {
   );
 }
 
+// ── Tab: Communities ──────────────────────────────────────────────────────────
+const NICHE_COLORS = {
+  technology: '#60a5fa', finance: '#4ade80', education: '#a78bfa', gaming: '#f472b6',
+  music: '#fb923c', travel: '#34d399', food: '#fbbf24', health: '#f87171',
+  fitness: '#86efac', entertainment: '#c084fc', lifestyle: '#67e8f9', sports: '#fcd34d',
+  news: '#94a3b8', business: '#6ee7b7', beauty: '#f9a8d4', comedy: '#fde68a',
+  science: '#93c5fd', philosophy: '#d8b4fe', productivity: '#bbf7d0', other: '#6b7280',
+};
+
+function CommunitiesTab({ token }) {
+  const [data, setData]   = useState(null);
+  const [err, setErr]     = useState('');
+  const [search, setSearch] = useState('');
+  const [minSize, setMinSize] = useState(20);
+  const [expanded, setExpanded] = useState(null);
+
+  useEffect(() => {
+    apiFetch(ROUTES.adminIntelCommunities, token)
+      .then(d => { if (d.ok) setData(d); })
+      .catch(e => setErr(e.message));
+  }, [token]);
+
+  if (err) return <div style={S.err}>{err}</div>;
+  if (!data) return <div style={{ fontSize: '0.72rem', color: '#444' }}>Loading…</div>;
+
+  if (data.total_communities === 0) {
+    return (
+      <div style={{ ...S.card, textAlign: 'center', padding: 40 }}>
+        <div style={{ fontSize: '0.8rem', color: '#555', marginBottom: 8 }}>No communities detected yet.</div>
+        <div style={{ fontSize: '0.68rem', color: '#333' }}>Go to Controls → Run Louvain Clustering to detect communities.</div>
+      </div>
+    );
+  }
+
+  const filtered = data.communities.filter(c =>
+    c.size >= minSize &&
+    (!search || c.top_niche.includes(search.toLowerCase()) ||
+     c.community_id.includes(search) ||
+     c.top_channels.some(ch => ch.title?.toLowerCase().includes(search.toLowerCase())))
+  );
+
+  return (
+    <div>
+      {/* Summary */}
+      <div style={{ display: 'flex', gap: 16, marginBottom: 16, flexWrap: 'wrap' }}>
+        {[
+          { label: 'Communities',      value: data.total_communities, color: '#8888ff' },
+          { label: 'Assigned Channels', value: data.total_assigned.toLocaleString(), color: '#4ade80' },
+          { label: 'Avg Size',         value: Math.round(data.total_assigned / data.total_communities), color: '#f59e0b' },
+          { label: 'Largest',          value: data.communities[0]?.size ?? 0, color: '#f472b6' },
+        ].map(({ label, value, color }) => (
+          <div key={label} style={{ background: '#0d0d12', border: '1px solid #1a1a2e', borderRadius: 8, padding: '10px 16px', minWidth: 100 }}>
+            <div style={{ fontSize: '0.58rem', color: '#444', textTransform: 'uppercase', letterSpacing: '0.1em' }}>{label}</div>
+            <div style={{ fontSize: '1.3rem', fontWeight: 700, color }}>{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Filters */}
+      <div style={{ display: 'flex', gap: 10, marginBottom: 14, alignItems: 'center' }}>
+        <input
+          style={{ ...S.input, flex: 1 }}
+          placeholder="Search by niche, community ID, or channel name…"
+          value={search}
+          onChange={e => setSearch(e.target.value)}
+        />
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <span style={{ fontSize: '0.65rem', color: '#555', whiteSpace: 'nowrap' }}>Min size</span>
+          <input
+            type="number"
+            min={1}
+            style={{ ...S.input, width: 64, textAlign: 'center' }}
+            value={minSize}
+            onChange={e => setMinSize(Math.max(1, parseInt(e.target.value) || 1))}
+          />
+          <span style={{ fontSize: '0.65rem', color: '#444' }}>({filtered.length} shown)</span>
+        </div>
+      </div>
+
+      {/* Community cards */}
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+        {filtered.map(c => {
+          const isExpanded = expanded === c.community_id;
+          const totalInComm = Object.values(c.niches).reduce((a, b) => a + b, 0);
+          const nicheEntries = Object.entries(c.niches).sort((a, b) => b[1] - a[1]);
+
+          return (
+            <div
+              key={c.community_id}
+              style={{ ...S.card, cursor: 'pointer', borderColor: isExpanded ? '#8888ff44' : '#1a1a2e' }}
+              onClick={() => setExpanded(isExpanded ? null : c.community_id)}
+            >
+              {/* Header */}
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 8 }}>
+                <div>
+                  <div style={{ fontSize: '0.6rem', color: '#333', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Community {c.community_id}</div>
+                  <div style={{ fontSize: '1rem', fontWeight: 700, color: NICHE_COLORS[c.top_niche] ?? '#888', marginTop: 2 }}>{c.top_niche}</div>
+                </div>
+                <div style={{ textAlign: 'right' }}>
+                  <div style={{ fontSize: '1.4rem', fontWeight: 700, color: '#ccc' }}>{c.size}</div>
+                  <div style={{ fontSize: '0.58rem', color: '#444' }}>channels</div>
+                </div>
+              </div>
+
+              {/* Niche bar */}
+              <div style={{ display: 'flex', height: 6, borderRadius: 3, overflow: 'hidden', marginBottom: 8 }}>
+                {nicheEntries.slice(0, 8).map(([niche, count]) => (
+                  <div
+                    key={niche}
+                    style={{ width: `${(count / totalInComm) * 100}%`, background: NICHE_COLORS[niche] ?? '#444', minWidth: 2 }}
+                  />
+                ))}
+              </div>
+
+              {/* Niche tags */}
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: isExpanded ? 10 : 0 }}>
+                {nicheEntries.slice(0, 5).map(([niche, count]) => (
+                  <span key={niche} style={{ ...S.tag, color: NICHE_COLORS[niche] ?? '#888', borderColor: (NICHE_COLORS[niche] ?? '#888') + '33', fontSize: '0.6rem' }}>
+                    {niche} {count}
+                  </span>
+                ))}
+                {nicheEntries.length > 5 && (
+                  <span style={{ ...S.tag, fontSize: '0.6rem', color: '#444' }}>+{nicheEntries.length - 5} more</span>
+                )}
+              </div>
+
+              {/* Expanded: top channels */}
+              {isExpanded && (
+                <div style={{ borderTop: '1px solid #1a1a2e', paddingTop: 8 }}>
+                  <div style={{ fontSize: '0.6rem', color: '#444', textTransform: 'uppercase', letterSpacing: '0.08em', marginBottom: 6 }}>Top Channels</div>
+                  {c.top_channels.map((ch, i) => (
+                    <div key={i} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '3px 0', borderBottom: '1px solid #0d0d12' }}>
+                      <div style={{ fontSize: '0.68rem', color: '#aaa', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: '70%' }}>{ch.title ?? '—'}</div>
+                      <div style={{ fontSize: '0.6rem', color: '#555', flexShrink: 0 }}>
+                        {ch.subscriber_count ? (ch.subscriber_count >= 1_000_000 ? `${(ch.subscriber_count / 1_000_000).toFixed(1)}M` : `${(ch.subscriber_count / 1000).toFixed(0)}K`) : '—'}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 // ── Tab: Controls ─────────────────────────────────────────────────────────────
 function ControlsTab({ token, onRefresh }) {
   const triggers = [
     { label: 'Run Historical Ingest',  url: ROUTES.adminIntelIngestTrigger,    style: S.btnGreen, note: 'Fetch latest uploads from all enabled channels (quota-guarded)' },
-    { label: 'Run Snapshot Refresh',   url: ROUTES.adminIntelSnapshotTrigger,  style: S.btnGreen, note: 'Refresh video stats + fill newly eligible buckets + recompute patterns' },
+    { label: 'Run Snapshot Refresh',         url: ROUTES.adminIntelSnapshotTrigger,       style: S.btnGreen, note: 'Refresh video stats for ALL ingested videos + fill newly eligible buckets + recompute patterns' },
+    { label: 'Snapshot — New Videos Only',   url: ROUTES.adminIntelSnapshotRecentTrigger, style: S.btnGreen, note: 'Only refreshes videos that have never been snapshotted — use this after each hourly ingest to avoid wasting quota on already-refreshed videos' },
     { label: 'Recompute Patterns',     url: ROUTES.adminIntelPatternsRecompute,style: S.btn,      note: 'Rebuild niche_benchmarks from existing snapshots without API calls' },
     { label: 'Run Auto-Calibration',   url: ROUTES.adminIntelCalibrateTrigger, style: S.btn,      note: 'Apply observational + prediction signals to niche_bias scoring version' },
+    { label: 'Run Louvain Clustering', url: ROUTES.adminIntelLouvainRun,        style: S.btn, note: 'Detect communities in the corpus graph and assign community_id to every channel. Takes 5–30s. Run once corpus has 5,000+ channels.' },
+    { label: 'Backfill Community IDs', url: ROUTES.adminIntelCommunityBackfill, style: S.btn, note: 'Copy community_id from corpus → ingested_channels. Run after Louvain to assign communities to all saved channels, including ones added before corpus existed.' },
   ];
 
   return (
@@ -2857,6 +3246,209 @@ function CandidateCard({ candidate, onAction, selected, onSelect }) {
   );
 }
 
+// ── Tab: Corpus Composition Dashboard ────────────────────────────────────────
+
+const LANG_LABELS = {
+  en: 'English', 'en-GB': 'English', 'en-US': 'English', 'en-IN': 'English',
+  hi: 'Hindi', ta: 'Tamil', te: 'Telugu', bn: 'Bengali',
+  kn: 'Kannada', ml: 'Malayalam', pa: 'Punjabi',
+  es: 'Spanish', pt: 'Portuguese', id: 'Indonesian', ar: 'Arabic',
+  fr: 'French', de: 'German', ja: 'Japanese', ko: 'Korean',
+  zh: 'Chinese', ru: 'Russian', tr: 'Turkish',
+  und: 'Undetermined', unknown: 'Unknown',
+};
+
+function normLang(code) {
+  if (!code) return 'Unknown';
+  const base = code.split('-')[0].toLowerCase();
+  return LANG_LABELS[code] ?? LANG_LABELS[base] ?? code.toUpperCase();
+}
+
+function CorpusTab({ token }) {
+  const [data,    setData]    = useState(null);
+  const [loading, setLoading] = useState(true);
+  const [err,     setErr]     = useState('');
+
+  async function load() {
+    setLoading(true); setErr('');
+    try {
+      const d = await apiFetch(ROUTES.corpusComposition, token);
+      setData(d);
+    } catch (e) { setErr(e.message); }
+    finally { setLoading(false); }
+  }
+
+  useEffect(() => { load(); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  if (loading) return <div style={{ color: '#333', fontSize: '0.78rem', padding: '20px 0' }}>Loading corpus data…</div>;
+  if (err)     return <div style={{ color: '#f87171', fontSize: '0.78rem', padding: '20px 0' }}>{err}</div>;
+
+  const { summary, languages, niches, qualityDist, growth } = data ?? {};
+  const s = summary ?? {};
+
+  // Normalize + merge language variants (e.g. en, en-GB, en-US → English)
+  const langMerged = Object.values(
+    (languages ?? []).reduce((acc, row) => {
+      const label = normLang(row.lang);
+      if (!acc[label]) acc[label] = { lang: label, total: 0, eligible: 0 };
+      acc[label].total    += row.total ?? 0;
+      acc[label].eligible += row.eligible ?? 0;
+      return acc;
+    }, {})
+  ).sort((a, b) => b.total - a.total);
+
+  const QUAL_COLORS = { 'unscored': '#333', '0-19': '#f87171', '20-39': '#fb923c', '40-59': '#fbbf24', '60-79': '#a3e635', '80-100': '#4ade80' };
+
+  return (
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', marginBottom: 16 }}>
+        <button style={S.btn} onClick={load}>Refresh</button>
+      </div>
+
+      {/* Summary stats */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, marginBottom: 24 }}>
+        {[
+          { label: 'Total Channels',      value: s.total_channels?.toLocaleString() },
+          { label: 'Training Eligible',   value: s.training_eligible?.toLocaleString(), sub: `${s.total_channels ? Math.round((s.training_eligible / s.total_channels) * 100) : 0}% of corpus` },
+          { label: 'Videos Ingested',     value: s.video_count?.toLocaleString() },
+          { label: 'Graph Edges',         value: s.graph_edges?.toLocaleString(), sub: 'need 10K for Louvain' },
+          { label: 'Ingested (w/ videos)',value: s.ingested?.toLocaleString() },
+          { label: 'Avg Quality Score',   value: s.avg_quality ?? '—', sub: 'training gate: 60' },
+        ].map(({ label, value, sub }) => (
+          <StatBox key={label} label={label} value={value} sub={sub} />
+        ))}
+      </div>
+
+      {/* Progress bars toward milestones */}
+      <div style={{ ...S.card, marginBottom: 20 }}>
+        <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 12 }}>Corpus Growth Targets</div>
+        {[
+          { label: 'Channels (target: 5,000 for Louvain)', current: s.total_channels ?? 0, target: 5000 },
+          { label: 'Graph Edges (target: 10,000)',         current: s.graph_edges ?? 0,    target: 10000 },
+        ].map(({ label, current, target }) => {
+          const pct = Math.min(100, Math.round((current / target) * 100));
+          return (
+            <div key={label} style={{ marginBottom: 10 }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
+                <span style={{ fontSize: '0.68rem', color: '#555' }}>{label}</span>
+                <span style={{ fontSize: '0.68rem', color: '#8888ff' }}>{current.toLocaleString()} / {target.toLocaleString()} ({pct}%)</span>
+              </div>
+              <div style={{ background: '#111', borderRadius: 4, height: 6, overflow: 'hidden' }}>
+                <div style={{ width: `${pct}%`, height: '100%', background: pct >= 80 ? '#4ade80' : pct >= 40 ? '#fbbf24' : '#8888ff', borderRadius: 4, transition: 'width 0.4s' }} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16, marginBottom: 16 }}>
+
+        {/* Language breakdown */}
+        <div style={S.card}>
+          <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Channels by Language</div>
+          <ResponsiveContainer width="100%" height={Math.min(260, langMerged.length * 26 + 20)}>
+            <BarChart layout="vertical" data={langMerged.slice(0, 12)} margin={{ top: 0, right: 40, left: 70, bottom: 0 }}>
+              <XAxis type="number" tick={{ fontSize: 8, fill: '#444' }} />
+              <YAxis type="category" dataKey="lang" tick={{ fontSize: 9, fill: '#666' }} width={68} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }}
+                formatter={(v, name) => [v, name === 'total' ? 'total' : 'eligible']} />
+              <Bar dataKey="total"    fill="#8888ff44" name="total"    radius={[0, 2, 2, 0]} />
+              <Bar dataKey="eligible" fill="#4ade8088" name="eligible" radius={[0, 2, 2, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ display: 'flex', gap: 12, marginTop: 6 }}>
+            <span style={{ fontSize: '0.57rem', color: '#8888ff' }}>■ total</span>
+            <span style={{ fontSize: '0.57rem', color: '#4ade80' }}>■ training-eligible</span>
+          </div>
+        </div>
+
+        {/* Quality distribution */}
+        <div style={S.card}>
+          <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Quality Score Distribution</div>
+          <ResponsiveContainer width="100%" height={180}>
+            <BarChart data={qualityDist ?? []} margin={{ top: 0, right: 10, left: -20, bottom: 0 }}>
+              <XAxis dataKey="bucket" tick={{ fontSize: 8, fill: '#444' }} />
+              <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }}
+                formatter={(v, name) => [v, name === 'n' ? 'channels' : 'eligible']} />
+              <Bar dataKey="n" name="n" radius={[2, 2, 0, 0]}>
+                {(qualityDist ?? []).map((d, i) => (
+                  <Cell key={i} fill={QUAL_COLORS[d.bucket] ?? '#8888ff'} />
+                ))}
+              </Bar>
+              <Bar dataKey="eligible" name="eligible" fill="#4ade8066" radius={[2, 2, 0, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ fontSize: '0.58rem', color: '#333', marginTop: 4 }}>Green bars = training-eligible overlay. Training gate: score ≥ 60.</div>
+        </div>
+      </div>
+
+      {/* Corpus growth (last 30 days) */}
+      <div style={{ ...S.card, marginBottom: 16 }}>
+        <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Corpus Growth — Last 30 Days</div>
+        {(growth ?? []).length < 2 ? (
+          <div style={{ color: '#333', fontSize: '0.72rem' }}>Not enough data yet — check back after more discovery runs.</div>
+        ) : (
+          <ResponsiveContainer width="100%" height={140}>
+            <AreaChart data={growth} margin={{ top: 4, right: 8, left: -20, bottom: 0 }}>
+              <defs>
+                <linearGradient id="corpusGrowthGrad" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%"  stopColor="#8888ff" stopOpacity={0.3} />
+                  <stop offset="95%" stopColor="#8888ff" stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke="#111" />
+              <XAxis dataKey="day" tick={{ fontSize: 8, fill: '#444' }} tickFormatter={v => v?.slice(5)} />
+              <YAxis tick={{ fontSize: 8, fill: '#444' }} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }}
+                formatter={v => [v, 'new channels']} labelFormatter={v => `Date: ${v}`} />
+              <Area type="monotone" dataKey="new_channels" stroke="#8888ff" fill="url(#corpusGrowthGrad)" strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        )}
+      </div>
+
+      {/* Niche breakdown table + chart */}
+      <div style={S.card}>
+        <div style={{ fontSize: '0.6rem', color: '#444', letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 10 }}>Channels by Niche</div>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: 16 }}>
+          <ResponsiveContainer width="100%" height={Math.min(340, (niches?.length ?? 0) * 22 + 20)}>
+            <BarChart layout="vertical" data={niches ?? []} margin={{ top: 0, right: 40, left: 80, bottom: 0 }}>
+              <XAxis type="number" tick={{ fontSize: 8, fill: '#444' }} />
+              <YAxis type="category" dataKey="niche" tick={{ fontSize: 9, fill: '#666' }} width={78} />
+              <Tooltip contentStyle={{ background: '#0a0a0f', border: '1px solid #222', fontSize: '0.7rem', color: '#ccc' }} />
+              <Bar dataKey="total"    fill="#8888ff44" name="total"    radius={[0, 2, 2, 0]} />
+              <Bar dataKey="eligible" fill="#4ade8088" name="eligible" radius={[0, 2, 2, 0]} />
+            </BarChart>
+          </ResponsiveContainer>
+          <div style={{ overflowX: 'auto' }}>
+            <table style={S.table}>
+              <thead><tr>
+                <th style={S.th}>Niche</th>
+                <th style={{ ...S.th, textAlign: 'right' }}>Total</th>
+                <th style={{ ...S.th, textAlign: 'right' }}>Eligible</th>
+                <th style={{ ...S.th, textAlign: 'right' }}>Avg Q</th>
+              </tr></thead>
+              <tbody>
+                {(niches ?? []).map(r => (
+                  <tr key={r.niche}>
+                    <td style={S.td}>{r.niche}</td>
+                    <td style={{ ...S.td, textAlign: 'right', color: '#8888ff' }}>{r.total}</td>
+                    <td style={{ ...S.td, textAlign: 'right', color: '#4ade80' }}>{r.eligible}</td>
+                    <td style={{ ...S.td, textAlign: 'right', color: (r.avg_quality ?? 0) >= 60 ? '#4ade80' : (r.avg_quality ?? 0) >= 40 ? '#fbbf24' : '#f87171' }}>
+                      {r.avg_quality ?? '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DiscoveryTab({ token }) {
   const [seedInput,   setSeedInput]   = useState('');
   const [jobId,       setJobId]       = useState(null);
@@ -3089,6 +3681,7 @@ function DiscoveryTab({ token }) {
 }
 
 // ── Root ──────────────────────────────────────────────────────────────────────
+
 export default function AdminIntelligence() {
   const [token,     setToken]     = useState(() => sessionStorage.getItem('admin_token') ?? '');
   const [tokenInput,setTokenInput]= useState('');
@@ -3097,6 +3690,95 @@ export default function AdminIntelligence() {
   const [status,    setStatus]    = useState(null);
   const [channels,  setChannels]  = useState([]);
   const [loadErr,   setLoadErr]   = useState('');
+
+  const [discoverRunning, setDiscoverRunning] = useState(false);
+  const [discoverResult,  setDiscoverResult]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem('yta_corpus_discover_result') ?? 'null'); } catch { return null; }
+  });
+  const [discoverErr, setDiscoverErr] = useState('');
+
+  const [promoteRunning, setPromoteRunning] = useState(false);
+  const [promoteResult,  setPromoteResult]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem('yta_corpus_promote_result') ?? 'null'); } catch { return null; }
+  });
+  const [promoteErr, setPromoteErr] = useState('');
+
+  const [ingestOnlyRunning, setIngestOnlyRunning] = useState(false);
+  const [ingestOnlyResult,  setIngestOnlyResult]  = useState(() => {
+    try { return JSON.parse(localStorage.getItem('yta_corpus_ingest_only_result') ?? 'null'); } catch { return null; }
+  });
+  const [ingestOnlyErr, setIngestOnlyErr] = useState('');
+
+  function slimResult(raw) {
+    const KEEP = ['light_ingest', 'auto_promote', 'discovery_search', 'niche_classify', 'quality_eval', 'training_gate'];
+    return {
+      quota_used:  raw.quota_used,
+      duration_ms: raw.duration_ms,
+      _ran_at:     new Date().toISOString(),
+      log: (raw.log ?? []).filter(e => KEEP.includes(e.step)),
+    };
+  }
+
+  async function triggerDiscover() {
+    setDiscoverRunning(true);
+    setDiscoverErr('');
+    try {
+      const data   = await apiFetch(ROUTES.corpusSchedulerRun, token, {
+        method: 'POST',
+        body: JSON.stringify({
+          allow_search: true, allow_ai_discovery: true, allow_video_search: true,
+          allow_hindi_search: true, allow_tamil_search: true, allow_telugu_search: true,
+          allow_bengali_search: true, allow_kannada_search: true, allow_malayalam_search: true,
+          allow_spanish_search: true, allow_portuguese_search: true, allow_indonesian_search: true,
+          allow_arabic_search: true, allow_punjabi_search: true,
+          quota_budget: 5000, mode: 'discover',
+        }),
+      });
+      const result = slimResult(data.result);
+      setDiscoverResult(result);
+      try { localStorage.setItem('yta_corpus_discover_result', JSON.stringify(result)); } catch (_) {}
+    } catch (e) {
+      setDiscoverErr(e.message);
+    } finally {
+      setDiscoverRunning(false);
+    }
+  }
+
+  async function triggerPromote() {
+    setPromoteRunning(true);
+    setPromoteErr('');
+    try {
+      const data   = await apiFetch(ROUTES.corpusSchedulerRun, token, {
+        method: 'POST',
+        body: JSON.stringify({ quota_budget: 4000, mode: 'promote' }),
+      });
+      const result = slimResult(data.result);
+      setPromoteResult(result);
+      try { localStorage.setItem('yta_corpus_promote_result', JSON.stringify(result)); } catch (_) {}
+    } catch (e) {
+      setPromoteErr(e.message);
+    } finally {
+      setPromoteRunning(false);
+    }
+  }
+
+  async function triggerIngestOnly() {
+    setIngestOnlyRunning(true);
+    setIngestOnlyErr('');
+    try {
+      const data   = await apiFetch(ROUTES.corpusSchedulerRun, token, {
+        method: 'POST',
+        body: JSON.stringify({ quota_budget: 8000, mode: 'full' }),
+      });
+      const result = slimResult(data.result);
+      setIngestOnlyResult(result);
+      try { localStorage.setItem('yta_corpus_ingest_only_result', JSON.stringify(result)); } catch (_) {}
+    } catch (e) {
+      setIngestOnlyErr(e.message);
+    } finally {
+      setIngestOnlyRunning(false);
+    }
+  }
 
   const load = useCallback(async (tok) => {
     const t = tok ?? token;
@@ -3201,17 +3883,23 @@ export default function AdminIntelligence() {
           </div>
 
           {/* Tab content */}
-          {tab === 0 && <ChannelsTab    token={token} channels={channels}           onRefresh={() => load()} />}
-          {tab === 1 && <IngestStatusTab status={status} channels={channels} />}
-          {tab === 2 && <QuotaTab       status={status} />}
-          {tab === 3 && <CronHealthTab  status={status} />}
-          {tab === 4 && <PatternsTab    token={token} />}
-          {tab === 5 && <ControlsTab    token={token} onRefresh={() => load()} />}
-          {tab === 6 && <EvolutionTab   token={token} />}
-          {tab === 7 && <DiscoveryTab   token={token} />}
-          {tab === 8 && <LearningTab    token={token} />}
-          {tab === 9  && <SemanticIntelligenceTab  token={token} />}
-          {tab === 10 && <StrategyIntelligenceTab token={token} />}
+          {tab === 0  && <ChannelsTab         token={token} channels={channels} onRefresh={() => load()} />}
+          {tab === 1  && <AutoIngestedTab     token={token}
+                          discoverRunning={discoverRunning}     discoverResult={discoverResult}     discoverErr={discoverErr}     onDiscover={triggerDiscover}
+                          ingestOnlyRunning={ingestOnlyRunning} ingestOnlyResult={ingestOnlyResult} ingestOnlyErr={ingestOnlyErr} onIngestOnly={triggerIngestOnly}
+                          promoteRunning={promoteRunning}       promoteResult={promoteResult}       promoteErr={promoteErr}       onPromote={triggerPromote} />}
+          {tab === 2  && <IngestStatusTab     status={status} channels={channels} />}
+          {tab === 3  && <QuotaTab            status={status} />}
+          {tab === 4  && <CronHealthTab       status={status} />}
+          {tab === 5  && <PatternsTab         token={token} />}
+          {tab === 6  && <ControlsTab         token={token} onRefresh={() => load()} />}
+          {tab === 7  && <EvolutionTab        token={token} />}
+          {tab === 8  && <DiscoveryTab        token={token} />}
+          {tab === 9  && <LearningTab         token={token} />}
+          {tab === 10 && <SemanticIntelligenceTab  token={token} />}
+          {tab === 11 && <StrategyIntelligenceTab  token={token} />}
+          {tab === 12 && <CorpusTab               token={token} />}
+          {tab === 13 && <CommunitiesTab          token={token} />}
         </>
       )}
     </div>

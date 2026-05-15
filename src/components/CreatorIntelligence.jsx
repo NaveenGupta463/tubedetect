@@ -33,11 +33,7 @@ const S = {
 
 const SCORING_URL = import.meta.env.VITE_SCORING_URL || 'http://localhost:3002';
 
-const ALL_NICHES = [
-  'technology', 'business', 'education', 'entertainment', 'gaming',
-  'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
-  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty', 'other',
-];
+import { NICHES as ALL_NICHES } from '../utils/constants';
 
 async function apiFetch(url) {
   const res = await fetch(url);

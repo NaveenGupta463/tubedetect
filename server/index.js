@@ -51,6 +51,8 @@ try {
   const semanticRoute           = require('./routes/semantic');
   const strategyRoute           = require('./routes/strategy');
   const channelCacheRoute       = require('./routes/channelCache');
+  const corpusRoute             = require('./routes/corpus');
+  const governanceRoute         = require('./routes/governance');
   const { startCron }                    = require('./jobs/feedbackCron');
   const { startIngestCron }              = require('./jobs/youtubeIngest');
   const { startRefreshCron }             = require('./jobs/refreshCron');
@@ -64,6 +66,7 @@ try {
   const { startLearningCohortCron }       = require('./jobs/learningCohortCron');
   const { startEmbeddingIngestCron }      = require('./jobs/embeddingIngestJob');
   const { startSemanticClusteringCron }   = require('./jobs/semanticClusteringJob');
+  const { startCorpusScheduler }          = require('./services/corpusScheduler');
 
   const app = express();
 
@@ -93,6 +96,8 @@ try {
   app.use('/api', semanticRoute);
   app.use('/api', strategyRoute);
   app.use('/api', channelCacheRoute);
+  app.use('/api', corpusRoute);
+  app.use('/api', governanceRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
@@ -118,6 +123,7 @@ try {
     startLearningCohortCron();
     startEmbeddingIngestCron();
     startSemanticClusteringCron();
+    startCorpusScheduler();
   });
 
   server.on('error', (err) => {

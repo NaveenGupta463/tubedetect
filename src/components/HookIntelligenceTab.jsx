@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTip, ResponsiveContainer, Cell } from 'recharts';
 import { ROUTES } from '../config';
+import { NICHES } from '../utils/constants';
 
 // ── Styles ────────────────────────────────────────────────────────────────────
 const S = {
@@ -16,12 +17,6 @@ const S = {
   select: { background: '#111', border: '1px solid #2a2a2a', color: '#aaa', borderRadius: 4, padding: '5px 10px', fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' },
   btn: { background: '#111', border: '1px solid #2a2a2a', color: '#aaa', borderRadius: 4, padding: '5px 14px', fontSize: '0.72rem', fontFamily: 'monospace', cursor: 'pointer' },
 };
-
-const NICHES = [
-  'technology', 'business', 'education', 'entertainment', 'gaming',
-  'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
-  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty',
-];
 
 const HOOK_COLORS = {
   curiosity:      '#a78bfa',
