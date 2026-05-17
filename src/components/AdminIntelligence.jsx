@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { motion } from 'framer-motion';
 import {
   LineChart, Line, BarChart, Bar, AreaChart, Area, XAxis, YAxis, Tooltip,
@@ -448,6 +448,8 @@ function ChannelsTab({ token, channels, onRefresh }) {
   const [busy,          setBusy]          = useState(false);
   const [detectBusy,    setDetectBusy]    = useState(false);
   const [detectResult,  setDetectResult]  = useState(null);
+  const [detectProgress, setDetectProgress] = useState(null);
+  const detectPollRef = useRef(null);
   const [editingNiche,  setEditingNiche]  = useState({});
   const [identityOpen,  setIdentityOpen]  = useState({});
   const [classStats,    setClassStats]    = useState(null);
@@ -463,16 +465,34 @@ function ChannelsTab({ token, channels, onRefresh }) {
   async function runBulkDetect() {
     setDetectBusy(true);
     setDetectResult(null);
+    setDetectProgress(null);
     try {
       const data = await apiFetch(ROUTES.adminIntelBulkDetectIdentity, token, { method: 'POST', body: '{}' });
-      setDetectResult(data);
-      onRefresh();
+      if (data.already_running || data.started) {
+        // Poll for progress every 3 seconds
+        detectPollRef.current = setInterval(async () => {
+          try {
+            const prog = await apiFetch(ROUTES.adminIntelBulkDetectIdentityProgress, token);
+            setDetectProgress(prog);
+            if (!prog.running) {
+              clearInterval(detectPollRef.current);
+              setDetectBusy(false);
+              setDetectResult({ ok: true, detected: prog.detected, failed: prog.failed });
+              onRefresh();
+            }
+          } catch (_) {}
+        }, 3000);
+      } else {
+        setDetectResult(data);
+        setDetectBusy(false);
+      }
     } catch (e) {
       setDetectResult({ ok: false, error: e.message });
-    } finally {
       setDetectBusy(false);
     }
   }
+
+  useEffect(() => () => clearInterval(detectPollRef.current), []);
 
   function clearFeedback() { setMsg(''); setErr(''); }
 
@@ -616,10 +636,13 @@ function ChannelsTab({ token, channels, onRefresh }) {
                 ? `Auto-Detect ${classifiableNow} Classifiable Now`
                 : 'All Channels Detected'}
           </button>
-          {detectBusy && (
+          {detectBusy && detectProgress && (
             <span style={{ fontSize: '0.68rem', color: '#fbbf24' }}>
-              Running — this may take a minute for large batches…
+              {detectProgress.done} / {detectProgress.total} · {detectProgress.detected} detected · {detectProgress.failed} failed
             </span>
+          )}
+          {detectBusy && !detectProgress && (
+            <span style={{ fontSize: '0.68rem', color: '#fbbf24' }}>Starting…</span>
           )}
           {classStats && (
             <span style={{ fontSize: '0.68rem', color: '#555' }}>
