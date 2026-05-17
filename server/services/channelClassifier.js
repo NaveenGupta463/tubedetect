@@ -149,7 +149,7 @@ secondary_niche: null if not applicable.`;
 }
 
 function buildUserPrompt(channelName, titles, description) {
-  const sample = titles.slice(0, 40).map((t, i) => `${i + 1}. ${t}`).join('\n');
+  const sample = titles.slice(0, 20).map((t, i) => `${i + 1}. ${t}`).join('\n');
   const descBlock = description
     ? `\nChannel description (very high signal — trust this over title ambiguity):\n${description.slice(0, 600)}\n`
     : '';
