@@ -16,6 +16,7 @@ const { runCrawlerCycle }          = require('./jobs/indiaCrawlerJob');
 const { runPromotionCycle }        = require('./jobs/corpusPromotionJob');
 const { runHistoricalIngestCycle } = require('./jobs/historicalIngest');
 const { runSnapshotCycle }         = require('./jobs/snapshotCron');
+const { runBulkIdentityDetection } = require('./jobs/identityDetectionJob');
 
 function line(char = '─', width = 55) { return char.repeat(width); }
 
@@ -52,10 +53,11 @@ async function runPipeline() {
   getDb();
 
   const steps = [
-    { n: '1/4', label: 'Crawler — finding new Indian channels',    fn: runCrawlerCycle },
-    { n: '2/4', label: 'Promotion — niche classification + queue', fn: runPromotionCycle },
-    { n: '3/4', label: 'Historical Ingest — fetching video data',  fn: runHistoricalIngestCycle },
-    { n: '4/4', label: 'Snapshot — refreshing video metrics',      fn: runSnapshotCycle },
+    { n: '1/5', label: 'Crawler — finding new Indian channels',    fn: runCrawlerCycle },
+    { n: '2/5', label: 'Promotion — niche classification + queue', fn: runPromotionCycle },
+    { n: '3/5', label: 'Historical Ingest — fetching video data',  fn: runHistoricalIngestCycle },
+    { n: '4/5', label: 'Snapshot — refreshing video metrics',      fn: runSnapshotCycle },
+    { n: '5/5', label: 'Identity Detection — OpenAI niche + archetype for unclassified channels', fn: runBulkIdentityDetection },
   ];
 
   const results = [];

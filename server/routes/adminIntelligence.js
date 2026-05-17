@@ -19,6 +19,7 @@ const {
   saveChannelIdentity,
 } = require('../db/queries');
 const { classifyChannel } = require('../services/channelClassifier');
+const { runBulkIdentityDetection, getJobState } = require('../jobs/identityDetectionJob');
 const { runHistoricalIngestCycle } = require('../jobs/historicalIngest');
 const { runFullBatchDetection }    = require('../jobs/languageDetectionJob');
 const { runSnapshotCycle, runNeverRefreshedSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
@@ -488,72 +489,29 @@ router.post('/admin/intelligence/channels/:id/save-identity-manual', (req, res) 
   }
 });
 
-// Background job state for bulk identity detection
-const bulkDetectJob = {
-  running:  false,
-  total:    0,
-  done:     0,
-  detected: 0,
-  failed:   0,
-  startedAt: null,
-};
-
 // POST /api/admin/intelligence/channels/bulk-detect-identity
 // Starts a background job — returns immediately. Poll /bulk-detect-identity/progress.
 router.post('/admin/intelligence/channels/bulk-detect-identity', (req, res) => {
-  if (bulkDetectJob.running) {
-    return res.json({ ok: true, already_running: true, progress: { ...bulkDetectJob } });
+  const state = getJobState();
+  if (state.running) {
+    return res.json({ ok: true, already_running: true, progress: state });
   }
 
   const db      = getDb();
-  const all     = getAllIngestedChannels(db);
-  const pending = all.filter(ch => !ch.identity_last_detected_at);
-
+  const pending = getAllIngestedChannels(db).filter(ch => !ch.identity_last_detected_at);
   if (!pending.length) {
     return res.json({ ok: true, detected: 0, failed: 0, message: 'All channels already detected.' });
   }
 
-  bulkDetectJob.running   = true;
-  bulkDetectJob.total     = pending.length;
-  bulkDetectJob.done      = 0;
-  bulkDetectJob.detected  = 0;
-  bulkDetectJob.failed    = 0;
-  bulkDetectJob.startedAt = new Date().toISOString();
-
   // Run in background — do not await
-  (async () => {
-    for (const ch of pending) {
-      try {
-        const titles = getChannelVideoTitles(db, ch.channel_id, 50);
-        if (!titles.length) { bulkDetectJob.failed++; bulkDetectJob.done++; continue; }
-
-        const descRow = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [ch.channel_id]);
-        const desc    = (() => { try { const j = JSON.parse(descRow?.raw_json || '{}'); const d = j.snippet?.description; return (d && d.trim().length > 10) ? d.trim() : null; } catch (_) { return null; } })();
-        const result  = await classifyChannel({ channelName: ch.channel_name, titles, description: desc });
-        saveChannelIdentity(db, ch.id, {
-          ...result,
-          identity_last_detected_at: new Date().toISOString(),
-          identity_source: 'ai_detected',
-        });
-        if (result.primary_niche) updateChannelNiche(db, ch.id, result.primary_niche);
-        bulkDetectJob.detected++;
-      } catch (_) {
-        bulkDetectJob.failed++;
-      }
-      bulkDetectJob.done++;
-      // Pace to avoid OpenAI rate limits (300 RPM on gpt-4.1-mini = 5/sec; stay well under)
-      await new Promise(r => setTimeout(r, 250));
-    }
-    bulkDetectJob.running = false;
-    console.log(`[bulk-detect] done — detected=${bulkDetectJob.detected} failed=${bulkDetectJob.failed}`);
-  })();
+  runBulkIdentityDetection({ paceMs: 250 }).catch(e => console.error('[bulk-detect] fatal:', e.message));
 
   res.json({ ok: true, started: true, total: pending.length });
 });
 
 // GET /api/admin/intelligence/channels/bulk-detect-identity/progress
 router.get('/admin/intelligence/channels/bulk-detect-identity/progress', (req, res) => {
-  res.json({ ok: true, ...bulkDetectJob });
+  res.json({ ok: true, ...getJobState() });
 });
 
 // GET /api/admin/intelligence/channels/auto-promoted
