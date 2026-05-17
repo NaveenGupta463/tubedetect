@@ -21,7 +21,7 @@ const jobState = {
 
 function getJobState() { return { ...jobState }; }
 
-async function runBulkIdentityDetection({ batchSize = 5, batchGapMs = 200 } = {}) {
+async function runBulkIdentityDetection({ batchSize = 10, batchGapMs = 200 } = {}) {
   if (jobState.running) {
     console.log('[identity] Bulk detection already running — skipping');
     return { skipped: true };
@@ -60,7 +60,7 @@ async function runBulkIdentityDetection({ batchSize = 5, batchGapMs = 200 } = {}
       })();
 
       const result = await classifyChannel({ channelName: ch.channel_name, titles, description: desc });
-      saveChannelIdentity(db, ch.id, {
+      saveChannelIdentity(db, ch.channel_id, {
         ...result,
         identity_last_detected_at: new Date().toISOString(),
         identity_source: 'ai_detected',

@@ -466,7 +466,9 @@ router.post('/admin/intelligence/channels/:id/save-identity', (req, res) => {
     const db = getDb();
     const fields = extractIdentityBody(req.body);
     if (!fields.primary_niche) return res.status(400).json({ error: 'primary_niche is required' });
-    saveChannelIdentity(db, req.params.id, { ...fields, identity_source: 'ai_detected' });
+    const ch = db.get('SELECT channel_id FROM ingested_channels WHERE id = ? OR channel_id = ?', [req.params.id, req.params.id]);
+    if (!ch) return res.status(404).json({ error: 'channel not found' });
+    saveChannelIdentity(db, ch.channel_id, { ...fields, identity_source: 'ai_detected' });
     updateChannelNiche(db, req.params.id, fields.primary_niche);
     res.json({ ok: true });
   } catch (e) {
@@ -481,7 +483,9 @@ router.post('/admin/intelligence/channels/:id/save-identity-manual', (req, res) 
     const db = getDb();
     const fields = extractIdentityBody(req.body);
     if (!fields.primary_niche) return res.status(400).json({ error: 'primary_niche is required' });
-    saveChannelIdentity(db, req.params.id, { ...fields, identity_source: 'operator_modified' });
+    const ch = db.get('SELECT channel_id FROM ingested_channels WHERE id = ? OR channel_id = ?', [req.params.id, req.params.id]);
+    if (!ch) return res.status(404).json({ error: 'channel not found' });
+    saveChannelIdentity(db, ch.channel_id, { ...fields, identity_source: 'operator_modified' });
     updateChannelNiche(db, req.params.id, fields.primary_niche);
     res.json({ ok: true });
   } catch (e) {

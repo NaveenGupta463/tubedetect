@@ -1066,7 +1066,7 @@ function getChannelIdentity(db, id) {
   );
 }
 
-function saveChannelIdentity(db, id, {
+function saveChannelIdentity(db, channelId, {
   primary_niche, secondary_niche, behavior_tags, format_type, audience_style,
   identity_confidence, identity_reasoning, identity_last_detected_at,
   identity_strength, identity_source, inferred_topics, content_archetype,
@@ -1086,7 +1086,7 @@ function saveChannelIdentity(db, id, {
        identity_source            = ?,
        inferred_topics            = ?,
        content_archetype          = ?
-     WHERE id = ?`,
+     WHERE channel_id = ?`,
     [
       primary_niche ?? null,
       secondary_niche ?? null,
@@ -1100,7 +1100,7 @@ function saveChannelIdentity(db, id, {
       identity_source ?? null,
       toJson(inferred_topics),
       content_archetype ?? null,
-      id,
+      channelId,
     ],
   );
 }

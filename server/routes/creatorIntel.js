@@ -438,7 +438,7 @@ router.post('/channels/:id/redetect', async (req, res) => {
     const nicheToSave = channel.niche_override ?? identity.primary_niche;
     identity.primary_niche = nicheToSave;
 
-    saveChannelIdentity(db, req.params.id, {
+    saveChannelIdentity(db, channel.channel_id, {
       ...identity,
       identity_source: channel.niche_override ? 'ai_redetect_niche_locked' : 'ai_redetect',
     });
@@ -523,7 +523,7 @@ router.post('/channels/redetect-all', (req, res) => {
 
         (identity._discarded || []).forEach(v => { discardCounts[v] = (discardCounts[v] || 0) + 1; });
 
-        saveChannelIdentity(db, channel.id, {
+        saveChannelIdentity(db, channel.channel_id, {
           ...identity,
           identity_source: channel.niche_override ? 'ai_redetect_niche_locked' : 'ai_redetect',
         });

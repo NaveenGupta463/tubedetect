@@ -282,7 +282,7 @@ router.post('/onboard-channel', async (req, res) => {
     const channelRow = db.get('SELECT id FROM ingested_channels WHERE channel_id = ?', [channel_id]);
     if (channelRow) {
       try {
-        saveChannelIdentity(db, channelRow.id, { ...identity, identity_source: 'openai' });
+        saveChannelIdentity(db, channel_id, { ...identity, identity_source: 'openai' });
       } catch (_) {}
     }
   }
