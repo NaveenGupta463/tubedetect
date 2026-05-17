@@ -76,6 +76,8 @@ export const ROUTES = {
   adminIntelSaveIdentity:         (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}/save-identity`,
   adminIntelSaveIdentityManual:   (id) => `${SCORING_URL}/api/admin/intelligence/channels/${id}/save-identity-manual`,
   adminIntelBulkDetectIdentity:   `${SCORING_URL}/api/admin/intelligence/channels/bulk-detect-identity`,
+  adminIntelClassificationStats:  `${SCORING_URL}/api/admin/intelligence/classification-stats`,
+  adminIntelCountryDetectTrigger: `${SCORING_URL}/api/admin/intelligence/country-detect/trigger`,
   adminIntelAutoPromoted:         `${SCORING_URL}/api/admin/intelligence/channels/auto-promoted`,
   adminIntelLouvainRun:           `${SCORING_URL}/api/admin/intelligence/louvain/run`,
   adminIntelCommunities:          `${SCORING_URL}/api/admin/intelligence/communities`,

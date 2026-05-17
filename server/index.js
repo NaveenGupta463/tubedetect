@@ -46,7 +46,10 @@ try {
   const adminIntelligenceRoute  = require('./routes/adminIntelligence');
   const adminEvolutionRoute     = require('./routes/adminEvolution');
   const discoveryRoute          = require('./routes/discovery');
-  const creatorIntelRoute       = require('./routes/creatorIntel');
+  const creatorIntelRoute                = require('./routes/creatorIntel');
+  const onboardingRoute                  = require('./routes/onboarding');
+  const { router: channelSignalsRoute }  = require('./routes/channelSignals');
+  const { startLanguageDetectionCron }   = require('./jobs/languageDetectionJob');
   const intelligenceRoute       = require('./routes/intelligence');
   const semanticRoute           = require('./routes/semantic');
   const strategyRoute           = require('./routes/strategy');
@@ -67,6 +70,8 @@ try {
   const { startEmbeddingIngestCron }      = require('./jobs/embeddingIngestJob');
   const { startSemanticClusteringCron }   = require('./jobs/semanticClusteringJob');
   const { startCorpusScheduler }          = require('./services/corpusScheduler');
+  const { startCrawlerCron }             = require('./jobs/indiaCrawlerJob');
+  const { startPromotionCron }           = require('./jobs/corpusPromotionJob');
 
   const app = express();
 
@@ -75,6 +80,7 @@ try {
 
   getDb();
 
+  // ── Public routes (no auth) — must come BEFORE adminRoute ──────────────────
   app.use('/api', analyzeRoute);
   app.use('/api', resultsRoute);
   app.use('/api', feedbackRoute);
@@ -87,17 +93,21 @@ try {
   app.use('/api', outcomesRoute);
   app.use('/api', learningRoute);
   app.use('/api', experimentsRoute);
-  app.use('/api', adminRoute);
-  app.use('/api', adminIntelligenceRoute);
-  app.use('/api', adminEvolutionRoute);
-  app.use('/api', discoveryRoute);
   app.use('/api/intel', creatorIntelRoute);
+  app.use('/api/intel', onboardingRoute);
+  app.use('/api', channelSignalsRoute);
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
   app.use('/api', strategyRoute);
   app.use('/api', channelCacheRoute);
   app.use('/api', corpusRoute);
   app.use('/api', governanceRoute);
+
+  // ── Admin routes (token-protected) ───────────────────────────────────────────
+  app.use('/api', adminRoute);
+  app.use('/api', adminIntelligenceRoute);
+  app.use('/api', adminEvolutionRoute);
+  app.use('/api', discoveryRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
@@ -124,6 +134,9 @@ try {
     startEmbeddingIngestCron();
     startSemanticClusteringCron();
     startCorpusScheduler();
+    startLanguageDetectionCron();
+    startCrawlerCron();
+    startPromotionCron();
   });
 
   server.on('error', (err) => {

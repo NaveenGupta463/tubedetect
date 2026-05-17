@@ -1043,9 +1043,15 @@ function deleteIngestedChannel(db, id) {
 }
 
 function getChannelVideoTitles(db, channelId, limit) {
-  return db.all(
+  const lim = limit ?? 50;
+  const ingested = db.all(
     `SELECT title FROM ingested_videos WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT ?`,
-    [channelId, limit ?? 50],
+    [channelId, lim],
+  ).map(r => r.title);
+  if (ingested.length > 0) return ingested;
+  return db.all(
+    `SELECT title FROM corpus_videos WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT ?`,
+    [channelId, lim],
   ).map(r => r.title);
 }
 

@@ -450,8 +450,15 @@ function ChannelsTab({ token, channels, onRefresh }) {
   const [detectResult,  setDetectResult]  = useState(null);
   const [editingNiche,  setEditingNiche]  = useState({});
   const [identityOpen,  setIdentityOpen]  = useState({});
+  const [classStats,    setClassStats]    = useState(null);
 
-  const undetectedCount = channels.filter(ch => !ch.identity_last_detected_at).length;
+  useEffect(() => {
+    apiFetch(ROUTES.adminIntelClassificationStats, token)
+      .then(d => setClassStats(d))
+      .catch(() => {});
+  }, [token, channels]);
+
+  const classifiableNow = classStats?.classifiable_now ?? 0;
 
   async function runBulkDetect() {
     setDetectBusy(true);
@@ -599,19 +606,24 @@ function ChannelsTab({ token, channels, onRefresh }) {
         </div>
         <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
           <button
-            style={undetectedCount > 0 ? S.btnGreen : { ...S.btn, opacity: 0.5, cursor: 'default' }}
-            onClick={undetectedCount > 0 ? runBulkDetect : undefined}
-            disabled={detectBusy || undetectedCount === 0}
+            style={classifiableNow > 0 ? S.btnGreen : { ...S.btn, opacity: 0.5, cursor: 'default' }}
+            onClick={classifiableNow > 0 ? runBulkDetect : undefined}
+            disabled={detectBusy || classifiableNow === 0}
           >
             {detectBusy
               ? 'Detecting…'
-              : undetectedCount > 0
-                ? `Auto-Detect ${undetectedCount} Undetected Channel${undetectedCount !== 1 ? 's' : ''}`
+              : classifiableNow > 0
+                ? `Auto-Detect ${classifiableNow} Classifiable Now`
                 : 'All Channels Detected'}
           </button>
           {detectBusy && (
             <span style={{ fontSize: '0.68rem', color: '#fbbf24' }}>
               Running — this may take a minute for large batches…
+            </span>
+          )}
+          {classStats && (
+            <span style={{ fontSize: '0.68rem', color: '#555' }}>
+              {classStats.classifiable_now} classifiable now · {classStats.awaiting_ingest} awaiting ingest · {classStats.never_detected} total undetected
             </span>
           )}
         </div>
@@ -1404,6 +1416,7 @@ function ControlsTab({ token, onRefresh }) {
     { label: 'Run Auto-Calibration',   url: ROUTES.adminIntelCalibrateTrigger, style: S.btn,      note: 'Apply observational + prediction signals to niche_bias scoring version' },
     { label: 'Run Louvain Clustering', url: ROUTES.adminIntelLouvainRun,        style: S.btn, note: 'Detect communities in the corpus graph and assign community_id to every channel. Takes 5–30s. Run once corpus has 5,000+ channels.' },
     { label: 'Backfill Community IDs', url: ROUTES.adminIntelCommunityBackfill, style: S.btn, note: 'Copy community_id from corpus → ingested_channels. Run after Louvain to assign communities to all saved channels, including ones added before corpus existed.' },
+    { label: 'Run Country Detection (Full Batch)', url: ROUTES.adminIntelCountryDetectTrigger, style: S.btn, note: 'Tag region for all untagged channels in one pass. Fast paths (bio, script, Hinglish) run instantly; comment-based detection paced at 100ms/channel. Runs in background.' },
   ];
 
   return (

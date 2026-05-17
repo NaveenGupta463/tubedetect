@@ -1,11 +1,13 @@
-// YouTube Data API v3 free tier: 10,000 units/day
-// videos.list  = 1 unit per call (up to 50 IDs)
-// channels.list = 1 unit per call
-// search.list  = 100 units per call
-// Disable API at 80% = 8,000 units
+// YouTube Data API v3 quota tracking
+// Each Google Cloud project = 10,000 units/day
+// videos.list / channels.list = 1 unit per call (up to 50 IDs per call)
+// search.list = 100 units per call
+//
+// Set QUOTA_DAILY_BUDGET in .env to match your total across all API keys.
+// Default: 115,000 (12 backend keys × 10,000 − 5,000 safety buffer).
 
-const DAILY_LIMIT = 10000;
-const CUTOFF      = 10000;
+const DAILY_LIMIT = parseInt(process.env.QUOTA_DAILY_BUDGET || '115000', 10);
+const CUTOFF      = DAILY_LIMIT;
 
 const state = {
   date:          new Date().toDateString(),
@@ -13,6 +15,7 @@ const state = {
   refresh_calls: 0,
   miss_calls:    0,
   ingest_calls:  0,
+  crawler_calls: 0,
 };
 
 function resetIfNewDay() {
@@ -20,28 +23,23 @@ function resetIfNewDay() {
   if (state.date !== today) {
     Object.assign(state, {
       date: today, used: 0,
-      refresh_calls: 0, miss_calls: 0, ingest_calls: 0,
+      refresh_calls: 0, miss_calls: 0, ingest_calls: 0, crawler_calls: 0,
     });
   }
 }
 
-function quotaAvailable() {
+function quotaAvailable(units = 1) {
   resetIfNewDay();
-  return state.used < CUTOFF;
+  return state.used + units <= CUTOFF;
 }
 
-/**
- * Record API usage.
- * @param {number} units - quota units consumed
- * @param {'refresh'|'miss'|'ingest'|'general'} type
- */
 function recordUsage(units = 1, type = 'general') {
   resetIfNewDay();
   state.used += units;
   if (type === 'refresh') state.refresh_calls++;
   if (type === 'miss')    state.miss_calls++;
   if (type === 'ingest')  state.ingest_calls++;
-  console.log(`[quota] used=${state.used}/${CUTOFF} type=${type} units=${units}`);
+  if (type === 'crawler') state.crawler_calls++;
 }
 
 function getStats() {
@@ -56,6 +54,7 @@ function getStats() {
     refresh_calls: state.refresh_calls,
     miss_calls:    state.miss_calls,
     ingest_calls:  state.ingest_calls,
+    crawler_calls: state.crawler_calls,
   };
 }
 

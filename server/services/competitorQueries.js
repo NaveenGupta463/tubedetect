@@ -9,12 +9,22 @@ const DURATION_SQL = `
   END
 `;
 
-function getTopChannelsByNiche(db, { niche, limit = 20 } = {}) {
-  const key = `competitor:top_channels:${niche}:${limit}`;
+function getTopChannelsByNiche(db, { niche, language, community_id, limit = 20 } = {}) {
+  const key = `competitor:top_channels:${niche}:${community_id}:${language}:${limit}`;
   return cache.wrap(key, () => {
-    const where = niche ? `WHERE ic.niche = ?` : '';
-    const params = niche ? [limit] : [limit];
-    if (niche) params.unshift(niche);
+    const conditions = [];
+    const params = [];
+    if (niche) { conditions.push('ic.niche = ?'); params.push(niche); }
+    if (community_id) {
+      // Prefer ic.community_id (if backfilled), fall back to corpus community
+      conditions.push('COALESCE(ic.community_id, cc.community_id) = ?');
+      params.push(community_id);
+    } else if (language) {
+      conditions.push("COALESCE(ic.primary_language, cc.language, 'en') = ?");
+      params.push(language);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+    params.push(limit);
     return db.all(`
       SELECT
         ic.id,
@@ -34,6 +44,7 @@ function getTopChannelsByNiche(db, { niche, limit = 20 } = {}) {
         CAST(AVG(iv.likes) AS INTEGER)           AS avg_likes,
         MAX(iv.published_at)                     AS latest_video_at
       FROM ingested_channels ic
+      LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
       LEFT JOIN ingested_videos iv ON iv.channel_id = ic.channel_id
       ${where}
       GROUP BY ic.channel_id

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { getDb }      = require('../db/init');
 const quotaGuard     = require('../services/quotaGuard');
 const { setLastRun, hoursSinceLastRun } = require('../services/jobState');
+const { withCronRetry } = require('../utils/cronRetry');
 const { fetchVideoFullBatch } = require('../services/youtubeMetrics');
 const {
   getAllIngestedVideosForSnapshot,
@@ -26,6 +27,28 @@ const BUCKET_THRESHOLDS = {
 const BUCKET_ORDER = ['1d', '3d', '7d', '14d', '30d', '90d', '365d'];
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Drop + recreate the six indexes pattern mining JOINs hit.
+// Called when a "disk image malformed" error is detected before retrying.
+function _rebuildPatternMiningIndexes(db) {
+  const indexes = [
+    ['idx_vgs_video_id', 'CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id)'],
+    ['idx_vgs_bucket',   'CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket)'],
+    ['idx_iv_niche',     'CREATE INDEX IF NOT EXISTS idx_iv_niche     ON ingested_videos(niche)'],
+    ['idx_iv_channel',   'CREATE INDEX IF NOT EXISTS idx_iv_channel   ON ingested_videos(channel_id)'],
+    ['idx_ic_niche',     'CREATE INDEX IF NOT EXISTS idx_ic_niche     ON ingested_channels(niche)'],
+    ['idx_ic_enabled',   'CREATE INDEX IF NOT EXISTS idx_ic_enabled   ON ingested_channels(ingest_enabled)'],
+  ];
+  for (const [name, sql] of indexes) {
+    try {
+      db.exec(`DROP INDEX IF EXISTS "${name}"`);
+      db.exec(sql);
+      console.log('[snapshot] Rebuilt index:', name);
+    } catch (e) {
+      console.warn(`[snapshot] Could not rebuild ${name}:`, e.message);
+    }
+  }
+}
 
 function getEligibleBuckets(publishedAt) {
   const ageDays = (Date.now() - new Date(publishedAt).getTime()) / 86400000;
@@ -76,6 +99,10 @@ async function runSnapshotCycle() {
     if (!quotaGuard.quotaAvailable()) {
       console.warn('[snapshot] Quota exhausted mid-cycle — stopping');
       break;
+    }
+
+    if (i > 0 && i % 5000 === 0) {
+      console.log(`[snapshot] Progress — ${i}/${videos.length} videos processed (${Math.round(i/videos.length*100)}%)`);
     }
 
     const batch   = videos.slice(i, i + 50);
@@ -174,6 +201,21 @@ async function runSnapshotCycle() {
   } catch (e) {
     try { db.exec('ROLLBACK'); } catch (_) {}
     console.warn('[snapshot] Pattern mining failed:', e.message);
+
+    if (e.message?.includes('malformed') || e.message?.includes('disk image')) {
+      console.log('[snapshot] Detected index corruption — rebuilding indexes and retrying pattern mining');
+      _rebuildPatternMiningIndexes(db);
+      try {
+        db.exec('BEGIN');
+        patternResult = runPatternMining(db);
+        db.exec('COMMIT');
+        setLastRun('recompute_patterns');
+        console.log(`[snapshot] Pattern mining retry OK: combinations=${patternResult.combinations} upserted=${patternResult.upserted}`);
+      } catch (e2) {
+        try { db.exec('ROLLBACK'); } catch (_) {}
+        console.warn('[snapshot] Pattern mining retry also failed:', e2.message);
+      }
+    }
   }
 
   const quota = quotaGuard.getStats();
@@ -302,17 +344,15 @@ async function runNeverRefreshedSnapshotCycle() {
 }
 
 function startSnapshotCron() {
-  cron.schedule('0 4 * * *', async () => {
-    try { await runSnapshotCycle(); }
-    catch (e) { console.error('[snapshot] Cron error:', e.message); }
+  cron.schedule('0 4 * * *', () => {
+    withCronRetry(runSnapshotCycle, 'snapshot', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
   });
   console.log('[Snapshot Cron] Scheduled — daily at 04:00 UTC');
 
   if (hoursSinceLastRun('snapshot_refresh') > 23) {
     console.log('[Snapshot Cron] Missed window detected — catch-up run in 2m');
-    setTimeout(async () => {
-      try { await runSnapshotCycle(); }
-      catch (e) { console.error('[snapshot] Catch-up error:', e.message); }
+    setTimeout(() => {
+      withCronRetry(runSnapshotCycle, 'snapshot-catchup', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
     }, 120_000);
   }
 }

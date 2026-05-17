@@ -1,10 +1,12 @@
 'use strict';
 
-// Reads up to 12 YouTube API keys from .env:
-//   YT_API_KEY, YT_API_KEY_2 ... YT_API_KEY_12
-// Each Google Cloud project gives 10,000 units/day — 12 keys = 120,000/day.
+// Reads up to 13 YouTube API keys from .env:
+//   YT_API_KEY, YT_API_KEY_2 ... YT_API_KEY_13
+// Each Google Cloud project gives 10,000 units/day — 13 keys = 130,000/day.
 // Auto-rotates to next key on quota error; resets at midnight (YouTube's Pacific reset).
 
+// YT_API_KEY_7 is reserved for the frontend search bar.
+// Backend jobs (crawler, ingest, refresh) use keys 1–6 and 8–13 only.
 const KEYS = [
   process.env.YT_API_KEY,
   process.env.YT_API_KEY_2,
@@ -12,12 +14,12 @@ const KEYS = [
   process.env.YT_API_KEY_4,
   process.env.YT_API_KEY_5,
   process.env.YT_API_KEY_6,
-  process.env.YT_API_KEY_7,
   process.env.YT_API_KEY_8,
   process.env.YT_API_KEY_9,
   process.env.YT_API_KEY_10,
   process.env.YT_API_KEY_11,
   process.env.YT_API_KEY_12,
+  process.env.YT_API_KEY_13,
 ].filter(Boolean);
 
 if (!KEYS.length) {

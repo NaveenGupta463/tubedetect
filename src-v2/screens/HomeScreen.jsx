@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { motion, AnimatePresence } from 'framer-motion';
+import { motion, AnimatePresence, LayoutGroup } from 'framer-motion';
 import { T, spring, ease } from '../tokens';
 import { useCountUp } from '../hooks/useCountUp';
 
@@ -8,10 +8,10 @@ import { useCountUp } from '../hooks/useCountUp';
 const PHASE_DURATION = 4200;
 
 const STATS = [
-  { end: 100,  suffix: 'K+', label: 'Videos Tracked'  },
-  { end: 150,  suffix: 'K+', label: 'Video Snapshots'  },
-  { end: 587,  suffix: '',   label: 'Communities'      },
-  { end: 23,   suffix: 'M+', label: 'Data Points'      },
+  { end: 10,   suffix: 'K+', label: 'Channels Tracked',    sub: 'Live, right now'          },
+  { end: 1,    suffix: 'M+', label: 'Videos Analysed',     sub: 'And growing daily'        },
+  { end: 843,  suffix: '',   label: 'Competitor Groups',    sub: 'Grouped by actual audience' },
+  { end: 2.3,  suffix: 'M+', label: 'Data Signals',        sub: 'Collected to date'        },
 ];
 
 const PHASES = [
@@ -25,8 +25,8 @@ const PHASES = [
   {
     id:    'community',
     step:  '02',
-    title: 'Your community, found automatically',
-    body:  '587 peer communities built by behaviour, not category tags. Channels that share your audience, upload style, and growth trajectory.',
+    title: 'Your real competitors, found automatically',
+    body:  '843 competitor groups — built by watching who actually watches the same channels, not by guessing from category tags. If your audience overlaps, you\'re in the same group. No manual setup.',
     color: T.success,
   },
   {
@@ -40,7 +40,7 @@ const PHASES = [
     id:    'edge',
     step:  '04',
     title: 'Your unfair advantage',
-    body:  'See your community rank, who to study, and exactly what to post next — all pulled from live data across your 847-channel peer group.',
+    body:  'See your rank, who to study, and exactly what to post next — all pulled from live data across your competitor group.',
     color: '#A78BFA',
   },
 ];
@@ -69,8 +69,7 @@ function MiningMockup() {
           transition={{ delay: i * 0.1, duration: 0.3, ease }}
           style={{
             display: 'flex', alignItems: 'center', gap: 10,
-            background: T.surface, borderRadius: 8, padding: '8px 12px',
-            border: `1px solid ${T.border}`,
+            ...T.glassSurface, borderRadius: 8, padding: '8px 12px',
           }}
         >
           <div style={{
@@ -116,7 +115,7 @@ function CommunityMockup() {
   return (
     <div style={{ position: 'relative', height: 220 }}>
       <div style={{ fontSize: '0.6rem', fontWeight: 700, color: T.muted, letterSpacing: '0.08em', textTransform: 'uppercase', marginBottom: 8 }}>
-        587 peer communities
+        843 competitor groups
       </div>
       <div style={{ position: 'relative', height: 190 }}>
         <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none' }}>
@@ -184,8 +183,7 @@ function PatternsMockup() {
           transition={{ delay: i * 0.11, duration: 0.3, ease }}
           style={{
             display: 'flex', alignItems: 'center', gap: 10,
-            background: T.surface, borderRadius: 8, padding: '9px 12px',
-            border: `1px solid ${T.border}`,
+            ...T.glassSurface, borderRadius: 8, padding: '9px 12px',
           }}
         >
           <div style={{
@@ -221,8 +219,7 @@ function EdgeMockup() {
         transition={{ duration: 0.3, ease }}
         style={{
           display: 'flex', alignItems: 'center', gap: 16,
-          background: T.surface, borderRadius: 12, padding: '14px 18px',
-          border: `1px solid ${T.border}`,
+          ...T.glassSurface, borderRadius: 12, padding: '14px 18px',
         }}
       >
         <div style={{ position: 'relative', width: 72, height: 72, flexShrink: 0 }}>
@@ -244,9 +241,9 @@ function EdgeMockup() {
           </div>
         </div>
         <div>
-          <div style={{ fontSize: '0.62rem', color: T.muted, marginBottom: 4 }}>Hindi Tech Community</div>
+          <div style={{ fontSize: '0.62rem', color: T.muted, marginBottom: 4 }}>Hindi Tech · competitor group</div>
           <div style={{ fontSize: '1rem', fontWeight: 800, color: T.accent }}>Top 3%</div>
-          <div style={{ fontSize: '0.6rem', color: T.muted }}>of 847 channels</div>
+          <div style={{ fontSize: '0.6rem', color: T.muted }}>of 843 channels</div>
         </div>
         <div style={{ flex: 1 }} />
         <div style={{ textAlign: 'right' }}>
@@ -293,24 +290,324 @@ const MOCKUPS = {
   edge:      EdgeMockup,
 };
 
-// ── Stat card ─────────────────────────────────────────────────────────────────
+// ── Reframe section ───────────────────────────────────────────────────────────
 
-function StatCard({ end, suffix, label, delay }) {
-  const val = useCountUp(end, 1400, delay);
+const WRONG_CHANNELS = [
+  { name: 'The Niche Giant',  subs: '8.2M', w: 95 },
+  { name: 'Category King',    subs: '5.1M', w: 70 },
+  { name: 'Top Creator Co.',  subs: '2.8M', w: 46 },
+];
+
+const RIGHT_CHANNELS = [
+  { name: 'Creator Like You A', subs: '210K', w: 88 },
+  { name: 'Creator Like You B', subs: '94K',  w: 62 },
+  { name: 'Creator Like You C', subs: '145K', w: 74 },
+];
+
+const YOUR_STATS = [
+  { label: 'Views',    from: 1200, to: 284000 },
+  { label: 'Likes',   from: 43,   to: 8400   },
+  { label: 'Comments',from: 8,    to: 312    },
+];
+
+const fmtStat = (n) =>
+  n >= 1000 ? `${(n / 1000).toFixed(n >= 100000 ? 0 : 1)}K` : String(Math.round(n));
+
+function CountUp({ from, to, delay = 0, duration = 900 }) {
+  const [val, setVal] = useState(from);
+  useEffect(() => {
+    let frame;
+    const t = setTimeout(() => {
+      let start = null;
+      const step = (ts) => {
+        if (!start) start = ts;
+        const p = Math.min((ts - start) / duration, 1);
+        const eased = 1 - Math.pow(1 - p, 3);
+        setVal(from + (to - from) * eased);
+        if (p < 1) frame = requestAnimationFrame(step);
+        else setVal(to);
+      };
+      frame = requestAnimationFrame(step);
+    }, delay);
+    return () => { clearTimeout(t); cancelAnimationFrame(frame); };
+  }, [from, to, delay, duration]);
+  return <>{fmtStat(val)}</>;
+}
+
+function YourChannelCard({ inRight, showStats }) {
+  return (
+    <motion.div
+      layoutId="yourChannel"
+      layout
+      transition={{ type: 'spring', stiffness: 260, damping: 26 }}
+      animate={{
+        boxShadow: inRight
+          ? `0 0 0 1px ${T.success}55, 0 0 28px ${T.success}22`
+          : `0 0 0 1px rgba(255,255,255,0.10)`,
+      }}
+      style={{
+        ...T.glassSurface,
+        borderRadius: 10,
+        padding: '12px 14px',
+      }}
+    >
+      {/* Card header */}
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 11 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 7 }}>
+          <div style={{
+            width: 20, height: 20, borderRadius: 6, flexShrink: 0,
+            background: `${T.accent}22`, border: `1px solid ${T.accentBorder}`,
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: '0.52rem', color: T.accent,
+          }}>▶</div>
+          <span style={{ fontSize: '0.72rem', fontWeight: 700, color: T.text }}>Your Channel</span>
+        </div>
+        <AnimatePresence mode="wait">
+          {!inRight && (
+            <motion.span
+              key="stagnant"
+              initial={{ opacity: 0, x: -8, scale: 0.85 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3, ease }}
+              style={{
+                fontSize: '0.54rem', fontWeight: 700, color: T.muted,
+                background: `rgba(255,255,255,0.06)`, border: `1px solid rgba(255,255,255,0.10)`,
+                borderRadius: 4, padding: '2px 7px',
+              }}
+            >
+              Stagnant
+            </motion.span>
+          )}
+          {inRight && (
+            <motion.span
+              initial={{ opacity: 0, x: 8, scale: 0.85 }}
+              animate={{ opacity: 1, x: 0, scale: 1 }}
+              exit={{ opacity: 0 }}
+              transition={{ duration: 0.3, ease }}
+              style={{
+                fontSize: '0.54rem', fontWeight: 700, color: T.success,
+                background: T.successDim, border: `1px solid ${T.success}35`,
+                borderRadius: 4, padding: '2px 7px',
+              }}
+            >
+              ↑ Moving up
+            </motion.span>
+          )}
+        </AnimatePresence>
+
+      </div>
+
+      {/* Stats row */}
+      <div style={{ display: 'flex', gap: 16 }}>
+        {YOUR_STATS.map((s, i) => (
+          <div key={s.label}>
+            <motion.div
+              animate={{ color: showStats ? T.success : T.muted }}
+              transition={{ delay: i * 0.1, duration: 0.35, ease }}
+              style={{ fontSize: '0.82rem', fontWeight: 800, lineHeight: 1 }}
+            >
+              {showStats
+                ? <CountUp key="up" from={s.from} to={s.to} delay={i * 100} duration={950} />
+                : fmtStat(s.from)
+              }
+            </motion.div>
+            <div style={{ fontSize: '0.54rem', color: T.subtle, marginTop: 3 }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+    </motion.div>
+  );
+}
+
+function ChannelRow({ name, subs, w, delay = 0 }) {
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: 8 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay, duration: 0.3, ease }}
+      style={{ marginBottom: 10 }}
+    >
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+        <span style={{ fontSize: '0.68rem', color: T.text, fontWeight: 600 }}>{name}</span>
+        <span style={{ fontSize: '0.63rem', color: T.muted, fontWeight: 600 }}>{subs}</span>
+      </div>
+      <div style={{ height: 3, background: T.border, borderRadius: 2 }}>
+        <motion.div
+          initial={{ width: 0 }}
+          animate={{ width: `${w}%` }}
+          transition={{ delay: delay + 0.1, duration: 0.7, ease: [0.16,1,0.3,1] }}
+          style={{ height: '100%', background: T.success, borderRadius: 2, boxShadow: `0 0 6px ${T.success}55` }}
+        />
+      </div>
+    </motion.div>
+  );
+}
+
+function ReframeSection() {
+  const [inRight,    setInRight]    = useState(false);
+  const [showStats,  setShowStats]  = useState(false);
+
+  useEffect(() => {
+    let t1, t2, t3;
+    const run = () => {
+      setInRight(false);
+      setShowStats(false);
+      t1 = setTimeout(() => {
+        setInRight(true);
+        t2 = setTimeout(() => setShowStats(true), 700);
+        t3 = setTimeout(run, 5500);
+      }, 2800);
+    };
+    run();
+    return () => { clearTimeout(t1); clearTimeout(t2); clearTimeout(t3); };
+  }, []);
+
+  const colLabel = (icon, color, text) => (
+    <div style={{
+      display: 'flex', alignItems: 'center', gap: 6,
+      fontSize: '0.58rem', fontWeight: 700, color,
+      letterSpacing: '0.09em', textTransform: 'uppercase', marginBottom: 14,
+    }}>
+      <span style={{
+        width: 14, height: 14, borderRadius: '50%',
+        background: `${color}18`, border: `1px solid ${color}40`,
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        fontSize: '0.5rem', flexShrink: 0,
+      }}>{icon}</span>
+      {text}
+    </div>
+  );
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 14 }}
       animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -3, boxShadow: '0 24px 60px rgba(0,0,0,0.55), inset 0 1.5px 0 rgba(255,255,255,0.28)' }}
+      transition={{ delay: 0.38, duration: 0.38, ease }}
+      style={{
+        ...T.glassCard,
+        borderRadius: 20, overflow: 'hidden', marginBottom: 32,
+        cursor: 'default',
+      }}
+    >
+      {/* Headline */}
+      <div style={{ padding: '22px 28px 18px', borderBottom: `1px solid ${T.border}` }}>
+        <div style={{ fontSize: '0.58rem', fontWeight: 700, color: T.accent, letterSpacing: '0.1em', textTransform: 'uppercase', marginBottom: 8 }}>
+          The insight most creators never get
+        </div>
+        <div style={{ fontSize: '1rem', fontWeight: 900, color: T.text, lineHeight: 1.35 }}>
+          The #1 channel in your niche is{' '}
+          <span style={{ position: 'relative', display: 'inline-block', color: T.muted }}>
+            your competitor
+            <span style={{
+              position: 'absolute',
+              left: 0, right: 0,
+              top: '60%',
+              height: 2,
+              background: `${T.danger}CC`,
+              borderRadius: 1,
+              transform: 'translateY(-50%)',
+              pointerEvents: 'none',
+            }} />
+          </span>.
+        </div>
+        <div style={{ fontSize: '0.8rem', color: T.muted, marginTop: 6, lineHeight: 1.55, maxWidth: 420 }}>
+          Your real competition is whoever leads the group your audience actually belongs to —
+          and most creators benchmark against the wrong people their entire career.
+        </div>
+      </div>
+
+      {/* Two-column comparison */}
+      <LayoutGroup>
+        <div style={{ display: 'flex', alignItems: 'flex-start' }}>
+
+          {/* Left — wrong group */}
+          <div style={{ flex: 1, padding: '20px 24px', borderRight: `1px solid ${T.border}` }}>
+            {colLabel('✕', T.danger, "You think your competitors are")}
+            {WRONG_CHANNELS.map((c) => (
+              <div key={c.name} style={{ marginBottom: 10 }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 5 }}>
+                  <span style={{ fontSize: '0.68rem', color: T.muted, textDecoration: 'line-through', textDecorationColor: `${T.danger}55` }}>{c.name}</span>
+                  <span style={{ fontSize: '0.63rem', color: T.muted, fontWeight: 600 }}>{c.subs}</span>
+                </div>
+                <div style={{ height: 3, background: T.border, borderRadius: 2 }}>
+                  <div style={{ width: `${c.w}%`, height: '100%', background: T.subtle, borderRadius: 2 }} />
+                </div>
+              </div>
+            ))}
+            <AnimatePresence>
+              {!inRight && (
+                <motion.div exit={{ opacity: 0, scale: 0.95 }} transition={{ duration: 0.2 }}>
+                  <YourChannelCard inRight={false} showStats={false} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <div style={{ marginTop: 12, fontSize: '0.65rem', color: T.muted, lineHeight: 1.5 }}>
+              Massive reach. Different audience. Not fighting for your viewers.
+            </div>
+          </div>
+
+          {/* Right — real competitor group */}
+          <div style={{ flex: 1, padding: '20px 24px' }}>
+            {colLabel('✓', T.success, 'Your actual competitors are')}
+            {RIGHT_CHANNELS.map((c, i) => (
+              <ChannelRow key={c.name} {...c} delay={0.5 + i * 0.1} />
+            ))}
+            <AnimatePresence>
+              {inRight && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} transition={{ duration: 0.2 }}>
+                  <YourChannelCard inRight={true} showStats={showStats} />
+                </motion.div>
+              )}
+            </AnimatePresence>
+            <div style={{ marginTop: 12, fontSize: '0.65rem', color: T.muted, lineHeight: 1.5 }}>
+              Same audience pool. Same recommendation slot. Your real benchmark.
+            </div>
+          </div>
+
+        </div>
+      </LayoutGroup>
+
+      {/* Footer */}
+      <div style={{
+        borderTop: `1px solid ${T.border}`, padding: '11px 24px',
+        display: 'flex', alignItems: 'center', gap: 8,
+      }}>
+        <div style={{ width: 6, height: 6, borderRadius: '50%', background: T.accent, flexShrink: 0, opacity: 0.6 }} />
+        <span style={{ fontSize: '0.68rem', color: T.subtle, lineHeight: 1.4 }}>
+          We approximate your group by content and behaviour —{' '}
+          <span style={{ color: T.success, fontWeight: 600, cursor: 'pointer' }}>connect your channel</span>
+          {' '}to see your real audience overlap.
+        </span>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Stat card ─────────────────────────────────────────────────────────────────
+
+function StatCard({ end, suffix, label, sub, delay }) {
+  const isDecimal = !Number.isInteger(end);
+  const val = useCountUp(isDecimal ? Math.floor(end) : end, 1400, delay);
+  const display = isDecimal ? end : val;
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -5, scale: 1.04, boxShadow: '0 20px 50px rgba(0,0,0,0.55), inset 0 1.5px 0 rgba(255,255,255,0.30)' }}
       transition={{ delay: delay / 1000 + 0.2, duration: 0.35, ease }}
       style={{
-        flex: 1, background: T.card, border: `1px solid ${T.border}`,
+        flex: 1, ...T.glassCard,
         borderRadius: 14, padding: '18px 20px', textAlign: 'center',
+        cursor: 'default',
       }}
     >
       <div style={{ fontSize: '1.8rem', fontWeight: 900, color: T.text, lineHeight: 1, letterSpacing: '-0.03em' }}>
-        {val}{suffix}
+        {display}{suffix}
       </div>
       <div style={{ fontSize: '0.7rem', color: T.muted, marginTop: 5, fontWeight: 500 }}>{label}</div>
+      {sub && <div style={{ fontSize: '0.62rem', color: T.subtle, marginTop: 3 }}>{sub}</div>}
     </motion.div>
   );
 }
@@ -346,7 +643,7 @@ export default function HomeScreen({ onSearch }) {
   const Mockup  = MOCKUPS[current.id];
 
   return (
-    <div style={{ height: '100%', overflowY: 'auto' }}>
+    <div>
       <div style={{ maxWidth: 860, margin: '0 auto', padding: '40px 32px 60px' }}>
 
         {/* ── Hero ──────────────────────────────────────────────────────── */}
@@ -363,7 +660,7 @@ export default function HomeScreen({ onSearch }) {
             marginBottom: 14, maxWidth: 600,
           }}
         >
-          Your YouTube community<br />
+          Your <span style={{ color: '#FF0000' }}>YouTube</span> community<br />
           is already ranked.{' '}
           <span style={{ color: T.muted, fontWeight: 700 }}>You just don't know it.</span>
         </motion.h1>
@@ -374,8 +671,8 @@ export default function HomeScreen({ onSearch }) {
           transition={{ delay: 0.1, duration: 0.4, ease }}
           style={{ fontSize: '0.92rem', color: T.muted, lineHeight: 1.65, maxWidth: 520, marginBottom: 36 }}
         >
-          We analyse 100K+ videos across 587 peer communities to tell you
-          exactly where you stand — and what to do next.
+          We track 10,000+ channels and group them by who actually watches them.
+          Then we show you where you rank among your real competition — not all of YouTube.
         </motion.p>
 
         {/* ── Stats ─────────────────────────────────────────────────────── */}
@@ -385,11 +682,18 @@ export default function HomeScreen({ onSearch }) {
           ))}
         </div>
 
+        {/* ── Reframe section ───────────────────────────────────────────── */}
+        <ReframeSection />
+
+
         {/* ── Story card ────────────────────────────────────────────────── */}
-        <div
+        <motion.div
+          whileHover={{ y: -3, boxShadow: '0 24px 60px rgba(0,0,0,0.55), inset 0 1.5px 0 rgba(255,255,255,0.28)' }}
+          transition={{ type: 'spring', stiffness: 300, damping: 28 }}
           style={{
-            background: T.card, border: `1px solid ${T.border}`,
+            ...T.glassCard,
             borderRadius: 20, overflow: 'hidden', marginBottom: 32,
+            cursor: 'default',
           }}
           onMouseEnter={() => setTicking(false)}
           onMouseLeave={() => setTicking(true)}
@@ -480,7 +784,7 @@ export default function HomeScreen({ onSearch }) {
               </AnimatePresence>
             </div>
           </div>
-        </div>
+        </motion.div>
 
         {/* ── CTA ───────────────────────────────────────────────────────── */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 16 }}>

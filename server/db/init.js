@@ -36,16 +36,103 @@ function clearStaleLock() {
 
 function verifyWalMode(database) {
   try {
-    const row = database.get('PRAGMA journal_mode');
+    const row  = database.get('PRAGMA journal_mode');
     const mode = row?.journal_mode ?? row?.['journal_mode'] ?? Object.values(row ?? {})[0];
     if (mode !== 'wal') {
       console.warn('[DB] WARNING: journal_mode is', mode, '— expected wal. Attempting to re-enable.');
       database.exec('PRAGMA journal_mode=WAL');
+      // Verify whether WAL actually stuck (WASM build on Windows often can't enable it)
+      const row2  = database.get('PRAGMA journal_mode');
+      const mode2 = row2?.journal_mode ?? Object.values(row2 ?? {})[0];
+      if (mode2 !== 'wal') {
+        console.warn('[DB] WAL unavailable — using EXCLUSIVE locking to prevent concurrent-write corruption');
+        // Exclusive mode: blocks other processes from opening the DB at all,
+        // which is safer than letting them corrupt it.
+        database.exec('PRAGMA locking_mode=EXCLUSIVE');
+      }
     } else {
       console.log('[DB] WAL mode confirmed');
     }
   } catch (e) {
     console.warn('[DB] Could not verify WAL mode:', e.message);
+  }
+}
+
+function repairCorruptedIndexes(database) {
+  // Integrity check is expensive on large DBs (~2 min). Skip if checked within last 24h.
+  try {
+    const row = database.get(`SELECT value FROM kv_store WHERE key = 'last_integrity_check'`);
+    if (row?.value) {
+      const age = Date.now() - new Date(row.value).getTime();
+      if (age < 24 * 60 * 60 * 1000) return; // checked in last 24h, skip
+    }
+  } catch (_) {}
+
+  let integrityRows;
+  try {
+    integrityRows = database.all('PRAGMA integrity_check(100)');
+    try {
+      database.run(
+        `INSERT INTO kv_store (key, value) VALUES ('last_integrity_check', ?)
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value`,
+        [new Date().toISOString()],
+      );
+    } catch (_) {}
+  } catch (e) {
+    console.warn('[DB] integrity_check failed — attempting proactive index rebuild on key tables:', e.message);
+    _rebuildKeyIndexes(database);
+    return;
+  }
+
+  const bad = integrityRows.filter(r => r.integrity_check !== 'ok');
+  if (bad.length === 0) return;
+
+  const idxNames = new Set();
+  for (const { integrity_check: msg } of bad) {
+    const m = msg.match(/missing from index (\S+)/);
+    if (m) idxNames.add(m[1]);
+  }
+
+  if (idxNames.size > 0) {
+    console.warn('[DB] Corrupted indexes — rebuilding (drop + create):', [...idxNames].join(', '));
+    for (const idx of idxNames) {
+      try {
+        const defRow = database.get(
+          `SELECT sql FROM sqlite_master WHERE type='index' AND name=?`, [idx],
+        );
+        if (!defRow?.sql) continue;
+        database.exec(`DROP INDEX IF EXISTS "${idx}"`);
+        database.exec(defRow.sql);
+        console.log('[DB] Rebuilt index:', idx);
+      } catch (e2) {
+        console.warn(`[DB] Could not rebuild ${idx}:`, e2.message);
+      }
+    }
+  } else {
+    console.warn('[DB] Integrity issues (non-index):', bad.slice(0, 3).map(r => r.integrity_check));
+    _rebuildKeyIndexes(database);
+  }
+}
+
+// Drop + recreate the indexes that pattern mining JOINs touch.
+// Safe to call even when the indexes are healthy — just costs one rebuild pass.
+function _rebuildKeyIndexes(database) {
+  const indexes = [
+    ['idx_vgs_video_id', 'CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id)'],
+    ['idx_vgs_bucket',   'CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket)'],
+    ['idx_iv_niche',     'CREATE INDEX IF NOT EXISTS idx_iv_niche     ON ingested_videos(niche)'],
+    ['idx_iv_channel',   'CREATE INDEX IF NOT EXISTS idx_iv_channel   ON ingested_videos(channel_id)'],
+    ['idx_ic_niche',     'CREATE INDEX IF NOT EXISTS idx_ic_niche     ON ingested_channels(niche)'],
+    ['idx_ic_enabled',   'CREATE INDEX IF NOT EXISTS idx_ic_enabled   ON ingested_channels(ingest_enabled)'],
+  ];
+  for (const [name, sql] of indexes) {
+    try {
+      database.exec(`DROP INDEX IF EXISTS "${name}"`);
+      database.exec(sql);
+      console.log('[DB] Proactively rebuilt index:', name);
+    } catch (e) {
+      console.warn(`[DB] Could not rebuild ${name}:`, e.message);
+    }
   }
 }
 
@@ -105,6 +192,7 @@ const NEW_INGESTED_CHANNEL_COLS = [
   ['inferred_topics',          'TEXT'],
   ['content_archetype',        'TEXT'],
   ['niche_override',           'TEXT'],
+  ['audience_language',        'TEXT'],
 ];
 
 const NEW_VIDEO_OUTCOMES_COLS = [
@@ -698,14 +786,15 @@ function backfillIdentityPrimaryNiche(database) {
 }
 
 function backfillNewFeatures(database) {
-  // Find rows where the new columns are all still NULL (pre-migration rows)
-  // Backfill rows that still have all-zero new scores (pre-migration rows default to 0)
+  // Only process rows with a non-empty title — rows with blank titles will always
+  // score zero and would re-run this backfill on every restart otherwise.
   const rows = database.all(`
     SELECT f.video_id, v.title, v.hook, v.niche
     FROM features f
     JOIN videos v ON v.id = f.video_id
     WHERE f.curiosity_score = 0 AND f.urgency_score = 0
       AND f.power_word_score = 0 AND f.specificity_score = 0
+      AND v.title IS NOT NULL AND v.title != ''
   `);
 
   if (rows.length === 0) return;
@@ -767,8 +856,45 @@ function getDb() {
   migratePhaseXV(db);
   migrateMultilingual(db);
   migratePhaseXVI(db);
+  migrateCrawler(db);
+  migrateSignals(db);
+  repairCorruptedIndexes(db);
 
   return db;
+}
+
+function migrateCrawler(database) {
+  try { database.exec(`ALTER TABLE corpus_channels ADD COLUMN crawler_visited_at TEXT`); } catch (_) {}
+}
+
+function migrateSignals(database) {
+  // General key-value store for server-side flags (e.g. last_integrity_check timestamp)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS kv_store (
+      key   TEXT PRIMARY KEY,
+      value TEXT
+    );
+  `);
+  // Community signal table — crowd-sourced confirmations of channel metadata
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS channel_signals (
+      id                 TEXT PRIMARY KEY,
+      channel_id         TEXT NOT NULL,
+      question_id        TEXT NOT NULL,
+      answer             TEXT NOT NULL,
+      session_id         TEXT NOT NULL,
+      is_owner_verified  INTEGER NOT NULL DEFAULT 0,
+      created_at         TEXT NOT NULL,
+      UNIQUE(channel_id, question_id, session_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_signals_channel  ON channel_signals(channel_id);
+    CREATE INDEX IF NOT EXISTS idx_signals_question ON channel_signals(channel_id, question_id);
+  `);
+  // Columns applied from verified signals
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN content_language TEXT`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN audience_geo TEXT`);     } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN signal_niche TEXT`);     } catch (_) {}
+  console.log('[DB] Signals migration complete (channel_signals table + 3 columns)');
 }
 
 function migratePhaseXVI(database) {

@@ -3,6 +3,7 @@ const crypto = require('crypto');
 const { getDb }      = require('../db/init');
 const quotaGuard     = require('../services/quotaGuard');
 const { setLastRun, hoursSinceLastRun } = require('../services/jobState');
+const { withCronRetry } = require('../utils/cronRetry');
 const {
   fetchChannelContentDetails,
   fetchPlaylistItems,
@@ -18,6 +19,10 @@ const {
 } = require('../db/queries');
 
 const VIDEOS_PER_CHANNEL = 50;
+
+// Ingest's own daily budget — prevents it from consuming snapshot's headroom.
+// Override via INGEST_QUOTA_BUDGET in .env.
+const INGEST_BUDGET = parseInt(process.env.INGEST_QUOTA_BUDGET || '30000', 10);
 
 const BUCKET_THRESHOLDS = {
   '1d':   1,
@@ -261,11 +266,17 @@ async function runHistoricalIngestCycle() {
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
   }
 
-  console.log(`[historical] Starting cycle — ${channels.length} channels`);
-  let totalInserted = 0, totalSkipped = 0, totalSnapshots = 0;
+  console.log(`[historical] Starting cycle — ${channels.length} channels, budget=${INGEST_BUDGET}`);
+  let totalInserted = 0, totalSkipped = 0, totalSnapshots = 0, ingestUsed = 0;
 
   for (const channel of channels) {
+    if (ingestUsed >= INGEST_BUDGET) {
+      console.warn(`[historical] Ingest budget (${INGEST_BUDGET}) reached — stopping to preserve snapshot quota`);
+      break;
+    }
+    const usedBefore = quotaGuard.getStats().used;
     const r = await ingestChannel(channel);
+    ingestUsed += (quotaGuard.getStats().used - usedBefore);
     totalInserted  += r.inserted;
     totalSkipped   += r.skipped;
     totalSnapshots += r.snapshots;
@@ -273,23 +284,21 @@ async function runHistoricalIngestCycle() {
   }
 
   const quota = quotaGuard.getStats();
-  console.log(`[historical] Cycle complete — inserted=${totalInserted} skipped=${totalSkipped} snapshots=${totalSnapshots} quota_used=${quota.used}/${quota.cutoff}`);
+  console.log(`[historical] Cycle complete — inserted=${totalInserted} skipped=${totalSkipped} snapshots=${totalSnapshots} ingest_units=${ingestUsed}/${INGEST_BUDGET} total_quota=${quota.used}/${quota.cutoff}`);
   setLastRun('historical_ingest');
   return { channels: channels.length, inserted: totalInserted, skipped: totalSkipped, snapshots: totalSnapshots };
 }
 
 function startHistoricalIngestCron() {
-  cron.schedule('0 3 * * *', async () => {
-    try { await runHistoricalIngestCycle(); }
-    catch (e) { console.error('[historical] Cron error:', e.message); }
+  cron.schedule('0 3 * * *', () => {
+    withCronRetry(runHistoricalIngestCycle, 'historical', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
   });
   console.log('[Historical Ingest Cron] Scheduled — daily at 03:00 UTC');
 
   if (hoursSinceLastRun('historical_ingest') > 23) {
     console.log('[Historical Ingest Cron] Missed window detected — catch-up run in 15s');
-    setTimeout(async () => {
-      try { await runHistoricalIngestCycle(); }
-      catch (e) { console.error('[historical] Catch-up error:', e.message); }
+    setTimeout(() => {
+      withCronRetry(runHistoricalIngestCycle, 'historical-catchup', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
     }, 15_000);
   }
 }

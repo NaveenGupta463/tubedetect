@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node index.js",
     "dev": "nodemon --ignore data/ --ignore ml/ --ext js index.js",
+    "pipeline": "node pipeline.js",
     "seed": "node scripts/seedTestData.js",
     "backfill": "node scripts/backfillEmbeddings.js",
     "ingest": "node scripts/runIngestionBatch.js"

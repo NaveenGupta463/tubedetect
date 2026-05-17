@@ -4,8 +4,10 @@ const OpenAI = require('openai');
 const ALLOWED_NICHES = [
   'technology', 'business', 'education', 'entertainment', 'gaming',
   'health', 'finance', 'lifestyle', 'science', 'sports', 'news',
-  'politics', 'food', 'travel', 'music', 'comedy', 'fitness', 'beauty',
+  'politics', 'geopolitics', 'defence',
+  'food', 'travel', 'music', 'comedy', 'fitness', 'beauty',
   'yoga', 'meditation', 'philosophy',
+  'selfimprovement',
   'other',
 ];
 
@@ -92,7 +94,15 @@ ${ALLOWED_NICHES.join(', ')}
 Rules:
 - NEVER invent a new primary_niche value
 - If no clear match exists, use "other"
-- Map semantic → umbrella: geopolitics→politics, political commentary→politics, elections→politics, startup culture→business, AI tools→technology, economic commentary→finance, self improvement→lifestyle, breaking news→news, current events (non-political)→news
+- CRITICAL distinctions (these are easy to get wrong):
+  - "geopolitics" = international relations, foreign affairs, diplomacy, world affairs, national security analysis, world events, proxy wars, superpower rivalry → use "geopolitics" NOT "politics"
+  - "defence" = military, armed forces, weapons, army/navy/air force, defence industry, war strategy, national security (operational), fighter jets, submarines, missile systems → use "defence" NOT "lifestyle" or "other"
+  - "politics" = ONLY domestic politics, elections, governance, political parties, politicians → NOT geopolitics, NOT defence
+  - "selfimprovement" = personal development, motivation, productivity, mindset, self-help, mental health awareness, therapy discussions, habits, life coaching, psychology → use "selfimprovement" NOT "lifestyle" or "health" or "philosophy"
+  - "philosophy" = abstract philosophical inquiry, Stoicism, Vedanta, existentialism, consciousness studies → NOT self-improvement or motivation content
+  - "health" = physical health, fitness, nutrition, medicine, doctors → NOT mental health awareness or self-improvement
+  - If a channel covers BOTH domestic politics AND geopolitics, use whichever is primary; put the other in secondary_niche
+- Other mappings: political commentary→politics, startup culture→business, AI tools→technology, economic commentary→finance, breaking news→news, current events (non-political)→news, wellness/mindset→selfimprovement
 
 STEP 3 — Generate inferred_topics[]
 Free-form semantic descriptors of what the channel ACTUALLY discusses.
@@ -138,10 +148,12 @@ audience_style: choose from: ${ALLOWED_AUDIENCE_STYLES.join(', ')} — use "teen
 secondary_niche: null if not applicable.`;
 }
 
-function buildUserPrompt(channelName, titles) {
+function buildUserPrompt(channelName, titles, description) {
   const sample = titles.slice(0, 40).map((t, i) => `${i + 1}. ${t}`).join('\n');
-  return `Channel: ${channelName || 'Unknown'}
-
+  const descBlock = description
+    ? `\nChannel description (very high signal — trust this over title ambiguity):\n${description.slice(0, 600)}\n`
+    : '';
+  return `Channel: ${channelName || 'Unknown'}${descBlock}
 Recent video titles:
 ${sample}
 
@@ -259,7 +271,7 @@ function computeIdentityStrength(confidence, primaryNiche, secondaryNiche) {
 
 // ── Main export ───────────────────────────────────────────────────────────────
 
-async function classifyChannel({ channelName, titles }) {
+async function classifyChannel({ channelName, titles, description }) {
   if (!titles || titles.length === 0) {
     throw new Error('No titles available for classification');
   }
@@ -274,7 +286,7 @@ async function classifyChannel({ channelName, titles }) {
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: buildSystemPrompt() },
-      { role: 'user',   content: buildUserPrompt(channelName, titles) },
+      { role: 'user',   content: buildUserPrompt(channelName, titles, description) },
     ],
     temperature: 0.1,
     max_tokens:  600,

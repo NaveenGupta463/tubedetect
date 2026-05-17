@@ -2,6 +2,7 @@ const cron = require('node-cron');
 const { getDb }                             = require('../db/init');
 const { fetchVideoStatsBatch }              = require('../services/youtubeMetrics');
 const { quotaAvailable, recordUsage }       = require('../services/quotaGuard');
+const { withCronRetry }                     = require('../utils/cronRetry');
 
 const REFRESH_LIMIT     = 200;
 const HIGH_PERF_THRESH  = 1.5; // normalized ~top 15%
@@ -93,9 +94,8 @@ function getRefreshStats() {
 }
 
 function startRefreshCron() {
-  cron.schedule('0 */6 * * *', async () => {
-    try { await runRefreshCycle(); }
-    catch (e) { console.error('[refreshCron] Error:', e.message); }
+  cron.schedule('0 */6 * * *', () => {
+    withCronRetry(runRefreshCycle, 'refresh', { maxAttempts: 3, retryDelayMs: 10 * 60 * 1000 });
   });
   console.log('[Refresh Cron] Scheduled — every 6 hours');
 }

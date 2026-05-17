@@ -13,6 +13,29 @@ const {
   upsertVideoCache,
   updateVideoCacheStats,
 } = require('../db/queries');
+const { getApiKey, markExhausted, isQuotaError } = require('../services/apiKeyManager');
+
+const YT_BASE = 'https://www.googleapis.com/youtube/v3';
+
+// Quota-aware YouTube GET — rotates through all configured API keys
+async function ytGet(path, params) {
+  for (let attempt = 0; attempt < 3; attempt++) {
+    const key = getApiKey();
+    if (!key) return null;
+    const url = new URL(`${YT_BASE}/${path}`);
+    url.searchParams.set('key', key);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const res  = await fetch(url.toString());
+    const data = await res.json();
+    if (!res.ok) {
+      const msg = data?.error?.message || `YouTube ${res.status}`;
+      if (isQuotaError(msg)) { markExhausted(key); continue; }
+      return null;
+    }
+    return data;
+  }
+  return null;
+}
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -136,6 +159,178 @@ async function populateUncachedChannels(db) {
     populateRunning = false;
   }
 }
+
+// ── Keyword niche detection (for YouTube live results) ───────────────────────
+
+const NICHE_KEYWORDS = {
+  politics:      ['politics', 'political', 'government', 'election', 'minister', 'parliament', 'democracy', 'foreign policy', 'geopolitics', 'rajya', 'lok sabha', 'bjp', 'congress', 'modi', 'rahul'],
+  education:     ['education', 'learn', 'tutorial', 'study', 'teaching', 'school', 'upsc', 'ias', 'exam', 'lecture', 'course', 'knowledge'],
+  technology:    ['tech', 'software', 'coding', 'programming', 'gadget', 'smartphone', 'ai', 'machine learning', 'developer'],
+  finance:       ['finance', 'investing', 'stock market', 'mutual fund', 'money', 'wealth', 'trading', 'budget', 'economy'],
+  entertainment: ['entertainment', 'comedy', 'fun', 'viral', 'trending', 'memes', 'reaction'],
+  gaming:        ['gaming', 'game', 'esports', 'playthrough', 'minecraft', 'pubg', 'free fire'],
+  lifestyle:     ['lifestyle', 'vlog', 'daily life', 'travel', 'food', 'vlogs', 'family'],
+  health:        ['health', 'fitness', 'workout', 'yoga', 'ayurveda', 'diet', 'wellness', 'doctor'],
+  news:          ['news', 'breaking', 'current affairs', 'samachar', 'daily news', 'latest'],
+  business:      ['business', 'entrepreneur', 'startup', 'marketing', 'sales', 'growth hacking'],
+};
+
+function guessNiche(title, description) {
+  const text = `${title} ${description}`.toLowerCase();
+  let best = null, bestCount = 0;
+  for (const [niche, kws] of Object.entries(NICHE_KEYWORDS)) {
+    const count = kws.filter(kw => text.includes(kw)).length;
+    if (count > bestCount) { bestCount = count; best = niche; }
+  }
+  return best;
+}
+
+// ── GET /api/channel-cache/search?q=&limit=10 ─────────────────────────────────
+router.get('/channel-cache/search', (req, res) => {
+  try {
+    const db    = getDb();
+    const q     = (req.query.q || '').trim();
+    const limit = Math.min(20, Math.max(1, parseInt(req.query.limit ?? '10', 10)));
+
+    if (!q) return res.json({ results: [] });
+
+    const like = `%${q}%`;
+
+    const ingested = db.all(
+      `SELECT ic.channel_id, ic.channel_name, ic.channel_subscribers AS subs,
+              ic.niche, ic.community_id, 'ingested' AS source,
+              COALESCE(ic.primary_language, cc.yt_default_language) AS language,
+              cc.thumbnail_url AS thumbnail
+       FROM ingested_channels ic
+       LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
+       WHERE ic.ingest_enabled = 1
+         AND (lower(ic.channel_name) LIKE lower(?) OR ic.channel_id LIKE ?)
+       ORDER BY ic.channel_subscribers DESC
+       LIMIT ?`,
+      [like, like, limit]
+    );
+
+    const ingestedIds = new Set(ingested.map(r => r.channel_id));
+    const remaining   = limit - ingested.length;
+
+    let corpus = [];
+    if (remaining > 0) {
+      const rows = db.all(
+        `SELECT channel_id, title AS channel_name, subscriber_count AS subs,
+                niche, community_id, 'corpus' AS source, language, thumbnail_url AS thumbnail
+         FROM corpus_channels
+         WHERE (lower(title) LIKE lower(?) OR channel_id LIKE ?)
+         ORDER BY subscriber_count DESC
+         LIMIT ?`,
+        [like, like, limit]
+      );
+      corpus = rows.filter(r => !ingestedIds.has(r.channel_id)).slice(0, remaining);
+    }
+
+    const allRows = [...ingested, ...corpus];
+
+    // Fill missing thumbnails from channel_cache (JS-side JSON parse — no json_extract needed)
+    const missingIds = allRows.filter(r => !r.thumbnail).map(r => r.channel_id);
+    const cacheThumbMap = {};
+    if (missingIds.length > 0) {
+      const ph = missingIds.map(() => '?').join(',');
+      const cacheRows = db.all(
+        `SELECT channel_id, raw_json FROM channel_cache WHERE channel_id IN (${ph}) AND raw_json IS NOT NULL`,
+        missingIds,
+      );
+      for (const { channel_id, raw_json } of cacheRows) {
+        try {
+          const parsed = JSON.parse(raw_json);
+          const url = parsed?.snippet?.thumbnails?.medium?.url
+                   || parsed?.snippet?.thumbnails?.default?.url
+                   || null;
+          if (url) cacheThumbMap[channel_id] = url;
+        } catch (_) {}
+      }
+    }
+
+    const results = allRows.map(r => ({
+      channel_id:   r.channel_id,
+      name:         r.channel_name || r.channel_id,
+      subs:         r.subs || 0,
+      niche:        r.niche || null,
+      community_id: r.community_id || null,
+      source:       r.source,
+      language:     r.language || 'en',
+      thumbnail:    r.thumbnail || cacheThumbMap[r.channel_id] || null,
+    }));
+
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── GET /api/channel-cache/search-youtube?q=&limit=5 ─────────────────────────
+// Live YouTube search — called by the frontend only when DB search has < 3 hits.
+// Returns same shape as /channel-cache/search so results can be merged directly.
+
+router.get('/channel-cache/search-youtube', async (req, res) => {
+  // Uses YT_API_KEY_7 exclusively — reserved for frontend search, never touched by backend jobs.
+  const searchKey = process.env.YT_API_KEY_7;
+  if (!searchKey) return res.json({ results: [] });
+
+  const q     = (req.query.q || '').trim();
+  const limit = Math.min(8, Math.max(1, parseInt(req.query.limit ?? '5', 10)));
+  if (!q) return res.json({ results: [] });
+
+  async function searchYtGet(path, params) {
+    const url = new URL(`${YT_BASE}/${path}`);
+    url.searchParams.set('key', searchKey);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const res  = await fetch(url.toString());
+    const data = await res.json();
+    return res.ok ? data : null;
+  }
+
+  try {
+    // Step 1: search.list — channel IDs + search-snippet thumbnails
+    const searchData = await searchYtGet('search', {
+      part: 'snippet', type: 'channel', q, maxResults: limit,
+    });
+    if (!searchData) return res.json({ results: [] });
+
+    const searchThumbMap = {};
+    const ids = [];
+    for (const item of (searchData.items || [])) {
+      const id = item.id?.channelId || item.snippet?.channelId;
+      if (!id) continue;
+      ids.push(id);
+      searchThumbMap[id] =
+        item.snippet?.thumbnails?.medium?.url ||
+        item.snippet?.thumbnails?.default?.url || null;
+    }
+    if (!ids.length) return res.json({ results: [] });
+
+    // Step 2: channels.list — subscriber counts + authoritative thumbnail
+    const detailData = await searchYtGet('channels', {
+      part: 'snippet,statistics', id: ids.join(','),
+    });
+    if (!detailData) return res.json({ results: [] });
+
+    const results = (detailData.items || []).map(item => ({
+      channel_id:   item.id,
+      name:         item.snippet?.title || item.id,
+      subs:         parseInt(item.statistics?.subscriberCount || '0', 10),
+      niche:        guessNiche(item.snippet?.title || '', item.snippet?.description || ''),
+      community_id: null,
+      source:       'youtube',
+      language:     item.snippet?.defaultLanguage || null,
+      thumbnail:    item.snippet?.thumbnails?.medium?.url ||
+                    item.snippet?.thumbnails?.default?.url ||
+                    searchThumbMap[item.id] || null,
+    }));
+
+    res.json({ results });
+  } catch (e) {
+    res.json({ results: [] });
+  }
+});
 
 // ── GET channel by id or handle ───────────────────────────────────────────────
 // Query params: ?id=UCxxx  OR  ?handle=mkbhd

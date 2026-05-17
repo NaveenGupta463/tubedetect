@@ -39,10 +39,10 @@ function getYtKey() {
 }
 
 function adminOnly(req, res, next) {
-  const token = req.headers['x-admin-token'] || req.query.admin_token;
-  if (!token || token !== process.env.ADMIN_TOKEN) {
-    return res.status(403).json({ error: 'forbidden' });
-  }
+  const envToken = process.env.ADMIN_TOKEN;
+  if (!envToken) return next();
+  const provided = req.headers['x-admin-token'] || req.query.admin_token;
+  if (provided !== envToken) return res.status(403).json({ error: 'forbidden' });
   next();
 }
 

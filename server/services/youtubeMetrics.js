@@ -2,20 +2,35 @@ const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
 const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
 
-// Rotates through all available keys on quota errors before giving up.
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// Rotates through all available keys on quota errors.
+// Retries transient network and 5xx errors up to 3 times per key before giving up.
 async function ytFetch(url) {
-  for (let attempt = 0; attempt < 12; attempt++) {
+  for (let keyAttempt = 0; keyAttempt < 12; keyAttempt++) {
     const key = getApiKey();
     if (!key) throw new Error('all_api_keys_exhausted');
-    const sep = url.includes('?') ? '&' : '?';
-    const res  = await fetch(`${url}${sep}key=${key}`);
-    const data = await res.json();
-    if (!res.ok) {
-      const msg = data?.error?.message || String(res.status);
-      if (isQuotaError(msg)) { markExhausted(key); continue; }
-      throw new Error(msg);
+    const sep  = url.includes('?') ? '&' : '?';
+    const full = `${url}${sep}key=${key}`;
+
+    for (let t = 1; t <= 3; t++) {
+      let res, data;
+      try {
+        res  = await fetch(full);
+        data = await res.json();
+      } catch (_) {
+        if (t < 3) { await sleep(2000 * t); continue; }
+        throw new Error('network_error_after_retries');
+      }
+
+      if (!res.ok) {
+        const msg = data?.error?.message || String(res.status);
+        if (isQuotaError(msg) || res.status === 429) { markExhausted(key); break; }
+        if (res.status >= 500 && t < 3) { await sleep(3000 * t); continue; }
+        throw new Error(msg);
+      }
+      return data;
     }
-    return data;
   }
   throw new Error('all_api_keys_exhausted');
 }

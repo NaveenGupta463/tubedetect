@@ -20,6 +20,7 @@ const {
 } = require('../db/queries');
 const { classifyChannel } = require('../services/channelClassifier');
 const { runHistoricalIngestCycle } = require('../jobs/historicalIngest');
+const { runFullBatchDetection }    = require('../jobs/languageDetectionJob');
 const { runSnapshotCycle, runNeverRefreshedSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
 const { runPatternMining }         = require('../services/patternMiner');
 const { getLastRun }               = require('../services/jobState');
@@ -99,6 +100,32 @@ router.get('/admin/intelligence/channels', (_req, res) => {
   try {
     const db = getDb();
     res.json({ channels: getAllIngestedChannels(db) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/admin/intelligence/classification-stats
+// Returns accurate counts for the bulk-detect UI.
+router.get('/admin/intelligence/classification-stats', (_req, res) => {
+  try {
+    const db = getDb();
+    const r  = db.get(`
+      SELECT
+        COUNT(*) AS total,
+        SUM(CASE WHEN identity_last_detected_at IS NULL THEN 1 ELSE 0 END) AS never_detected,
+        SUM(CASE WHEN identity_last_detected_at IS NULL
+              AND (EXISTS (SELECT 1 FROM ingested_videos iv WHERE iv.channel_id = ic.channel_id)
+                OR EXISTS (SELECT 1 FROM corpus_videos  cv WHERE cv.channel_id = ic.channel_id))
+             THEN 1 ELSE 0 END) AS classifiable_now,
+        SUM(CASE WHEN identity_last_detected_at IS NULL
+              AND NOT EXISTS (SELECT 1 FROM ingested_videos iv WHERE iv.channel_id = ic.channel_id)
+              AND NOT EXISTS (SELECT 1 FROM corpus_videos  cv WHERE cv.channel_id = ic.channel_id)
+              AND ingest_enabled = 1
+             THEN 1 ELSE 0 END) AS awaiting_ingest
+      FROM ingested_channels ic
+    `);
+    res.json({ ok: true, ...r });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -398,7 +425,9 @@ router.post('/admin/intelligence/channels/:id/detect-identity', async (req, res)
 
     if (titles.length === 0) return res.status(400).json({ error: 'No titles found for this channel' });
 
-    const result = await classifyChannel({ channelName: channel.channel_name, titles });
+    const descRow    = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [channel.channel_id]);
+    const description = (() => { try { const j = JSON.parse(descRow?.raw_json || '{}'); const d = j.snippet?.description; return (d && d.trim().length > 10) ? d.trim() : null; } catch (_) { return null; } })();
+    const result     = await classifyChannel({ channelName: channel.channel_name, titles, description });
     res.json({ ok: true, ...result });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -483,7 +512,9 @@ router.post('/admin/intelligence/channels/bulk-detect-identity', async (req, res
         // Channels with no local titles haven't been ingested yet; skip them.
         if (!titles.length) { errors.push({ channel_id: ch.channel_id, channel_name: ch.channel_name, reason: 'no ingested titles yet — run ingest first' }); continue; }
 
-        const result = await classifyChannel({ channelName: ch.channel_name, titles });
+        const descRowBulk   = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [ch.channel_id]);
+        const descBulk      = (() => { try { const j = JSON.parse(descRowBulk?.raw_json || '{}'); const d = j.snippet?.description; return (d && d.trim().length > 10) ? d.trim() : null; } catch (_) { return null; } })();
+        const result        = await classifyChannel({ channelName: ch.channel_name, titles, description: descBulk });
         saveChannelIdentity(db, ch.id, {
           ...result,
           identity_last_detected_at: new Date().toISOString(),
@@ -690,6 +721,28 @@ router.post('/admin/intelligence/community/backfill', (req, res) => {
     console.error('[community-backfill] Error:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
+});
+
+// POST /api/admin/intelligence/country-detect/trigger
+// Run country detection on ALL untagged channels in one background pass.
+// Fast-path channels (snippet.country, bio, script, Hinglish) resolve instantly.
+// API-bound channels (comment analysis) are paced at 100ms each.
+router.post('/admin/intelligence/country-detect/trigger', (req, res) => {
+  const db    = getDb();
+  const total = db.get(
+    `SELECT COUNT(*) AS cnt FROM ingested_channels WHERE ingest_enabled = 1 AND region IS NULL`,
+  )?.cnt || 0;
+
+  setImmediate(async () => {
+    try { await runFullBatchDetection(); }
+    catch (e) { console.error('[country-detect] Full batch error:', e.message); }
+  });
+
+  res.json({
+    ok:      true,
+    queued:  total,
+    message: `Country detection batch started for ${total} untagged channels — runs in background, check server logs`,
+  });
 });
 
 module.exports = router;

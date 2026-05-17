@@ -11,7 +11,7 @@ export default function PlaceholderScreen({ meta }) {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.32, ease }}
       style={{
-        height: '100%', display: 'flex', flexDirection: 'column',
+        minHeight: 'calc(100vh - 70px)', display: 'flex', flexDirection: 'column',
         alignItems: 'center', justifyContent: 'center', gap: 18,
         padding: 40,
       }}
