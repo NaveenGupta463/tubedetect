@@ -480,7 +480,11 @@ function ChannelsTab({ token, channels, onRefresh }) {
               setDetectResult({ ok: true, detected: prog.detected, failed: prog.failed });
               onRefresh();
             }
-          } catch (_) {}
+          } catch (e) {
+            clearInterval(detectPollRef.current);
+            setDetectBusy(false);
+            setDetectResult({ ok: false, error: 'Server unreachable — detection may still be running in background' });
+          }
         }, 3000);
       } else {
         setDetectResult(data);
