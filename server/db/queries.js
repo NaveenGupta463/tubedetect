@@ -1103,6 +1103,21 @@ function saveChannelIdentity(db, channelId, {
       channelId,
     ],
   );
+
+  // Sync channel_topics flat table
+  if (Array.isArray(inferred_topics) && inferred_topics.length > 0) {
+    try {
+      db.run(`DELETE FROM channel_topics WHERE channel_id = ?`, [channelId]);
+      for (const topic of inferred_topics) {
+        const t = (topic ?? '').toString().trim().toLowerCase();
+        if (!t) continue;
+        db.run(
+          `INSERT OR IGNORE INTO channel_topics (channel_id, topic, niche) VALUES (?, ?, ?)`,
+          [channelId, t, primary_niche ?? null],
+        );
+      }
+    } catch (_) {}
+  }
 }
 
 // ── Niche benchmark history (append-only) ─────────────────────────────────────
@@ -1814,6 +1829,63 @@ function updateChannelQuality(db, id, { trust_score, weight_multiplier, ignore_f
   db.run(`UPDATE ingested_channels SET ${fields.join(', ')} WHERE id = ?`, vals);
 }
 
+// ── Topic fingerprint queries ─────────────────────────────────────────────────
+
+// Returns channels ranked by topic overlap with the given channel.
+// Each row: { channel_id, title, niche, secondary_niche, content_archetype, topic_overlap }
+// topic_overlap = count of shared inferred_topics (higher = more similar)
+function getChannelsByTopicOverlap(db, channelId, { limit = 200, minOverlap = 1 } = {}) {
+  return db.all(
+    `SELECT ct2.channel_id,
+            ic.channel_name  AS title,
+            ic.niche,
+            ic.primary_niche,
+            ic.secondary_niche,
+            ic.content_archetype,
+            COUNT(ct2.topic) AS topic_overlap
+     FROM channel_topics ct1
+     JOIN channel_topics ct2 ON ct2.topic = ct1.topic AND ct2.channel_id != ct1.channel_id
+     JOIN ingested_channels ic ON ic.channel_id = ct2.channel_id
+     WHERE ct1.channel_id = ?
+     GROUP BY ct2.channel_id
+     HAVING topic_overlap >= ?
+     ORDER BY topic_overlap DESC
+     LIMIT ?`,
+    [channelId, minOverlap, limit],
+  );
+}
+
+// Returns the inferred topics for a channel as a plain array.
+function getChannelTopics(db, channelId) {
+  return db.all(
+    `SELECT topic FROM channel_topics WHERE channel_id = ? ORDER BY topic`,
+    [channelId],
+  ).map(r => r.topic);
+}
+
+// Topic velocity: for each topic, how many channels adopted it this week vs last week.
+// Returns topics sorted by growth rate descending.
+function getTopicVelocity(db, { niche = null, limit = 50 } = {}) {
+  const nicheFilter = niche ? `AND niche = '${niche.replace(/'/g, "''")}'` : '';
+  return db.all(
+    `SELECT
+       topic,
+       niche,
+       COUNT(*) AS total_channels,
+       SUM(CASE WHEN first_seen >= datetime('now', '-7 days')  THEN 1 ELSE 0 END) AS added_this_week,
+       SUM(CASE WHEN first_seen >= datetime('now', '-14 days')
+                 AND first_seen <  datetime('now', '-7 days')  THEN 1 ELSE 0 END) AS added_last_week,
+       SUM(CASE WHEN first_seen >= datetime('now', '-30 days') THEN 1 ELSE 0 END) AS added_this_month
+     FROM channel_topics
+     WHERE 1=1 ${nicheFilter}
+     GROUP BY topic
+     HAVING total_channels >= 2
+     ORDER BY added_this_week DESC, total_channels DESC
+     LIMIT ?`,
+    [limit],
+  );
+}
+
 module.exports = {
   insertVideo,
   getVideoById,
@@ -1906,6 +1978,9 @@ module.exports = {
   getChannelVideoTitles,
   getChannelIdentity,
   saveChannelIdentity,
+  getChannelsByTopicOverlap,
+  getChannelTopics,
+  getTopicVelocity,
   updateChannelNiche,
   setNicheOverride,
   updateChannelQuality,

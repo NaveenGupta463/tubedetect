@@ -858,9 +858,51 @@ function getDb() {
   migratePhaseXVI(db);
   migrateCrawler(db);
   migrateSignals(db);
+  migrateTopics(db);
   repairCorruptedIndexes(db);
 
   return db;
+}
+
+function migrateTopics(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_topics (
+        channel_id TEXT NOT NULL,
+        topic      TEXT NOT NULL,
+        niche      TEXT,
+        first_seen TEXT DEFAULT (datetime('now')),
+        PRIMARY KEY (channel_id, topic)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ct_topic ON channel_topics(topic);
+      CREATE INDEX IF NOT EXISTS idx_ct_niche  ON channel_topics(niche);
+    `);
+  } catch (_) {}
+
+  // Backfill from existing inferred_topics JSON blobs
+  const rows = database.all(
+    `SELECT channel_id, niche, inferred_topics FROM ingested_channels
+     WHERE inferred_topics IS NOT NULL AND inferred_topics != '[]' AND inferred_topics != 'null'`,
+  );
+  let inserted = 0;
+  for (const row of rows) {
+    let topics;
+    try { topics = JSON.parse(row.inferred_topics); } catch (_) { continue; }
+    if (!Array.isArray(topics)) continue;
+    for (const topic of topics) {
+      const t = (topic ?? '').toString().trim().toLowerCase();
+      if (!t) continue;
+      try {
+        database.run(
+          `INSERT OR IGNORE INTO channel_topics (channel_id, topic, niche) VALUES (?, ?, ?)`,
+          [row.channel_id, t, row.niche ?? null],
+        );
+        inserted++;
+      } catch (_) {}
+    }
+  }
+  if (inserted > 0) console.log(`[DB] Topics migration: backfilled ${inserted} topic rows from ${rows.length} channels`);
+  console.log('[DB] channel_topics table ready');
 }
 
 function migrateCrawler(database) {

@@ -2,7 +2,7 @@ const express = require('express');
 const crypto  = require('crypto');
 const router  = express.Router();
 const { getDb } = require('../db/init');
-const { setNicheOverride, getChannelVideoTitles, saveChannelIdentity } = require('../db/queries');
+const { setNicheOverride, getChannelVideoTitles, saveChannelIdentity, getChannelsByTopicOverlap, getChannelTopics } = require('../db/queries');
 const { classifyChannel, ALLOWED_NICHES } = require('../services/channelClassifier');
 
 // ── Bulk re-detect job store ──────────────────────────────────────────────────
@@ -977,30 +977,50 @@ router.get('/what-to-post', (req, res) => {
     let userRegion = null;
     if (channel_id) {
       const row = db.get(
-        `SELECT community_id, niche, content_archetype, behavior_tags, region
+        `SELECT community_id, niche, primary_niche, secondary_niche, content_archetype, behavior_tags, region
          FROM ingested_channels WHERE channel_id = ?`,
         [channel_id],
       );
       if (row) {
         userRegion = row.region || null;
-        const rc = getRegionClause(userRegion);
+        const rc   = getRegionClause(userRegion);
+
+        // ── 1. Community pool (highest priority — validated by dominant niche) ──
         if (row.community_id && row.niche) {
           const communityRows = db.all(
             `SELECT channel_id, niche FROM ingested_channels WHERE community_id = ? AND channel_id != ? ${rc} LIMIT 300`,
             [row.community_id, channel_id],
           );
-          // Verify the community's dominant niche matches the channel's niche.
-          // If the channel was reclassified (e.g. politics → geopolitics) but still
-          // has the old community_id, discard the community so the niche fallback runs.
           const nicheCounts = {};
           for (const r of communityRows) nicheCounts[r.niche] = (nicheCounts[r.niche] || 0) + 1;
           const dominantNiche = Object.entries(nicheCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
           if (!dominantNiche || dominantNiche === row.niche) {
             communityIds = communityRows.map(r => r.channel_id);
           }
-          // else: community is stale — communityIds stays empty, falls through to niche lookup
         }
-        resolvedNiche = resolvedNiche || row.niche;
+
+        // ── 2. Topic fingerprint pool ─────────────────────────────────────────
+        // Find channels ranked by shared inferred_topics. Merge with community pool.
+        const topicMatches = getChannelsByTopicOverlap(db, channel_id, { limit: 300, minOverlap: 1 });
+
+        if (topicMatches.length > 0) {
+          // Build a scored map: channel_id → topic_overlap score
+          const topicScoreMap = new Map();
+          for (const m of topicMatches) topicScoreMap.set(m.channel_id, m.topic_overlap);
+
+          // Merge: union of community + topic pool, ordered by topic score then community membership
+          const communitySet = new Set(communityIds);
+          const allIds = new Set([...communityIds, ...topicMatches.map(m => m.channel_id)]);
+          allIds.delete(channel_id);
+
+          communityIds = [...allIds].sort((a, b) => {
+            const scoreB = (topicScoreMap.get(b) || 0) + (communitySet.has(b) ? 2 : 0);
+            const scoreA = (topicScoreMap.get(a) || 0) + (communitySet.has(a) ? 2 : 0);
+            return scoreB - scoreA;
+          }).slice(0, 300);
+        }
+
+        resolvedNiche = resolvedNiche || row.primary_niche || row.niche;
 
         let behaviorTags = [];
         try { behaviorTags = JSON.parse(row.behavior_tags || '[]'); } catch (_) {}
@@ -1013,11 +1033,23 @@ router.get('/what-to-post', (req, res) => {
       ).map(r => r.channel_id);
     }
 
+    // ── 3. Niche fallback (primary + secondary) — when pool is still small ───
     if (communityIds.length < 5 && resolvedNiche) {
       const rc = getRegionClause(userRegion);
+      // Include both primary and secondary niche channels
+      const channelRow = channel_id ? db.get(
+        `SELECT secondary_niche FROM ingested_channels WHERE channel_id = ?`, [channel_id],
+      ) : null;
+      const secondaryNiche = channelRow?.secondary_niche;
+
+      const niches = [resolvedNiche, secondaryNiche].filter(Boolean);
+      const ph     = niches.map(() => '?').join(',');
+      const params = channel_id ? [...niches, channel_id] : niches;
       communityIds = db.all(
-        `SELECT channel_id FROM ingested_channels WHERE niche = ? ${channel_id ? 'AND channel_id != ?' : ''} ${rc} LIMIT 300`,
-        channel_id ? [resolvedNiche, channel_id] : [resolvedNiche],
+        `SELECT channel_id FROM ingested_channels
+         WHERE niche IN (${ph}) ${channel_id ? 'AND channel_id != ?' : ''} ${rc}
+         LIMIT 300`,
+        params,
       ).map(r => r.channel_id);
     }
 
@@ -1609,6 +1641,37 @@ router.get('/trending-topics', async (req, res) => {
     res.json({ ok: true, ideas: ideas.slice(0, 8) });
   } catch (e) {
     console.error('[trending-topics]', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ── Topic trends ─────────────────────────────────────────────────────────────
+// GET /api/intel/trends/topics?niche=fitness&limit=30
+// Returns topics sorted by velocity (how fast they're being adopted across channels).
+// also returns cross-niche spread: which niches each topic appears in.
+
+const { getTopicVelocity } = require('../db/queries');
+
+router.get('/trends/topics', (req, res) => {
+  try {
+    const db    = getDb();
+    const niche = req.query.niche || null;
+    const limit = Math.min(parseInt(req.query.limit || '50', 10), 100);
+
+    const rows = getTopicVelocity(db, { niche, limit });
+
+    // For the top 20, also fetch which niches each topic spans
+    const top20 = rows.slice(0, 20);
+    for (const row of top20) {
+      const niches = db.all(
+        `SELECT niche, COUNT(*) as cnt FROM channel_topics WHERE topic = ? AND niche IS NOT NULL GROUP BY niche ORDER BY cnt DESC`,
+        [row.topic],
+      );
+      row.niches = niches.map(n => ({ niche: n.niche, channels: n.cnt }));
+    }
+
+    res.json({ ok: true, topics: rows, generated_at: new Date().toISOString() });
+  } catch (e) {
     res.status(500).json({ error: e.message });
   }
 });
