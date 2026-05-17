@@ -471,6 +471,45 @@ function reclassifyPoliticsChannels(db) {
   return fixed;
 }
 
+// One-shot pass: reclassify channels tagged lifestyle/health/philosophy whose titles
+// are predominantly self-improvement / mental health content.
+// Safe to run multiple times — only updates channels that clearly match.
+
+const SELFIMPROVEMENT_KW = [
+  'self improvement','self help','personal development','motivation','productivity',
+  'discipline','habits','confidence','mindset','success mindset','growth mindset',
+  'mental health','therapy','anxiety','depression','psychology','wellbeing',
+  'life coach','morning routine','atomic habits','sandeep maheshwari','vivek bindra',
+  'overthinking','stress','emotional intelligence','self awareness','journaling',
+  'manifestation','positive thinking','inner peace','healing','subconscious',
+  'personality','social skills','communication skills','imposter syndrome',
+  'burnout','resilience','purpose','ikigai','self discipline',
+];
+
+function reclassifySelfImprovementChannels(db) {
+  const rows = db.all(
+    `SELECT channel_id, channel_name FROM ingested_channels
+     WHERE niche IN ('lifestyle','health','philosophy','other') AND ingest_enabled = 1`,
+  );
+  let fixed = 0;
+  for (const { channel_id, channel_name } of rows) {
+    const titles = db.all(
+      `SELECT title FROM ingested_videos
+       WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT 30`,
+      [channel_id],
+    );
+    if (titles.length < 5) continue;
+    const siHits = titles.reduce((s, { title }) => s + _kwHits(title, SELFIMPROVEMENT_KW), 0);
+    if (siHits / titles.length < 0.3) continue;
+    db.run(`UPDATE ingested_channels SET niche = 'selfimprovement' WHERE channel_id = ?`, [channel_id]);
+    db.run(`UPDATE corpus_channels   SET niche = 'selfimprovement' WHERE channel_id = ?`, [channel_id]);
+    console.log(`[niche] reclassify: ${channel_name} → selfimprovement`);
+    fixed++;
+  }
+  console.log(`[niche] selfimprovement reclassify complete — ${fixed} channels updated`);
+  return fixed;
+}
+
 // Full bulk run — called by admin trigger.
 // No delay between channels that hit fast paths (steps 2-6); only API-bound channels
 // (steps 7-8) keep the 300ms pause to avoid hammering YouTube quota.
@@ -485,7 +524,7 @@ async function runFullBatchDetection() {
     const db = getDb();
     const nameFixed    = fixIndianNamedChannels(db);
     const spanishFixed = fixSpanishChannels(db);
-    const nicheFixed   = reclassifyPoliticsChannels(db);
+    const nicheFixed   = reclassifyPoliticsChannels(db) + reclassifySelfImprovementChannels(db);
     const rows = db.all(
       `SELECT channel_id FROM ingested_channels
        WHERE ingest_enabled = 1 AND region IS NULL
