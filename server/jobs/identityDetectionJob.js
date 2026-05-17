@@ -8,14 +8,13 @@ const { getDb }              = require('../db/init');
 const { getAllIngestedChannels, getChannelVideoTitles, saveChannelIdentity, updateChannelNiche } = require('../db/queries');
 const { classifyChannel }    = require('../services/channelClassifier');
 
-// Shared module-level state — lets the admin progress endpoint read live counts
-// whether the job was triggered by the pipeline or the admin button.
 const jobState = {
   running:   false,
   total:     0,
   done:      0,
   detected:  0,
-  failed:    0,
+  skipped:   0, // no video titles yet — not an error
+  failed:    0, // actual AI/network errors
   startedAt: null,
 };
 
@@ -40,15 +39,18 @@ async function runBulkIdentityDetection({ batchSize = 20, batchGapMs = 1000 } = 
   jobState.total     = pending.length;
   jobState.done      = 0;
   jobState.detected  = 0;
+  jobState.skipped   = 0;
   jobState.failed    = 0;
   jobState.startedAt = new Date().toISOString();
 
   console.log(`[identity] Starting bulk detection — ${pending.length} channels pending`);
 
+  const errorLog = new Map(); // error message → count, for deduplication
+
   async function processOne(ch) {
     try {
       const titles = getChannelVideoTitles(db, ch.channel_id, 50);
-      if (!titles.length) { jobState.failed++; jobState.done++; return; }
+      if (!titles.length) { jobState.skipped++; jobState.done++; return; }
 
       const descRow = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [ch.channel_id]);
       const desc    = (() => {
@@ -69,7 +71,11 @@ async function runBulkIdentityDetection({ batchSize = 20, batchGapMs = 1000 } = 
       jobState.detected++;
     } catch (e) {
       jobState.failed++;
-      if (jobState.failed <= 3) console.error(`[identity] classify error (${ch.channel_name}):`, e.message);
+      // Log each unique error type once; log first occurrence with channel name
+      const key = e.message?.slice(0, 80) ?? 'unknown';
+      const prev = errorLog.get(key) ?? 0;
+      if (prev === 0) console.error(`[identity] error (${ch.channel_name}): ${e.message}`);
+      errorLog.set(key, prev + 1);
     }
     jobState.done++;
   }
@@ -77,12 +83,25 @@ async function runBulkIdentityDetection({ batchSize = 20, batchGapMs = 1000 } = 
   for (let i = 0; i < pending.length; i += batchSize) {
     const batch = pending.slice(i, i + batchSize);
     await Promise.all(batch.map(ch => processOne(ch)));
+
+    // Log error summary every 10 batches so the console stays readable
+    if (((i / batchSize) + 1) % 10 === 0 && errorLog.size > 0) {
+      for (const [msg, count] of errorLog) {
+        console.warn(`[identity] error x${count}: ${msg}`);
+      }
+    }
+
     if (i + batchSize < pending.length) await new Promise(r => setTimeout(r, batchGapMs));
   }
 
+  if (errorLog.size > 0) {
+    console.warn('[identity] Error summary:');
+    for (const [msg, count] of errorLog) console.warn(`  x${count}: ${msg}`);
+  }
+
   jobState.running = false;
-  console.log(`[identity] Done — detected=${jobState.detected} failed=${jobState.failed} total=${jobState.total}`);
-  return { detected: jobState.detected, failed: jobState.failed, total: jobState.total };
+  console.log(`[identity] Done — detected=${jobState.detected} skipped=${jobState.skipped} failed=${jobState.failed} total=${jobState.total}`);
+  return { detected: jobState.detected, skipped: jobState.skipped, failed: jobState.failed, total: jobState.total };
 }
 
 module.exports = { runBulkIdentityDetection, getJobState };

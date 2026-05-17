@@ -642,7 +642,7 @@ function ChannelsTab({ token, channels, onRefresh }) {
           </button>
           {detectBusy && detectProgress && (
             <span style={{ fontSize: '0.68rem', color: '#fbbf24' }}>
-              {detectProgress.done} / {detectProgress.total} · {detectProgress.detected} detected · {detectProgress.failed} failed
+              {detectProgress.done} / {detectProgress.total} · {detectProgress.detected} detected · {detectProgress.skipped ?? 0} skipped · {detectProgress.failed} failed
             </span>
           )}
           {detectBusy && !detectProgress && (
