@@ -683,7 +683,7 @@ function ChannelsTab({ token, channels, onRefresh }) {
         ) : (
           <div>
             {channels.map(ch => (
-              <div key={ch.id} style={{ borderBottom: '1px solid #111', paddingBottom: 10, marginBottom: 10 }}>
+              <div key={ch.channel_id} style={{ borderBottom: '1px solid #111', paddingBottom: 10, marginBottom: 10 }}>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'flex-start', flexWrap: 'wrap' }}>
                   {/* Channel name */}
                   <div style={{ minWidth: 180, flex: 2 }}>
@@ -983,7 +983,7 @@ function AutoIngestedTab({
                 </thead>
                 <tbody>
                   {channels.map(ch => (
-                    <tr key={ch.id}>
+                    <tr key={ch.channel_id}>
                       <td style={S.td}>
                         <div style={{ color: '#ccc', fontWeight: 600 }}>{ch.channel_name || ch.channel_id}</div>
                         <div style={{ fontSize: '0.62rem', color: '#555', marginTop: 2 }}>{ch.channel_id}</div>
@@ -1057,7 +1057,7 @@ function IngestStatusTab({ status, channels }) {
             </thead>
             <tbody>
               {channels.map(ch => (
-                <tr key={ch.id}>
+                <tr key={ch.channel_id}>
                   <td style={S.td}>{ch.channel_name || ch.channel_id}</td>
                   <td style={S.td}><span style={S.tag}>{ch.niche}</span></td>
                   <td style={S.td}>
