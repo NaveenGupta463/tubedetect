@@ -1509,7 +1509,9 @@ router.get('/trending-topics', async (req, res) => {
 
     // Fetch daily trending searches for India
     const raw = await googleTrends.dailyTrends({ geo: 'IN', trendDate: new Date() });
-    const json = JSON.parse(raw.slice(5)); // strip XSSI )]}'\n prefix
+    const jsonStart = raw.indexOf('{');
+    if (jsonStart === -1) throw new Error('Unexpected Google Trends response format');
+    const json = JSON.parse(raw.slice(jsonStart));
     const trendingSearches = json.default?.trendingSearchesDays?.[0]?.trendingSearches || [];
 
     const terms = trendingSearches
