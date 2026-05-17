@@ -21,7 +21,7 @@ const jobState = {
 
 function getJobState() { return { ...jobState }; }
 
-async function runBulkIdentityDetection({ batchSize = 1, batchGapMs = 300 } = {}) {
+async function runBulkIdentityDetection({ batchSize = 1, batchGapMs = 150 } = {}) {
   if (jobState.running) {
     console.log('[identity] Bulk detection already running — skipping');
     return { skipped: true };
