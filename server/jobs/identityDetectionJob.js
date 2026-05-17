@@ -21,7 +21,7 @@ const jobState = {
 
 function getJobState() { return { ...jobState }; }
 
-async function runBulkIdentityDetection({ batchSize = 10, batchGapMs = 200 } = {}) {
+async function runBulkIdentityDetection({ batchSize = 5, batchGapMs = 1000 } = {}) {
   if (jobState.running) {
     console.log('[identity] Bulk detection already running — skipping');
     return { skipped: true };
@@ -65,10 +65,11 @@ async function runBulkIdentityDetection({ batchSize = 10, batchGapMs = 200 } = {
         identity_last_detected_at: new Date().toISOString(),
         identity_source: 'ai_detected',
       });
-      if (result.primary_niche) updateChannelNiche(db, ch.id, result.primary_niche);
+      if (result.primary_niche) updateChannelNiche(db, ch.channel_id, result.primary_niche);
       jobState.detected++;
-    } catch (_) {
+    } catch (e) {
       jobState.failed++;
+      if (jobState.failed <= 3) console.error(`[identity] classify error (${ch.channel_name}):`, e.message);
     }
     jobState.done++;
   }
