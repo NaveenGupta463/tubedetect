@@ -454,13 +454,22 @@ function reclassifyPoliticsChannels(db) {
        WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT 30`,
       [channel_id],
     );
-    if (titles.length < 5) continue;
-    const geoHits  = titles.reduce((s, { title }) => s + _kwHits(title, GEOPOLITICS_KW), 0);
-    const defHits  = titles.reduce((s, { title }) => s + _kwHits(title, DEFENCE_KW), 0);
-    const polTotal = titles.length;
-    const newNiche = geoHits / polTotal >= 0.3 ? 'geopolitics'
-                   : defHits / polTotal >= 0.3 ? 'defence'
-                   : null;
+
+    let newNiche = null;
+
+    if (titles.length >= 5) {
+      const geoHits = titles.reduce((s, { title }) => s + _kwHits(title, GEOPOLITICS_KW), 0);
+      const defHits = titles.reduce((s, { title }) => s + _kwHits(title, DEFENCE_KW), 0);
+      newNiche = geoHits / titles.length >= 0.2 ? 'geopolitics'
+               : defHits / titles.length >= 0.2 ? 'defence'
+               : null;
+    } else {
+      // No video data yet — fall back to channel name keyword match
+      const nameGeo = _kwHits(channel_name, GEOPOLITICS_KW);
+      const nameDef = _kwHits(channel_name, DEFENCE_KW);
+      newNiche = nameGeo > 0 ? 'geopolitics' : nameDef > 0 ? 'defence' : null;
+    }
+
     if (!newNiche) continue;
     db.run(`UPDATE ingested_channels SET niche = ?, community_id = NULL WHERE channel_id = ?`, [newNiche, channel_id]);
     db.run(`UPDATE corpus_channels   SET niche = ?, community_id = NULL WHERE channel_id = ?`, [newNiche, channel_id]);
@@ -500,7 +509,7 @@ function reclassifySelfImprovementChannels(db) {
     );
     if (titles.length < 5) continue;
     const siHits = titles.reduce((s, { title }) => s + _kwHits(title, SELFIMPROVEMENT_KW), 0);
-    if (siHits / titles.length < 0.3) continue;
+    if (siHits / titles.length < 0.2) continue;
     db.run(`UPDATE ingested_channels SET niche = 'selfimprovement', community_id = NULL WHERE channel_id = ?`, [channel_id]);
     db.run(`UPDATE corpus_channels   SET niche = 'selfimprovement', community_id = NULL WHERE channel_id = ?`, [channel_id]);
     console.log(`[niche] reclassify: ${channel_name} → selfimprovement`);
