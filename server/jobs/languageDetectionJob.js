@@ -462,8 +462,8 @@ function reclassifyPoliticsChannels(db) {
                    : defHits / polTotal >= 0.3 ? 'defence'
                    : null;
     if (!newNiche) continue;
-    db.run(`UPDATE ingested_channels SET niche = ? WHERE channel_id = ?`, [newNiche, channel_id]);
-    db.run(`UPDATE corpus_channels   SET niche = ? WHERE channel_id = ?`, [newNiche, channel_id]);
+    db.run(`UPDATE ingested_channels SET niche = ?, community_id = NULL WHERE channel_id = ?`, [newNiche, channel_id]);
+    db.run(`UPDATE corpus_channels   SET niche = ?, community_id = NULL WHERE channel_id = ?`, [newNiche, channel_id]);
     console.log(`[niche] reclassify: ${channel_name} politics → ${newNiche}`);
     fixed++;
   }
@@ -501,8 +501,8 @@ function reclassifySelfImprovementChannels(db) {
     if (titles.length < 5) continue;
     const siHits = titles.reduce((s, { title }) => s + _kwHits(title, SELFIMPROVEMENT_KW), 0);
     if (siHits / titles.length < 0.3) continue;
-    db.run(`UPDATE ingested_channels SET niche = 'selfimprovement' WHERE channel_id = ?`, [channel_id]);
-    db.run(`UPDATE corpus_channels   SET niche = 'selfimprovement' WHERE channel_id = ?`, [channel_id]);
+    db.run(`UPDATE ingested_channels SET niche = 'selfimprovement', community_id = NULL WHERE channel_id = ?`, [channel_id]);
+    db.run(`UPDATE corpus_channels   SET niche = 'selfimprovement', community_id = NULL WHERE channel_id = ?`, [channel_id]);
     console.log(`[niche] reclassify: ${channel_name} → selfimprovement`);
     fixed++;
   }

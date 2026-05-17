@@ -984,11 +984,21 @@ router.get('/what-to-post', (req, res) => {
       if (row) {
         userRegion = row.region || null;
         const rc = getRegionClause(userRegion);
-        if (row.community_id) {
-          communityIds = db.all(
-            `SELECT channel_id FROM ingested_channels WHERE community_id = ? AND channel_id != ? ${rc} LIMIT 300`,
+        if (row.community_id && row.niche) {
+          const communityRows = db.all(
+            `SELECT channel_id, niche FROM ingested_channels WHERE community_id = ? AND channel_id != ? ${rc} LIMIT 300`,
             [row.community_id, channel_id],
-          ).map(r => r.channel_id);
+          );
+          // Verify the community's dominant niche matches the channel's niche.
+          // If the channel was reclassified (e.g. politics → geopolitics) but still
+          // has the old community_id, discard the community so the niche fallback runs.
+          const nicheCounts = {};
+          for (const r of communityRows) nicheCounts[r.niche] = (nicheCounts[r.niche] || 0) + 1;
+          const dominantNiche = Object.entries(nicheCounts).sort((a, b) => b[1] - a[1])[0]?.[0];
+          if (!dominantNiche || dominantNiche === row.niche) {
+            communityIds = communityRows.map(r => r.channel_id);
+          }
+          // else: community is stale — communityIds stays empty, falls through to niche lookup
         }
         resolvedNiche = resolvedNiche || row.niche;
 
