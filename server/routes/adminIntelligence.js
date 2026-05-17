@@ -504,7 +504,7 @@ router.post('/admin/intelligence/channels/bulk-detect-identity', (req, res) => {
   }
 
   // Run in background — do not await
-  runBulkIdentityDetection({ paceMs: 250 }).catch(e => console.error('[bulk-detect] fatal:', e.message));
+  runBulkIdentityDetection().catch(e => console.error('[bulk-detect] fatal:', e.message));
 
   res.json({ ok: true, started: true, total: pending.length });
 });

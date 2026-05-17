@@ -21,7 +21,7 @@ const jobState = {
 
 function getJobState() { return { ...jobState }; }
 
-async function runBulkIdentityDetection({ paceMs = 250 } = {}) {
+async function runBulkIdentityDetection({ batchSize = 5, batchGapMs = 200 } = {}) {
   if (jobState.running) {
     console.log('[identity] Bulk detection already running — skipping');
     return { skipped: true };
@@ -45,10 +45,10 @@ async function runBulkIdentityDetection({ paceMs = 250 } = {}) {
 
   console.log(`[identity] Starting bulk detection — ${pending.length} channels pending`);
 
-  for (const ch of pending) {
+  async function processOne(ch) {
     try {
       const titles = getChannelVideoTitles(db, ch.channel_id, 50);
-      if (!titles.length) { jobState.failed++; jobState.done++; continue; }
+      if (!titles.length) { jobState.failed++; jobState.done++; return; }
 
       const descRow = db.get('SELECT raw_json FROM channel_cache WHERE channel_id = ?', [ch.channel_id]);
       const desc    = (() => {
@@ -71,7 +71,13 @@ async function runBulkIdentityDetection({ paceMs = 250 } = {}) {
       jobState.failed++;
     }
     jobState.done++;
-    if (paceMs > 0) await new Promise(r => setTimeout(r, paceMs));
+  }
+
+  // Process in parallel batches — faster on paid OpenAI tiers
+  for (let i = 0; i < pending.length; i += batchSize) {
+    const batch = pending.slice(i, i + batchSize);
+    await Promise.all(batch.map(ch => processOne(ch)));
+    if (i + batchSize < pending.length) await new Promise(r => setTimeout(r, batchGapMs));
   }
 
   jobState.running = false;
