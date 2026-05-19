@@ -549,6 +549,222 @@ function SourceSection({ src, subtitle, ideas, saved, onSave, loading, empty }) 
   );
 }
 
+// ── Community Hot Section ─────────────────────────────────────────────────────
+
+function CommunityHotSection({ data, loading }) {
+  if (!loading && (!data || !data.items?.length)) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      style={{ marginTop: 48 }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: '1rem' }}>🔥</span>
+        <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: T.text, letterSpacing: '-0.02em' }}>
+          Hot in Your Community
+        </h3>
+        {data?.peer_count > 0 && (
+          <span style={{ fontSize: '0.68rem', color: T.muted, marginLeft: 2 }}>
+            {data.peer_count} peer channels · last 60 days
+          </span>
+        )}
+      </div>
+      <p style={{ margin: '0 0 18px', fontSize: '0.75rem', color: T.muted, lineHeight: 1.5 }}>
+        Topics your peers are getting views on right now that you haven't covered
+      </p>
+
+      {loading && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[1,2,3].map(i => (
+            <motion.div key={i} animate={{ opacity: [0.4,0.7,0.4] }} transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15 }}
+              style={{ ...T.glassCard, borderRadius: 12, height: 90, border: `1px solid ${T.border}` }} />
+          ))}
+        </div>
+      )}
+
+      {!loading && data?.items?.map((item, i) => (
+        <motion.div
+          key={item.topic}
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ duration: 0.25, delay: i * 0.04, ease: [0.16, 1, 0.3, 1] }}
+          style={{
+            ...T.glassCard, borderRadius: 12,
+            border: `1px solid ${T.border}`,
+            padding: '14px 16px', marginBottom: 10,
+          }}
+        >
+          <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12, marginBottom: 10 }}>
+            <div>
+              <span style={{ fontSize: '0.85rem', fontWeight: 700, color: T.text, textTransform: 'capitalize' }}>
+                {item.topic}
+              </span>
+              <div style={{ display: 'flex', gap: 10, marginTop: 4, flexWrap: 'wrap' }}>
+                <span style={{ fontSize: '0.68rem', color: T.success, fontWeight: 600 }}>
+                  {fmtV(item.total_views)} total views
+                </span>
+                <span style={{ fontSize: '0.68rem', color: T.muted }}>
+                  {item.channel_count} of {item.peer_count} channels
+                </span>
+              </div>
+            </div>
+            <span style={{
+              fontSize: '0.62rem', fontWeight: 700, padding: '3px 9px', borderRadius: 6,
+              background: 'rgba(245,158,11,0.12)', color: '#f59e0b', border: '1px solid rgba(245,158,11,0.25)',
+              flexShrink: 0,
+            }}>
+              HOT NOW
+            </span>
+          </div>
+
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+            {(item.channels || []).map((c, j) => (
+              <div key={j} style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                gap: 8, padding: '6px 10px', borderRadius: 8,
+                background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}`,
+              }}>
+                <span style={{ fontSize: '0.73rem', color: T.text, flex: 1, lineHeight: 1.3, fontWeight: 500 }}>
+                  {c.channel_name}
+                </span>
+                <span style={{ fontSize: '0.72rem', fontWeight: 700, color: T.success, flexShrink: 0 }}>
+                  {fmtV(c.views)}
+                </span>
+              </div>
+            ))}
+          </div>
+        </motion.div>
+      ))}
+    </motion.div>
+  );
+}
+
+// ── World Signals Section ─────────────────────────────────────────────────────
+
+function WorldSignalsSection({ data, loading }) {
+  const hasVelocity = data?.velocity?.length > 0;
+  const hasTrends   = data?.trends?.length > 0;
+  const hasAny      = hasVelocity || hasTrends;
+
+  if (!loading && !hasAny) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 12 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
+      style={{ marginTop: 48 }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
+        <span style={{ fontSize: '1rem' }}>🌐</span>
+        <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: T.text, letterSpacing: '-0.02em' }}>
+          World Signals
+        </h3>
+        {loading && (
+          <motion.span
+            animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.4, repeat: Infinity }}
+            style={{ fontSize: '0.65rem', color: T.muted }}
+          >
+            loading…
+          </motion.span>
+        )}
+      </div>
+      <p style={{ margin: '0 0 18px', fontSize: '0.75rem', color: T.muted, lineHeight: 1.5 }}>
+        What's accelerating globally right now that fits your channel's DNA
+      </p>
+
+      {loading && !hasAny && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {[1,2,3].map(i => (
+            <motion.div key={i} animate={{ opacity: [0.4,0.7,0.4] }} transition={{ duration: 1.2, repeat: Infinity, delay: i * 0.15 }}
+              style={{ ...T.glassCard, borderRadius: 12, height: 72, border: `1px solid ${T.border}` }} />
+          ))}
+        </div>
+      )}
+
+      {/* Velocity spikes */}
+      {hasVelocity && (
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: '0.65rem', fontWeight: 700, color: T.muted, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 10 }}>
+            ⚡ Velocity Spikes — accelerating in your niche right now
+          </div>
+          {data.velocity.map((item, i) => (
+            <motion.div
+              key={item.topic}
+              initial={{ opacity: 0, x: -8 }}
+              animate={{ opacity: 1, x: 0 }}
+              transition={{ duration: 0.22, delay: i * 0.05 }}
+              style={{
+                ...T.glassCard, borderRadius: 12,
+                border: `1px solid rgba(16,185,129,0.2)`,
+                padding: '12px 14px', marginBottom: 8,
+              }}
+            >
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+                <span style={{ fontSize: '0.83rem', fontWeight: 700, color: T.text, textTransform: 'capitalize' }}>
+                  {item.topic}
+                </span>
+                <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <span style={{ fontSize: '0.68rem', color: T.success, fontWeight: 700 }}>
+                    {item.velocity_ratio}× velocity
+                  </span>
+                  <span style={{ fontSize: '0.65rem', color: T.muted }}>{fmtV(item.total_views)} views</span>
+                </div>
+              </div>
+              {item.sample_titles?.map((t, j) => (
+                <div key={j} style={{
+                  display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  gap: 8, padding: '5px 8px', borderRadius: 7,
+                  background: 'rgba(16,185,129,0.05)', marginBottom: j < item.sample_titles.length - 1 ? 4 : 0,
+                }}>
+                  <span style={{ fontSize: '0.7rem', color: T.muted, flex: 1, lineHeight: 1.4 }}>{t.title}</span>
+                  <div style={{ textAlign: 'right', flexShrink: 0 }}>
+                    <div style={{ fontSize: '0.7rem', fontWeight: 700, color: T.text }}>{fmtV(t.views)}</div>
+                    {t.channel_name && <div style={{ fontSize: '0.58rem', color: T.muted }}>{t.channel_name}</div>}
+                  </div>
+                </div>
+              ))}
+            </motion.div>
+          ))}
+        </div>
+      )}
+
+      {/* Google Trends */}
+      {hasTrends && (
+        <div>
+          <div style={{ fontSize: '0.65rem', fontWeight: 700, color: T.muted, letterSpacing: '0.07em', textTransform: 'uppercase', marginBottom: 10 }}>
+            📈 Google Trends — rising searches in India
+          </div>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            {data.trends.map((t, i) => (
+              <motion.div
+                key={t.topic}
+                initial={{ opacity: 0, scale: 0.9 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.2, delay: i * 0.04 }}
+                style={{
+                  padding: '7px 14px', borderRadius: 8,
+                  background: 'rgba(249,115,22,0.08)', border: '1px solid rgba(249,115,22,0.25)',
+                  fontSize: '0.76rem', color: '#f97316', fontWeight: 600,
+                }}
+              >
+                {t.topic}
+                {t.trend_value === 999
+                  ? <span style={{ fontSize: '0.58rem', marginLeft: 6, opacity: 0.7 }}>BREAKOUT</span>
+                  : <span style={{ fontSize: '0.58rem', marginLeft: 6, opacity: 0.7 }}>+{t.trend_value}%</span>
+                }
+              </motion.div>
+            ))}
+          </div>
+        </div>
+      )}
+    </motion.div>
+  );
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
 
 export default function WhatToPost({ channel, onSearch }) {
@@ -558,14 +774,18 @@ export default function WhatToPost({ channel, onSearch }) {
   const [loading,       setLoading]      = useState(false);
   const [error,         setError]        = useState(null);
 
-  const [adjacent,      setAdjacent]     = useState(null);  // { sources: [{niche, channel_count, ideas}] }
+  const [adjacent,      setAdjacent]     = useState(null);
   const [loadingAdj,    setLoadingAdj]   = useState(false);
-
-  const [foreign,       setForeign]      = useState(null);  // { supported, ideas }
+  const [foreign,       setForeign]      = useState(null);
   const [loadingFor,    setLoadingFor]   = useState(false);
-
-  const [trends,        setTrends]       = useState(null);  // { ideas }
+  const [trends,        setTrends]       = useState(null);
   const [loadingTrends, setLoadingTrends]= useState(false);
+
+  // New sections
+  const [communityHot,     setCommunityHot]     = useState(null);
+  const [loadingCommunity, setLoadingCommunity] = useState(false);
+  const [worldSignals,     setWorldSignals]     = useState(null);
+  const [loadingWorld,     setLoadingWorld]     = useState(false);
 
   const [searchQuery,   setSearchQuery]  = useState('');
   const [searchInput,   setSearchInput]  = useState('');
@@ -588,6 +808,8 @@ export default function WhatToPost({ channel, onSearch }) {
     setAdjacent(null);
     setForeign(null);
     setTrends(null);
+    setCommunityHot(null);
+    setWorldSignals(null);
 
     const params = new URLSearchParams();
     if (channel.channel_id) params.set('channel_id',       channel.channel_id);
@@ -634,6 +856,26 @@ export default function WhatToPost({ channel, onSearch }) {
       .then(data => { if (data.ok) setTrends(data); })
       .catch(() => {})
       .finally(() => setLoadingTrends(false));
+
+    // Community hot — what peers are getting views on right now (last 60 days)
+    if (channel.channel_id) {
+      setLoadingCommunity(true);
+      fetch(`${SCORING_URL}/api/intel/community-hot?channel_id=${channel.channel_id}`)
+        .then(r => r.json())
+        .then(data => { if (data.ok) setCommunityHot(data); })
+        .catch(() => {})
+        .finally(() => setLoadingCommunity(false));
+    }
+
+    // World signals — async, loads in background, shows whatever arrives
+    if (channel.channel_id) {
+      setLoadingWorld(true);
+      fetch(`${SCORING_URL}/api/intel/world-signals?channel_id=${channel.channel_id}`)
+        .then(r => r.json())
+        .then(data => { if (data.ok) setWorldSignals(data); })
+        .catch(() => {})
+        .finally(() => setLoadingWorld(false));
+    }
 
   }, [channel?.channel_id, channel?.niche]);
 
@@ -1157,6 +1399,12 @@ export default function WhatToPost({ channel, onSearch }) {
           empty="No trending searches matched your community's video history right now."
         />
       )}
+
+      {/* ── Community Hot ── */}
+      <CommunityHotSection data={communityHot} loading={loadingCommunity} />
+
+      {/* ── World Signals ── */}
+      <WorldSignalsSection data={worldSignals} loading={loadingWorld} />
 
     </div>
   );

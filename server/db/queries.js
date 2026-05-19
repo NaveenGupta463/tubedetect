@@ -928,7 +928,7 @@ function getAllIngestedVideosForSnapshot(db) {
            ic.channel_subscribers
     FROM ingested_videos iv
     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
-    WHERE iv.published_at IS NOT NULL
+    WHERE iv.published_at >= datetime('now', '-60 days')
     ORDER BY iv.published_at DESC
   `);
 }
@@ -1103,6 +1103,16 @@ function saveChannelIdentity(db, channelId, {
       channelId,
     ],
   );
+
+  // OpenAI classification is ground truth — overwrite the keyword-guessed niche
+  if (Array.isArray(inferred_topics) && inferred_topics.length > 0 && inferred_topics[0]) {
+    try {
+      db.run(
+        `UPDATE ingested_channels SET niche = ? WHERE channel_id = ? AND niche_override IS NULL`,
+        [inferred_topics[0].toString().trim().toLowerCase(), channelId],
+      );
+    } catch (_) {}
+  }
 
   // Sync channel_topics flat table
   if (Array.isArray(inferred_topics) && inferred_topics.length > 0) {

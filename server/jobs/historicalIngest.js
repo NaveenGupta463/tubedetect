@@ -18,7 +18,7 @@ const {
   getPreviousBucketSnapshot,
 } = require('../db/queries');
 
-const VIDEOS_PER_CHANNEL = 50;
+const VIDEOS_PER_CHANNEL = 500;
 
 // Ingest's own daily budget — prevents it from consuming snapshot's headroom.
 // Override via INGEST_QUOTA_BUDGET in .env.
@@ -214,6 +214,7 @@ async function ingestChannel(channel) {
     }
 
     // 4. Upsert each video + insert all currently eligible growth snapshots
+    let vidIdx = 0;
     for (const [ytId, vdata] of videoMap) {
       try {
         upsertIngestedVideo(db, {
@@ -239,6 +240,8 @@ async function ingestChannel(channel) {
         }
         skipped++;
       }
+      vidIdx++;
+      if (vidIdx % 10 === 0) await new Promise(r => setImmediate(r));
     }
 
     if (i + 50 < videoIds.length) await sleep(200);
@@ -249,7 +252,7 @@ async function ingestChannel(channel) {
   return { inserted, skipped, snapshots };
 }
 
-async function runHistoricalIngestCycle() {
+async function runHistoricalIngestCycle({ batchSize = 5, batchGapMs = 200 } = {}) {
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY) {
     console.warn('[historical] YT_API_KEY not set — skipping');
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
@@ -266,21 +269,24 @@ async function runHistoricalIngestCycle() {
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
   }
 
-  console.log(`[historical] Starting cycle — ${channels.length} channels, budget=${INGEST_BUDGET}`);
+  console.log(`[historical] Starting cycle — ${channels.length} channels, budget=${INGEST_BUDGET}, batchSize=${batchSize}`);
   let totalInserted = 0, totalSkipped = 0, totalSnapshots = 0, ingestUsed = 0;
 
-  for (const channel of channels) {
+  for (let i = 0; i < channels.length; i += batchSize) {
     if (ingestUsed >= INGEST_BUDGET) {
       console.warn(`[historical] Ingest budget (${INGEST_BUDGET}) reached — stopping to preserve snapshot quota`);
       break;
     }
+    const batch      = channels.slice(i, i + batchSize);
     const usedBefore = quotaGuard.getStats().used;
-    const r = await ingestChannel(channel);
-    ingestUsed += (quotaGuard.getStats().used - usedBefore);
-    totalInserted  += r.inserted;
-    totalSkipped   += r.skipped;
-    totalSnapshots += r.snapshots;
-    await sleep(500);
+    const results    = await Promise.all(batch.map(ch => ingestChannel(ch)));
+    ingestUsed      += (quotaGuard.getStats().used - usedBefore);
+    for (const r of results) {
+      totalInserted  += r.inserted;
+      totalSkipped   += r.skipped;
+      totalSnapshots += r.snapshots;
+    }
+    if (i + batchSize < channels.length) await sleep(batchGapMs);
   }
 
   const quota = quotaGuard.getStats();

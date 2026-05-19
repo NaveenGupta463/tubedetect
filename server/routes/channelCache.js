@@ -198,7 +198,8 @@ router.get('/channel-cache/search', (req, res) => {
 
     const ingested = db.all(
       `SELECT ic.channel_id, ic.channel_name, ic.channel_subscribers AS subs,
-              ic.niche, ic.community_id, 'ingested' AS source,
+              ic.niche AS niche,
+              ic.community_id, 'ingested' AS source,
               COALESCE(ic.primary_language, cc.yt_default_language) AS language,
               cc.thumbnail_url AS thumbnail
        FROM ingested_channels ic

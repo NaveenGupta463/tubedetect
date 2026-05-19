@@ -6,6 +6,20 @@ process.on('unhandledRejection', (err) => {
   console.error('UNHANDLED REJECTION:', err);
 });
 
+// Graceful shutdown — close DB before exit so no in-progress writes are torn.
+// Called by SIGTERM (nodemon restart, OS stop) and SIGINT (Ctrl+C).
+function shutdown(signal) {
+  console.log(`\n[shutdown] ${signal} received — closing DB and exiting cleanly`);
+  try {
+    const { closeDb } = require('./db/init');
+    closeDb();
+    console.log('[shutdown] DB closed');
+  } catch (_) {}
+  process.exit(0);
+}
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT',  () => shutdown('SIGINT'));
+
 try {
   require('dotenv').config({ path: __dirname + '/.env' });
 
@@ -48,6 +62,7 @@ try {
   const discoveryRoute          = require('./routes/discovery');
   const creatorIntelRoute                = require('./routes/creatorIntel');
   const onboardingRoute                  = require('./routes/onboarding');
+  const copilotRoute                     = require('./routes/copilot');
   const { router: channelSignalsRoute }  = require('./routes/channelSignals');
   const { startLanguageDetectionCron }   = require('./jobs/languageDetectionJob');
   const intelligenceRoute       = require('./routes/intelligence');
@@ -72,6 +87,7 @@ try {
   const { startCorpusScheduler }          = require('./services/corpusScheduler');
   const { startCrawlerCron }             = require('./jobs/indiaCrawlerJob');
   const { startPromotionCron }           = require('./jobs/corpusPromotionJob');
+  const { startBackupCron }              = require('./jobs/backupJob');
 
   const app = express();
 
@@ -95,6 +111,7 @@ try {
   app.use('/api', experimentsRoute);
   app.use('/api/intel', creatorIntelRoute);
   app.use('/api/intel', onboardingRoute);
+  app.use('/api/copilot', copilotRoute);
   app.use('/api', channelSignalsRoute);
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
@@ -137,6 +154,7 @@ try {
     startLanguageDetectionCron();
     startCrawlerCron();
     startPromotionCron();
+    startBackupCron();
   });
 
   server.on('error', (err) => {

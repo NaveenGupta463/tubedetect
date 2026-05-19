@@ -1,4 +1,4 @@
-const { Database } = require('node-sqlite3-wasm');
+const BetterSqlite3 = require('better-sqlite3');
 const path   = require('path');
 const fs     = require('fs');
 const crypto = require('crypto');
@@ -10,6 +10,30 @@ const DATA_DIR  = path.resolve(__dirname, '../data');
 const DB_PATH   = path.resolve(DATA_DIR, 'scoring.db');
 const LOCK_PATH = DB_PATH + '.lock';
 
+// Thin wrapper so all existing db.all/get/run/exec calls work unchanged.
+// Prepared statements are cached per SQL string for performance.
+class Database {
+  constructor(dbPath) {
+    this._db    = new BetterSqlite3(dbPath);
+    this._cache = new Map();
+  }
+  _stmt(sql) {
+    if (!this._cache.has(sql)) this._cache.set(sql, this._db.prepare(sql));
+    return this._cache.get(sql);
+  }
+  _p(params) {
+    if (params == null) return [];
+    return Array.isArray(params) ? params : [params];
+  }
+  all(sql, params)  { return this._stmt(sql).all(this._p(params)); }
+  get(sql, params)  { return this._stmt(sql).get(this._p(params)); }
+  run(sql, params)  { return this._stmt(sql).run(this._p(params)); }
+  exec(sql)         { return this._db.exec(sql); }
+  close()           { this._cache.clear(); return this._db.close(); }
+  pragma(str, opts) { return this._db.pragma(str, opts); }
+  transaction(fn)   { return this._db.transaction(fn); }
+}
+
 function ensureDataDir() {
   try {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -19,39 +43,23 @@ function ensureDataDir() {
   }
 }
 
-// node-sqlite3-wasm uses a directory as a lock file on Windows.
-// If a previous process was killed without cleanup, remove the stale lock.
+// Legacy: node-sqlite3-wasm used a directory lock file. Clean it up if present.
 function clearStaleLock() {
   try {
     if (fs.existsSync(LOCK_PATH)) {
-      const stat = fs.statSync(LOCK_PATH);
-      console.log('[DB] Removing stale lock (mtime:', stat.mtime.toISOString(), ')');
       fs.rmSync(LOCK_PATH, { recursive: true, force: true });
-      console.log('[DB] Stale lock removed');
+      console.log('[DB] Removed legacy wasm lock file');
     }
-  } catch (e) {
-    console.warn('[DB] Could not remove lock file:', e.message);
-  }
+  } catch (_) {}
 }
 
 function verifyWalMode(database) {
   try {
-    const row  = database.get('PRAGMA journal_mode');
-    const mode = row?.journal_mode ?? row?.['journal_mode'] ?? Object.values(row ?? {})[0];
-    if (mode !== 'wal') {
-      console.warn('[DB] WARNING: journal_mode is', mode, '— expected wal. Attempting to re-enable.');
-      database.exec('PRAGMA journal_mode=WAL');
-      // Verify whether WAL actually stuck (WASM build on Windows often can't enable it)
-      const row2  = database.get('PRAGMA journal_mode');
-      const mode2 = row2?.journal_mode ?? Object.values(row2 ?? {})[0];
-      if (mode2 !== 'wal') {
-        console.warn('[DB] WAL unavailable — using EXCLUSIVE locking to prevent concurrent-write corruption');
-        // Exclusive mode: blocks other processes from opening the DB at all,
-        // which is safer than letting them corrupt it.
-        database.exec('PRAGMA locking_mode=EXCLUSIVE');
-      }
-    } else {
+    const mode = database.pragma('journal_mode', { simple: true });
+    if (mode === 'wal') {
       console.log('[DB] WAL mode confirmed');
+    } else {
+      console.warn('[DB] WARNING: journal_mode is', mode, '— expected wal');
     }
   } catch (e) {
     console.warn('[DB] Could not verify WAL mode:', e.message);
@@ -59,12 +67,12 @@ function verifyWalMode(database) {
 }
 
 function repairCorruptedIndexes(database) {
-  // Integrity check is expensive on large DBs (~2 min). Skip if checked within last 24h.
+  // Integrity check is expensive on large DBs (~2 min). Skip if checked within last 7 days.
   try {
     const row = database.get(`SELECT value FROM kv_store WHERE key = 'last_integrity_check'`);
     if (row?.value) {
       const age = Date.now() - new Date(row.value).getTime();
-      if (age < 24 * 60 * 60 * 1000) return; // checked in last 24h, skip
+      if (age < 7 * 24 * 60 * 60 * 1000) return; // checked in last 7 days, skip
     }
   } catch (_) {}
 
@@ -786,8 +794,13 @@ function backfillIdentityPrimaryNiche(database) {
 }
 
 function backfillNewFeatures(database) {
-  // Only process rows with a non-empty title — rows with blank titles will always
-  // score zero and would re-run this backfill on every restart otherwise.
+  // Skip if already completed — uses kv_store (created by migrateSignals before this runs)
+  try {
+    const done = database.get(`SELECT value FROM kv_store WHERE key = 'features_backfill_done'`);
+    if (done?.value === '1') return;
+  } catch (_) {}
+
+  // Only process rows with a non-empty title — rows with blank titles always score zero
   const rows = database.all(`
     SELECT f.video_id, v.title, v.hook, v.niche
     FROM features f
@@ -797,19 +810,54 @@ function backfillNewFeatures(database) {
       AND v.title IS NOT NULL AND v.title != ''
   `);
 
-  if (rows.length === 0) return;
-
-  console.log(`[DB] Backfilling new features for ${rows.length} existing rows...`);
-  for (const row of rows) {
-    const f = extractFeatures({ title: row.title, hook: row.hook, niche: row.niche });
-    database.run(
-      `UPDATE features
-       SET curiosity_score=?, urgency_score=?, specificity_score=?, power_word_score=?, sentiment_score=?
-       WHERE video_id=?`,
-      [f.curiosity_score, f.urgency_score, f.specificity_score, f.power_word_score, f.sentiment_score, row.video_id],
-    );
+  if (rows.length > 0) {
+    console.log(`[DB] Backfilling new features for ${rows.length} existing rows...`);
+    for (const row of rows) {
+      const f = extractFeatures({ title: row.title, hook: row.hook, niche: row.niche });
+      database.run(
+        `UPDATE features
+         SET curiosity_score=?, urgency_score=?, specificity_score=?, power_word_score=?, sentiment_score=?
+         WHERE video_id=?`,
+        [f.curiosity_score, f.urgency_score, f.specificity_score, f.power_word_score, f.sentiment_score, row.video_id],
+      );
+    }
+    console.log(`[DB] Backfill complete.`);
   }
-  console.log(`[DB] Backfill complete.`);
+
+  // Mark done so it never runs again
+  try {
+    database.run(
+      `INSERT INTO kv_store (key, value) VALUES ('features_backfill_done', '1')
+       ON CONFLICT(key) DO UPDATE SET value = '1'`,
+    );
+  } catch (_) {}
+}
+
+function applyOpenAINicheOverride(database) {
+  // OpenAI inferred_topics is ground truth — overwrite the keyword-guessed niche
+  // for every channel that has been classified. Skips if already done (kv_store flag).
+  try {
+    const done = database.get(`SELECT value FROM kv_store WHERE key = 'openai_niche_override_done'`);
+    if (done?.value === '1') return;
+  } catch (_) {}
+
+  try {
+    const result = database.run(`
+      UPDATE ingested_channels
+      SET niche = json_extract(inferred_topics, '$[0]')
+      WHERE inferred_topics IS NOT NULL
+        AND inferred_topics != '[]'
+        AND inferred_topics != 'null'
+        AND json_extract(inferred_topics, '$[0]') IS NOT NULL
+    `);
+    if ((result.changes ?? 0) > 0) {
+      console.log(`[DB] OpenAI niche override applied to ${result.changes} channels`);
+    }
+    database.run(`INSERT INTO kv_store (key, value) VALUES ('openai_niche_override_done', '1')
+                  ON CONFLICT(key) DO UPDATE SET value = '1'`);
+  } catch (e) {
+    console.warn('[DB] OpenAI niche override failed:', e.message);
+  }
 }
 
 let db = null;
@@ -824,15 +872,22 @@ function getDb() {
   checkForSpuriousDbFiles();
   clearStaleLock();
 
-  try {
-    db = new Database(DB_PATH);
-  } catch (e) {
-    if (e.message?.includes('unable to open database file')) {
-      console.warn('[DB] CANTOPEN on first attempt — forcing lock clear and retrying:', e.message);
-      try { fs.rmSync(LOCK_PATH, { recursive: true, force: true }); } catch (_) {}
+  // With better-sqlite3 + WAL, concurrent opens are safe. Keep a short retry
+  // in case of a transient lock during a write-heavy operation.
+  const MAX_OPEN_RETRIES = 10;
+  for (let attempt = 1; attempt <= MAX_OPEN_RETRIES; attempt++) {
+    try {
       db = new Database(DB_PATH);
-    } else {
-      throw e;
+      break;
+    } catch (e) {
+      const locked = e.message?.includes('database is locked') || e.message?.includes('unable to open');
+      if (locked && attempt < MAX_OPEN_RETRIES) {
+        console.warn(`[DB] Locked on open (attempt ${attempt}/${MAX_OPEN_RETRIES}) — waiting 1s…`);
+        const wait = Date.now() + 1000;
+        while (Date.now() < wait) {}
+      } else {
+        throw e;
+      }
     }
   }
 
@@ -848,7 +903,6 @@ function getDb() {
   migrate(db);
   migrateNiches(db);
   backfillIdentityPrimaryNiche(db);
-  backfillNewFeatures(db);
   seedDefaultScoringVersion(db);
   migratePhaseXII(db);
   seedGovernanceRoadmap(db);
@@ -857,8 +911,10 @@ function getDb() {
   migrateMultilingual(db);
   migratePhaseXVI(db);
   migrateCrawler(db);
-  migrateSignals(db);
+  migrateSignals(db);   // creates kv_store — must run before backfillNewFeatures
+  backfillNewFeatures(db);
   migrateTopics(db);
+  applyOpenAINicheOverride(db);
   repairCorruptedIndexes(db);
 
   return db;
@@ -879,29 +935,32 @@ function migrateTopics(database) {
     `);
   } catch (_) {}
 
-  // Backfill from existing inferred_topics JSON blobs
-  const rows = database.all(
-    `SELECT channel_id, niche, inferred_topics FROM ingested_channels
-     WHERE inferred_topics IS NOT NULL AND inferred_topics != '[]' AND inferred_topics != 'null'`,
-  );
-  let inserted = 0;
-  for (const row of rows) {
-    let topics;
-    try { topics = JSON.parse(row.inferred_topics); } catch (_) { continue; }
-    if (!Array.isArray(topics)) continue;
-    for (const topic of topics) {
-      const t = (topic ?? '').toString().trim().toLowerCase();
-      if (!t) continue;
-      try {
-        database.run(
-          `INSERT OR IGNORE INTO channel_topics (channel_id, topic, niche) VALUES (?, ?, ?)`,
-          [row.channel_id, t, row.niche ?? null],
-        );
-        inserted++;
-      } catch (_) {}
+  // Backfill from existing inferred_topics JSON blobs — skip if already populated
+  const existing = database.get('SELECT COUNT(*) AS n FROM channel_topics')?.n ?? 0;
+  if (existing === 0) {
+    const rows = database.all(
+      `SELECT channel_id, niche, inferred_topics FROM ingested_channels
+       WHERE inferred_topics IS NOT NULL AND inferred_topics != '[]' AND inferred_topics != 'null'`,
+    );
+    let inserted = 0;
+    for (const row of rows) {
+      let topics;
+      try { topics = JSON.parse(row.inferred_topics); } catch (_) { continue; }
+      if (!Array.isArray(topics)) continue;
+      for (const topic of topics) {
+        const t = (topic ?? '').toString().trim().toLowerCase();
+        if (!t) continue;
+        try {
+          database.run(
+            `INSERT OR IGNORE INTO channel_topics (channel_id, topic, niche) VALUES (?, ?, ?)`,
+            [row.channel_id, t, row.niche ?? null],
+          );
+          inserted++;
+        } catch (_) {}
+      }
     }
+    if (inserted > 0) console.log(`[DB] Topics migration: backfilled ${inserted} topic rows from ${rows.length} channels`);
   }
-  if (inserted > 0) console.log(`[DB] Topics migration: backfilled ${inserted} topic rows from ${rows.length} channels`);
   console.log('[DB] channel_topics table ready');
 }
 
@@ -1262,4 +1321,8 @@ function seedGovernanceRoadmap(db) {
   }
 }
 
-module.exports = { getDb };
+function closeDb() {
+  if (db) { try { db.close(); } catch (_) {} db = null; }
+}
+
+module.exports = { getDb, closeDb };

@@ -108,6 +108,8 @@ router.get('/competitor/channels', async (req, res) => {
       const country = regionMap[r.channel_id];
       if (!country) return true;
       if (targetIsEnglish && country === 'EN') return true;
+      // Fetch titles for IN competitors when target is also IN — needed for regional language detection
+      if (!targetIsEnglish && targetCountry === 'IN' && country === 'IN') return true;
       return false;
     }).map(r => r.channel_id);
 
@@ -155,7 +157,16 @@ router.get('/competitor/channels', async (req, res) => {
           }
           // English target also accepts other EN_REGIONS (US, GB, AU, etc.)
           if (targetIsEnglish && EN_REGIONS_SET.has(country)) return true;
-          return country === targetCountry;
+          if (country !== targetCountry) return false;
+          // Same country (IN) — exclude if competitor uses a different regional Indian language
+          if (country === 'IN') {
+            const REGIONAL_LANG_RE = /\b(tamil|telugu|kannada|malayalam|marathi|punjabi|gujarati|odia|bengali|assamese|bhojpuri)\b/i;
+            const SOUTH_SCRIPT_RE  = /[஀-௿ఀ-౿ಀ-೿ഀ-ൿ]/; // Tamil, Telugu, Kannada, Malayalam scripts
+            if (REGIONAL_LANG_RE.test(ch.channel_name)) return false;
+            const titles = titleMap[ch.channel_id] || [];
+            if (titles.some(t => SOUTH_SCRIPT_RE.test(t))) return false;
+          }
+          return true;
         }
 
         // Non-Latin script in any title → a specific non-English country
@@ -619,6 +630,93 @@ const ADJACENCY_MAP = {
   other:         [],
 };
 
+// ── Niche clusters ─────────────────────────────────────────────────────────────
+// Groups of niches that are the same creative space and same audience.
+// Peer resolution always combines the full cluster — not just when the pool is thin.
+// Different from ADJACENCY_MAP (which is "related but distinct").
+// Rule: a creator in any niche of the cluster would naturally make content in the others.
+const NICHE_CLUSTERS = {
+  // Self-improvement space — all same audience, same content intent
+  'selfimprovement':    ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'motivation':         ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'personal development': ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'personal growth':    ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'leadership lessons': ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'motivational speaking': ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+  'mindset':            ['selfimprovement', 'motivation', 'personal development', 'personal growth', 'leadership lessons', 'motivational speaking', 'mindset'],
+
+  // Finance space — personal finance and investing are the same audience as finance
+  'finance':            ['finance', 'personal finance', 'investing', 'stock market', 'cryptocurrency'],
+  'personal finance':   ['finance', 'personal finance', 'investing', 'stock market', 'cryptocurrency'],
+  'investing':          ['finance', 'personal finance', 'investing', 'stock market', 'cryptocurrency'],
+  'stock market':       ['finance', 'personal finance', 'investing', 'stock market', 'cryptocurrency'],
+  'cryptocurrency':     ['finance', 'personal finance', 'investing', 'stock market', 'cryptocurrency'],
+
+  // Gym/athletic fitness — strength, muscle, workout performance. Does NOT include
+  // yoga or sleep-wellness; those serve different audiences and produce different topics.
+  'fitness':            ['fitness', 'workout', 'bodybuilding', 'strength training', 'muscle building', 'calisthenics', 'powerlifting', 'weightlifting', 'home workouts', 'gym workouts', 'gym motivation', 'workout routines', 'bodybuilding workouts', 'bodybuilding tips'],
+  'workout':            ['fitness', 'workout', 'bodybuilding', 'strength training', 'home workouts', 'gym workouts', 'workout routines'],
+  'bodybuilding':       ['fitness', 'bodybuilding', 'workout', 'strength training', 'muscle building', 'powerlifting'],
+  'strength training':  ['fitness', 'workout', 'bodybuilding', 'strength training', 'muscle building'],
+  'muscle building':    ['fitness', 'workout', 'bodybuilding', 'strength training', 'muscle building'],
+
+  // Yoga — distinct content space: flexibility, movement, asanas. Separate from gym fitness.
+  'yoga':               ['yoga', 'somatic yoga', 'yin yoga', 'vinyasa yoga', 'yoga practice', 'yoga poses', 'yoga routines', 'yoga therapy', 'yoga for weight loss', 'yoga exercises', 'yoga challenges', 'somatic movement', 'somatic healing', 'partner yoga', 'power yoga', 'daily yoga practice', 'pranayama techniques', 'yoga asanas'],
+
+  // Health/wellness — medical, nutrition, general wellbeing. Not gym performance.
+  'health':             ['health', 'nutrition', 'wellness', 'holistic health', 'natural remedies', 'ayurvedic medicine', 'health tips', 'healthy habits', 'healthy eating', 'gut health', 'heart health', 'nutrition tips', 'healthy recipes', 'longevity', 'anti-aging', 'men\'s health'],
+
+  // Meditation/mindfulness/sleep — restfulness, inner calm, sleep content.
+  'meditation':         ['meditation', 'guided meditation', 'mindfulness', 'mindfulness meditation', 'sleep meditation', 'guided sleep meditation', 'somatic meditation', 'breathwork techniques', 'chakra healing', 'christian meditation', 'emdr music', 'deep sleep', 'insomnia relief'],
+
+  // Business/entrepreneurship — same audience across these
+  'business':           ['business', 'entrepreneurship', 'startup'],
+  'entrepreneurship':   ['business', 'entrepreneurship', 'startup'],
+  'startup':            ['business', 'entrepreneurship', 'startup'],
+
+  // News/current affairs
+  'news':               ['news', 'current affairs', 'breaking news'],
+  'current affairs':    ['news', 'current affairs', 'breaking news'],
+
+  // Vlog space — all "life content" for the same casual audience
+  'lifestyle':          ['lifestyle', 'daily vlogs', 'daily life vlogs', 'personal vlogs', 'vlog'],
+  'daily vlogs':        ['lifestyle', 'daily vlogs', 'daily life vlogs', 'personal vlogs', 'vlog'],
+  'daily life vlogs':   ['lifestyle', 'daily vlogs', 'daily life vlogs', 'personal vlogs', 'vlog'],
+  'personal vlogs':     ['lifestyle', 'daily vlogs', 'daily life vlogs', 'personal vlogs', 'vlog'],
+  'vlog':               ['lifestyle', 'daily vlogs', 'daily life vlogs', 'personal vlogs', 'vlog'],
+
+  // Family content
+  'family vlogs':       ['family vlogs', 'family life'],
+  'family life':        ['family vlogs', 'family life'],
+
+  // Food content
+  'food':               ['food', 'street food', 'cooking'],
+  'street food':        ['food', 'street food', 'cooking'],
+  'cooking':            ['food', 'street food', 'cooking'],
+
+  // Travel
+  'travel':             ['travel', 'travel vlogs'],
+  'travel vlogs':       ['travel', 'travel vlogs'],
+
+  // Comedy/entertainment
+  'comedy':             ['comedy', 'entertainment', 'comedy sketches'],
+  'comedy sketches':    ['comedy', 'entertainment', 'comedy sketches'],
+  'entertainment':      ['comedy', 'entertainment', 'comedy sketches'],
+};
+
+function getNicheCluster(niche, secondaryNiche) {
+  const set = new Set();
+  const primary = (niche || '').toLowerCase();
+  const secondary = (secondaryNiche || '').toLowerCase();
+  const cluster = NICHE_CLUSTERS[primary] || [primary];
+  cluster.forEach(n => set.add(n));
+  if (secondary) {
+    const secondCluster = NICHE_CLUSTERS[secondary] || [secondary];
+    secondCluster.forEach(n => set.add(n));
+  }
+  return [...set];
+}
+
 // Niches where foreign (US/UK/AU) topic trends are genuinely relevant to non-English audiences.
 // Geo-bound niches (news, politics, sports) are excluded — their topics don't travel.
 const UNIVERSAL_NICHES = new Set([
@@ -817,23 +915,75 @@ const STOPWORDS = new Set([
   'did','do','does','has','have','had','get','got','not','no','all','but',
   'so','if','as','up','out','now','just','only','also','even','than','then',
   'new','top','best','review','video','part','full','episode',
+  // Pronouns missing from original set
+  'you','he','she','they','we','it','me','him','them','us',
+  // Modal verbs — never stand alone as topics
+  'must','should','could','would','may','might','shall',
+  // Imperative/hook fragments — "year old", "hello namaskar", "mind blowing"
+  'old','hello','namaskar','namaste','blowing','doing','tells','about',
+  // Month names — filter date phrases like "april 2026"
+  'january','february','march','april','may','june','july','august',
+  'september','october','november','december',
+  // Romanised Hindi function words
   'hai','hain','hoga','kya','kaise','mera','meri','mere','aap','main',
   'yeh','woh','ek','nahi','aur','se','ko','ka','ki','ke','mein','hum',
+  'bhi','toh','koi','kuch','sirf','sab','tha','thi','the','raha','rahi',
+  'karo','karna','karte','karke','rehe','rahe','gaye','gaya','gaye',
+  // Devanagari Hindi function words / verb fragments (not content topics)
+  'रहे','हैं','है','हो','ने','भी','जो','तो','बहुत','कभी','सकते','करते',
+  'आज','कल','यहां','वहां','इसे','उसे','हमें','आपको','उनका','इनका',
+  'बनाए','जाते','करेंगे','होगा','मिलेगा','देगा','लेगा','बताया',
+  // Marathi function words / verb fragments
+  'करू','नका','आहे','आणि','हे','ते','मी','तू','तुम्ही','आम्ही','त्यांना',
+  'करणे','केले','केली','करतो','करती','असेल','नाही','पण','किंवा','म्हणजे',
+  // Hindi question/negation words
+  'क्यों','नहीं','क्या','कैसे','कौन','कहाँ','कब',
+  'देगी','देनी','छोड़ो','बनाओ','करोगे',
+  'marathi','hindi',
+  // Indonesian / Malay noise words (from unclassified channels in the pool)
+  'kata','ibu','doa','untuk','bijak','mutiara','kekuatan',
+  // Common hashtag-driven social words (not content topics)
+  'love','like','life','time','come','know','feel','want','need',
+  // Platform mechanics — not content topics
+  'shorts','viral','trending','ytshorts','minivlog','youtubeshorts',
+  'viralvideo','shortsfeed','ashortaday','shortvideo','reels','tiktok',
+  'subscribe','comment','share','follow','notification','bell','click',
+  'trend','trendy','explore','fyp','foryou','foryoupage',
 ]);
+
+// Phrases that slip through word-level filtering but are hooks, not topics.
+// "year old" spans "6 year old" / "35 year old" — completely different contexts.
+const HOOK_PHRASES = new Set([
+  'year old','years old',
+  'you must','must do','must watch','must know',
+  'no one','one tells',
+  'mind blowing','mind blown',
+  'about money','about life','about this',
+  'hello namaskar','hello namaste',
+  'real reason','real talk',
+  'stop doing','stop this',
+]);
+
+const SOUTH_SCRIPT_RE  = /[஀-௿ఀ-౿ಀ-೿ഀ-ൿ]/;
+const DEVANAGARI_RE    = /[ऀ-ॿ]/;
 
 function extractPhrases(title) {
   if (!title) return [];
+  if (SOUTH_SCRIPT_RE.test(title)) return [];
   const tokens = title
+    .replace(/#\w+/g, ' ')                        // strip hashtag compounds: #studymotivation
+    .replace(/\|{2}[^|]+\|{2}/g, ' ')            // strip credit patterns: ||Prashant Kirad||
     .toLowerCase()
-    .replace(/[|()[\]{}#@!?,।॥।\-]/g, ' ')
+    .replace(/[|()[\]{}#@!?,।॥।\-''']/g, ' ')
     .replace(/\s+/g, ' ')
     .trim()
     .split(' ')
-    .filter(w => w.length > 2 && !STOPWORDS.has(w) && !/^\d+$/.test(w));
+    .filter(w => w.length > 2 && !STOPWORDS.has(w) && !/^\d+$/.test(w) && !/^\d{4}$/.test(w) && !DEVANAGARI_RE.test(w));
 
   const phrases = [];
   for (let i = 0; i < tokens.length - 1; i++) {
-    phrases.push(`${tokens[i]} ${tokens[i + 1]}`);
+    const bigram = `${tokens[i]} ${tokens[i + 1]}`;
+    if (!HOOK_PHRASES.has(bigram)) phrases.push(bigram);
   }
   for (let i = 0; i < tokens.length - 2; i++) {
     phrases.push(`${tokens[i]} ${tokens[i + 1]} ${tokens[i + 2]}`);
@@ -959,6 +1109,328 @@ function getNicheCategory(niche, archetype, behaviorTags) {
   return NICHE_CATEGORY[niche] || 'A';
 }
 
+// ── Peer resolution ladder ────────────────────────────────────────────────────
+// Used by both /community-hot and /what-to-post.
+// Three levels — topic, shared-topics, niche cluster. Archetype/format (style)
+// is intentionally excluded: it matches content style, not content space, and
+// pulls in vloggers/entertainers who share a format but not an audience.
+function resolvePeers(db, channel, { exclude_channel_id, minSize = 20, limit = 200 } = {}) {
+  const results = [];
+
+  // Compute cluster using PRIMARY niche only — never secondary_niche.
+  // secondary_niche is hobby content (BeerBiceps covers fitness) but his AUDIENCE
+  // follows him for selfimprovement. Including secondary would merge the entire
+  // fitness cluster into his peer pool, pulling in Chloe Ting, ATHLEAN-X, etc.
+  const primaryNiche = channel.primary_niche || channel.niche;
+  const clusterNiches = NICHE_CLUSTERS[primaryNiche] || [primaryNiche];
+
+  // Level 1: same primary inferred topic — most precise signal
+  let topics = [];
+  try { topics = JSON.parse(channel.inferred_topics || '[]'); } catch (_) {}
+  const primaryTopic = topics[0] || null;
+  if (primaryTopic) {
+    const rows = db.all(
+      `SELECT channel_id FROM ingested_channels
+       WHERE json_extract(inferred_topics, '$[0]') = ?
+         AND channel_id != ? AND ingest_enabled = 1 LIMIT ?`,
+      [primaryTopic, exclude_channel_id, limit],
+    );
+    for (const r of rows) if (!results.includes(r.channel_id)) results.push(r.channel_id);
+  }
+  if (results.length >= minSize) return results;
+
+  // Level 2: shared inferred_topic, constrained to same niche cluster.
+  // Without the niche constraint, a hobby topic like 'fitness' would pull pure
+  // workout channels into a selfimprovement creator's peer pool.
+  if (topics.length > 0 && clusterNiches.length > 0) {
+    const phTopics  = topics.map(() => '?').join(',');
+    const phNiches  = clusterNiches.map(() => '?').join(',');
+    const rows = db.all(
+      `SELECT DISTINCT ic.channel_id
+       FROM ingested_channels ic, json_each(ic.inferred_topics) jt
+       WHERE jt.value IN (${phTopics})
+         AND (ic.primary_niche IN (${phNiches}) OR ic.niche IN (${phNiches}))
+         AND ic.channel_id != ? AND ic.ingest_enabled = 1
+       LIMIT ?`,
+      [...topics, ...clusterNiches, ...clusterNiches, exclude_channel_id, limit],
+    );
+    for (const r of rows) if (!results.includes(r.channel_id)) results.push(r.channel_id);
+  }
+
+  // Level 3: full niche cluster — always runs regardless of pool size.
+  // Uses NICHE_CLUSTERS so that 'selfimprovement' + 'motivation' + 'personal development'
+  // are always one pool. Matches on both niche and primary_niche columns.
+  if (clusterNiches.length > 0) {
+    const ph = clusterNiches.map(() => '?').join(',');
+    const rows = db.all(
+      `SELECT channel_id FROM ingested_channels
+       WHERE (niche IN (${ph}) OR primary_niche IN (${ph}))
+         AND channel_id != ? AND ingest_enabled = 1 LIMIT ?`,
+      [...clusterNiches, ...clusterNiches, exclude_channel_id, limit],
+    );
+    for (const r of rows) if (!results.includes(r.channel_id)) results.push(r.channel_id);
+  }
+
+  // If the target channel is IN, exclude channels explicitly tagged as Western/EN.
+  const targetRegion = channel.region || null;
+  if (targetRegion === 'IN' && results.length > 0) {
+    const ph = results.map(() => '?').join(',');
+    const excluded = new Set(
+      db.all(
+        `SELECT channel_id FROM ingested_channels WHERE channel_id IN (${ph}) AND region = 'EN'`,
+        results,
+      ).map(r => r.channel_id),
+    );
+    if (excluded.size > 0) results.splice(0, results.length, ...results.filter(id => !excluded.has(id)));
+  }
+
+  // If the target channel is English-language, exclude channels in non-Indian languages.
+  // Keeps en + hi + null; drops mr (Marathi), id (Indonesian), ar, tr, etc.
+  const targetLang = channel.primary_language || null;
+  if (targetLang === 'en' && results.length > 0) {
+    const ph = results.map(() => '?').join(',');
+    const excluded = new Set(
+      db.all(
+        `SELECT channel_id FROM ingested_channels
+         WHERE channel_id IN (${ph})
+           AND primary_language IS NOT NULL AND primary_language NOT IN ('en','hi')`,
+        results,
+      ).map(r => r.channel_id),
+    );
+    if (excluded.size > 0) results.splice(0, results.length, ...results.filter(id => !excluded.has(id)));
+  }
+
+  return results.slice(0, limit);
+}
+
+// ── GET /community-hot ────────────────────────────────────────────────────────
+// What's performing well in true peer channels in the last 60 days.
+// Returns topics with total views, channel count, and sample competitor titles.
+
+router.get('/community-hot', (req, res) => {
+  try {
+    const db         = getDb();
+    const { channel_id } = req.query;
+    if (!channel_id) return res.status(400).json({ ok: false, error: 'channel_id required' });
+
+    const channel = db.get('SELECT * FROM ingested_channels WHERE channel_id = ?', [channel_id]);
+    if (!channel) return res.status(404).json({ ok: false, error: 'Channel not found' });
+
+    const result = cache.wrap(`community_hot_v3:${channel_id}`, () => {
+      // Channel's own recent titles (to exclude already-covered topics)
+      const ownVideos = db.all(
+        `SELECT title FROM ingested_videos WHERE channel_id = ? AND published_at > datetime('now', '-90 days') LIMIT 100`,
+        [channel_id],
+      );
+      const ownText = ownVideos.map(r => (r.title || '').toLowerCase()).join(' ');
+
+      // Resolve peers using the 4-level ladder
+      let peerIds = resolvePeers(db, channel, { exclude_channel_id: channel_id });
+      if (!peerIds.length) return { ok: true, items: [], peer_count: 0 };
+
+      // Language filter: drop non-Indian-relevant language channels for English creators
+      if (channel.primary_language === 'en' && peerIds.length > 0) {
+        const lph = peerIds.map(() => '?').join(',');
+        const bad = new Set(
+          db.all(
+            `SELECT channel_id FROM ingested_channels WHERE channel_id IN (${lph}) AND primary_language IS NOT NULL AND primary_language NOT IN ('en','hi')`,
+            peerIds,
+          ).map(r => r.channel_id),
+        );
+        if (bad.size > 0) peerIds = peerIds.filter(id => !bad.has(id));
+      }
+
+      // Indian-context filter: for IN creators, flip the logic — keep only channels with
+      // a verified Indian signal rather than trying to exclude unknown foreign channels.
+      // Covers region='IN' (explicitly tagged), language='hi', or any Indian script in
+      // the channel name (Devanagari, Gurmukhi, Bengali). Falls back to full pool if
+      // fewer than 10 Indian-verified channels are found.
+      if (channel.region === 'IN' && peerIds.length > 0) {
+        const iph = peerIds.map(() => '?').join(',');
+        const rows = db.all(
+          `SELECT channel_id, region, primary_language, channel_name FROM ingested_channels WHERE channel_id IN (${iph})`,
+          peerIds,
+        );
+        const INDIAN_SCRIPT_RE  = /[ऀ-ॿ਀-੿ঀ-৿]/;
+        // Western therapy/coaching credential markers — these channels were sometimes
+        // bulk-tagged region='IN' by mistake; override that tag here.
+        const WESTERN_MARKER_RE = /\b(somatic|trauma[- ]informed|msw|rsw|lcsw|mft|lmft|mind[- ]body coaching|nervous system regulation|psychotherap|counsell?ing)\b/i;
+        const indianPeers = rows
+          .filter(p =>
+            !WESTERN_MARKER_RE.test(p.channel_name || '') &&
+            (p.region === 'IN' || p.primary_language === 'hi' || INDIAN_SCRIPT_RE.test(p.channel_name || '')),
+          )
+          .map(p => p.channel_id);
+        if (indianPeers.length >= 10) peerIds = indianPeers;
+      }
+
+      let topics = [];
+      try { topics = JSON.parse(channel.inferred_topics || '[]'); } catch (_) {}
+      const primaryTopic = topics[0] || null;
+
+      // Per-channel sampling: top 10 videos per peer channel in last 90 days.
+      // Window is 90d (up from 60d) because the tighter Indian peer pool is less
+      // prolific — more window gives more phrases without losing recency signal.
+      const ph = peerIds.map(() => '?').join(',');
+      const videos = db.all(
+        `SELECT youtube_video_id, title, views, published_at, channel_id, channel_name
+         FROM (
+           SELECT iv.youtube_video_id, iv.title, iv.views, iv.published_at,
+                  iv.channel_id, ic.channel_name,
+                  ROW_NUMBER() OVER (PARTITION BY iv.channel_id ORDER BY iv.views DESC) AS rn
+           FROM ingested_videos iv
+           JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+           WHERE iv.channel_id IN (${ph})
+             AND iv.published_at > datetime('now', '-90 days')
+             AND iv.title IS NOT NULL AND iv.title != ''
+             AND iv.views > 0
+         ) WHERE rn <= 10`,
+        peerIds,
+      );
+      if (!videos.length) return { ok: true, items: [], peer_count: peerIds.length };
+
+      // Extract topic clusters using the shared phrase engine
+      const userPhraseSet = extractUserPhraseSet(ownText);
+      const items = buildCommunityHotItems(videos, userPhraseSet, peerIds.length);
+
+      return { ok: true, items, peer_count: peerIds.length, primary_topic: primaryTopic };
+    }, 20 * 60 * 1000);
+
+    res.json(result);
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+function extractUserPhraseSet(text) {
+  const set = new Set();
+  const words = text.split(/\s+/).filter(w => w.length > 3);
+  for (let i = 0; i < words.length - 1; i++) {
+    set.add(words[i] + ' ' + words[i + 1]);
+    if (i < words.length - 2) set.add(words[i] + ' ' + words[i + 1] + ' ' + words[i + 2]);
+  }
+  return set;
+}
+
+const SOUTH_SCRIPT_RE_HOT = /[஀-௿ఀ-౿ಀ-೿ഀ-ൿ]/;
+
+function buildCommunityHotItems(videos, userPhraseSet, peerCount) {
+  const STOP = new Set([
+    // Grammar / function words
+    'the','a','an','in','on','of','to','for','is','are','was','were',
+    'and','or','but','not','with','by','from','at','this','that','it',
+    'he','she','they','we','i','you','be','been','being','have','has',
+    'had','do','does','did','will','would','could','should','may','might',
+    'as','if','so','then','than','just','also','very','more','most',
+    'its','his','her','our','their','your','my','into','up','out','over',
+    'news','today','latest','new','big','breaking','live','watch','full',
+    'video','episode','part','series','like','know','make','says','said',
+    // Month names — filter date phrases like "april 2026"
+    'january','february','march','april','june','july','august',
+    'september','october','november','december',
+    // Romanised Hindi function words
+    'hai','hain','hoga','kya','kaise','mera','meri','mere','aap','main',
+    'yeh','woh','ek','nahi','aur','se','ko','ka','ki','ke','mein','hum',
+    'bhi','toh','koi','kuch','sirf','sab','tha','thi','raha','rahi',
+    'karo','karna','karte','karke','rehe','rahe','gaye','gaya',
+    // Devanagari Hindi function words / verb fragments
+    'रहे','हैं','है','हो','ने','भी','जो','तो','बहुत','कभी','सकते','करते',
+    'आज','कल','यहां','वहां','इसे','उसे','हमें','आपको','उनका','इनका',
+    'बनाए','जाते','करेंगे','होगा','मिलेगा','देगा','लेगा','बताया',
+    // Marathi function words / verb fragments
+    'करू','नका','आहे','आणि','हे','ते','मी','तू','तुम्ही','आम्ही','त्यांना',
+    'करणे','केले','केली','करतो','करती','असेल','नाही','पण','किंवा','म्हणजे',
+    // Hindi question/negation words (prevent "क्यों नहीं" type fragments)
+    'क्यों','नहीं','क्या','कैसे','कौन','कहाँ','कब',
+    'देगी','देनी','छोड़ो','बनाओ','करोगे',
+    'marathi','hindi',
+    'kata','ibu','doa','untuk','bijak','mutiara','kekuatan',
+    // Common hashtag-driven social words
+    'love','life','time','come','feel','want','need',
+    // Hook/imperative fragments — common title patterns that aren't content topics
+    'must','old','hello','namaskar','namaste','blowing','doing','tells','about',
+    // Social-media / hashtag noise — these are platform mechanics, not content topics
+    'shorts','viral','trending','ytshorts','minivlog','youtubeshorts',
+    'viralvideo','shortsfeed','ashortaday','shortvideo','reels','tiktok',
+    'subscribe','comment','share','follow','notification','bell','click',
+    'trend','trendy','explore','fyp','foryou','foryoupage',
+  ]);
+
+  // Build bigram/trigram topic map
+  const topicMap = new Map();
+  for (const video of videos) {
+    const rawTitle = video.title || '';
+    if (SOUTH_SCRIPT_RE_HOT.test(rawTitle)) continue;
+    const tokens = rawTitle
+      .replace(/#\w+/g, ' ')
+      .replace(/\|{2}[^|]+\|{2}/g, ' ')
+      .toLowerCase()
+      .replace(/[^\w\s]/g, ' ')
+      .split(/\s+/)
+      .filter(w => w.length > 2 && !STOP.has(w) && !/^\d+$/.test(w) && !DEVANAGARI_RE.test(w));
+
+    const phrases = new Set();
+    for (let i = 0; i < tokens.length; i++) {
+      if (i < tokens.length - 1) phrases.add(tokens[i] + ' ' + tokens[i+1]);
+      if (i < tokens.length - 2) phrases.add(tokens[i] + ' ' + tokens[i+1] + ' ' + tokens[i+2]);
+    }
+
+    for (const phrase of phrases) {
+      if (userPhraseSet.has(phrase)) continue;
+      if (!topicMap.has(phrase)) {
+        topicMap.set(phrase, { total_views: 0, channelIds: new Set(), channelMap: new Map() });
+      }
+      const b = topicMap.get(phrase);
+      b.total_views += video.views || 0;
+      b.channelIds.add(video.channel_id);
+      if (!b.channelMap.has(video.channel_id)) {
+        b.channelMap.set(video.channel_id, { channel_name: video.channel_name || '', views: 0 });
+      }
+      b.channelMap.get(video.channel_id).views += video.views || 0;
+    }
+  }
+
+  return [...topicMap.entries()]
+    .filter(([, b]) => b.channelIds.size >= 3)
+    .sort((a, b) => b[1].total_views - a[1].total_views)
+    .slice(0, 30)
+    .map(([phrase, b]) => ({
+      topic:         phrase,
+      total_views:   b.total_views,
+      channel_count: b.channelIds.size,
+      peer_count:    peerCount,
+      channels:      [...b.channelMap.values()]
+                       .sort((a, z) => z.views - a.views)
+                       .slice(0, 5),
+    }));
+}
+
+// ── GET /world-signals ────────────────────────────────────────────────────────
+// Combines internal velocity spikes (Option A) with Google Trends (Option B).
+// Designed to be called async — returns whatever it has quickly.
+
+router.get('/world-signals', async (req, res) => {
+  try {
+    const db         = getDb();
+    const { channel_id } = req.query;
+    if (!channel_id) return res.status(400).json({ ok: false, error: 'channel_id required' });
+
+    const channel = db.get(
+      'SELECT inferred_topics FROM ingested_channels WHERE channel_id = ?', [channel_id],
+    );
+    let topics = [];
+    try { topics = JSON.parse(channel?.inferred_topics || '[]'); } catch(_) {}
+
+    const { getWorldSignals } = require('../services/worldSignals');
+    const signals = await getWorldSignals(db, { channel_id, topics });
+
+    res.json({ ok: true, ...signals });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ── GET /what-to-post ─────────────────────────────────────────────────────────
 router.get('/what-to-post', (req, res) => {
   try {
     const db       = getDb();
@@ -975,9 +1447,10 @@ router.get('/what-to-post', (req, res) => {
     let niche_category = 'A';
 
     let userRegion = null;
+    let row = null;
     if (channel_id) {
-      const row = db.get(
-        `SELECT community_id, niche, primary_niche, secondary_niche, content_archetype, behavior_tags, region
+      row = db.get(
+        `SELECT community_id, niche, primary_niche, secondary_niche, content_archetype, format_type, behavior_tags, region, inferred_topics
          FROM ingested_channels WHERE channel_id = ?`,
         [channel_id],
       );
@@ -1000,17 +1473,42 @@ router.get('/what-to-post', (req, res) => {
         }
 
         // ── 2. Topic fingerprint pool ─────────────────────────────────────────
-        // Find channels ranked by shared inferred_topics. Merge with community pool.
-        const topicMatches = getChannelsByTopicOverlap(db, channel_id, { limit: 300, minOverlap: 1 });
+        // Require minOverlap:2 so surface-level matches (single shared keyword like
+        // "India" or "Modi") don't pull in unrelated niches as peers.
+        const topicMatches = getChannelsByTopicOverlap(db, channel_id, { limit: 300, minOverlap: 2 });
 
-        if (topicMatches.length > 0) {
-          // Build a scored map: channel_id → topic_overlap score
+        // Also get this channel's primary inferred topic so we can require peer
+        // channels share it — prevents e.g. domestic-politics channels bleeding
+        // into an international-geopolitics peer pool via shallow topic overlap.
+        let userPrimaryTopic = null;
+        try {
+          const topicRow = db.get(
+            `SELECT json_extract(inferred_topics, '$[0]') AS t FROM ingested_channels WHERE channel_id = ?`,
+            [channel_id],
+          );
+          userPrimaryTopic = topicRow?.t?.toLowerCase() || null;
+        } catch (_) {}
+
+        const filteredTopicMatches = userPrimaryTopic
+          ? topicMatches.filter(m => {
+              try {
+                const peerRow = db.get(
+                  `SELECT inferred_topics FROM ingested_channels WHERE channel_id = ?`, [m.channel_id],
+                );
+                const peerTopics = JSON.parse(peerRow?.inferred_topics || '[]');
+                return peerTopics.some(t => (t || '').toLowerCase() === userPrimaryTopic);
+              } catch (_) { return true; }
+            })
+          : topicMatches;
+
+        const effectiveMatches = filteredTopicMatches.length >= 3 ? filteredTopicMatches : topicMatches;
+
+        if (effectiveMatches.length > 0) {
           const topicScoreMap = new Map();
-          for (const m of topicMatches) topicScoreMap.set(m.channel_id, m.topic_overlap);
+          for (const m of effectiveMatches) topicScoreMap.set(m.channel_id, m.topic_overlap);
 
-          // Merge: union of community + topic pool, ordered by topic score then community membership
           const communitySet = new Set(communityIds);
-          const allIds = new Set([...communityIds, ...topicMatches.map(m => m.channel_id)]);
+          const allIds = new Set([...communityIds, ...effectiveMatches.map(m => m.channel_id)]);
           allIds.delete(channel_id);
 
           communityIds = [...allIds].sort((a, b) => {
@@ -1020,7 +1518,8 @@ router.get('/what-to-post', (req, res) => {
           }).slice(0, 300);
         }
 
-        resolvedNiche = resolvedNiche || row.primary_niche || row.niche;
+        // Always prefer DB niche (OpenAI-classified) over the query param niche
+        resolvedNiche = row.primary_niche || row.niche || resolvedNiche;
 
         let behaviorTags = [];
         try { behaviorTags = JSON.parse(row.behavior_tags || '[]'); } catch (_) {}
@@ -1033,28 +1532,11 @@ router.get('/what-to-post', (req, res) => {
       ).map(r => r.channel_id);
     }
 
-    // ── 3. Niche fallback (primary + secondary) — when pool is still small ───
-    if (communityIds.length < 5 && resolvedNiche) {
-      const rc = getRegionClause(userRegion);
-      // Include both primary and secondary niche channels
-      const channelRow = channel_id ? db.get(
-        `SELECT secondary_niche FROM ingested_channels WHERE channel_id = ?`, [channel_id],
-      ) : null;
-      const secondaryNiche = channelRow?.secondary_niche;
-
-      const niches = [resolvedNiche, secondaryNiche].filter(Boolean);
-      const ph     = niches.map(() => '?').join(',');
-      const params = channel_id ? [...niches, channel_id] : niches;
-      communityIds = db.all(
-        `SELECT channel_id FROM ingested_channels
-         WHERE niche IN (${ph}) ${channel_id ? 'AND channel_id != ?' : ''} ${rc}
-         LIMIT 300`,
-        params,
-      ).map(r => r.channel_id);
-    }
-
     // ── Title-similarity filter: keeps community pool on-topic ────────────
-    if (channel_id && communityIds.length > 0) {
+    // Only apply when pool is already large (≥30) — for small pools the niche
+    // fallback already ran and we don't want to discard channels just because
+    // they write titles in a different script (Hindi, Bengali, etc.).
+    if (channel_id && communityIds.length >= 30) {
       const targetTitles = db.all(
         `SELECT title FROM ingested_videos WHERE channel_id = ? AND title IS NOT NULL ORDER BY published_at DESC LIMIT 50`,
         [channel_id],
@@ -1089,6 +1571,34 @@ router.get('/what-to-post', (req, res) => {
       }
     }
 
+    // ── 3. Archetype/topic/niche ladder — runs after title-similarity filter ──
+    // Adds format-matched peers that weren't in the original community pool.
+    // These bypass the title filter because archetype+format is already a strong
+    // signal — we don't need title overlap on top of it.
+    if (communityIds.length < 30 && channel_id && row) {
+      const extra = resolvePeers(db, row, { exclude_channel_id: channel_id, minSize: 30, limit: 300 });
+      const merged = [...communityIds];
+      for (const id of extra) if (!merged.includes(id)) merged.push(id);
+      communityIds = merged.slice(0, 300);
+    }
+
+    // Language filter: for English-language creators, drop non-English non-Hindi peers.
+    // Removes Indonesian (id), Marathi (mr), Arabic (ar), Turkish (tr), etc.
+    // Channels with language=null pass through — they may just be unclassified.
+    if (communityIds.length > 0 && row?.primary_language === 'en') {
+      const langPh = communityIds.map(() => '?').join(',');
+      const badIds = new Set(
+        db.all(
+          `SELECT channel_id FROM ingested_channels
+           WHERE channel_id IN (${langPh})
+             AND primary_language IS NOT NULL AND primary_language NOT IN ('en','hi')`,
+          communityIds,
+
+        ).map(r => r.channel_id),
+      );
+      if (badIds.size > 0) communityIds = communityIds.filter(id => !badIds.has(id));
+    }
+
     if (communityIds.length === 0) {
       return res.json({ ok: true, niche_category, ideas: [], channel_count: 0, video_count: 0, summary: null });
     }
@@ -1111,17 +1621,22 @@ router.get('/what-to-post', (req, res) => {
     const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
     const ph    = communityIds.map(() => '?').join(',');
 
+    // Per-channel sampling: top 10 videos per channel by views.
+    // Prevents high-volume channels (daily vloggers, viral one-hit channels) from
+    // dominating topic extraction. Every channel in the pool contributes equally.
     const communityVideos = db.all(
-      `SELECT iv.youtube_video_id, iv.title, iv.views, iv.channel_id,
-              iv.published_at, iv.duration_seconds, ic.channel_name
-       FROM ingested_videos iv
-       LEFT JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
-       WHERE iv.channel_id IN (${ph})
-         AND iv.published_at >= ?
-         AND iv.title IS NOT NULL
-         AND iv.views > 0
-       ORDER BY iv.views DESC
-       LIMIT 1000`,
+      `SELECT youtube_video_id, title, views, channel_id, published_at, duration_seconds, channel_name
+       FROM (
+         SELECT iv.youtube_video_id, iv.title, iv.views, iv.channel_id,
+                iv.published_at, iv.duration_seconds, ic.channel_name,
+                ROW_NUMBER() OVER (PARTITION BY iv.channel_id ORDER BY iv.views DESC) AS rn
+         FROM ingested_videos iv
+         LEFT JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+         WHERE iv.channel_id IN (${ph})
+           AND iv.published_at >= ?
+           AND iv.title IS NOT NULL
+           AND iv.views > 0
+       ) WHERE rn <= 10`,
       [...communityIds, since],
     );
 
@@ -1129,7 +1644,7 @@ router.get('/what-to-post', (req, res) => {
     const userPhraseSet = new Set();
     if (channel_id) {
       db.all(
-        `SELECT title FROM ingested_videos WHERE channel_id = ? ORDER BY published_at DESC LIMIT 200`,
+        `SELECT title FROM ingested_videos WHERE channel_id = ? ORDER BY published_at DESC LIMIT 100`,
         [channel_id],
       ).forEach(v => extractPhrases(v.title).forEach(p => userPhraseSet.add(p)));
     }
@@ -1191,7 +1706,10 @@ router.get('/what-to-post', (req, res) => {
         }
 
         const b = topicMap.get(phrase);
-        if (b.videos.length < 5) b.videos.push(video);
+        // Skip regional-language titles in examples (channels may have null language in DB)
+        const lowerTitle = (video.title || '').toLowerCase();
+        const isRegional = /\bmarathi\b|\btelugu\b|\btamil\b|\bkannada\b|\bmalayalam\b|\bbengali\b|\bkata[\s-]kata\b/.test(lowerTitle);
+        if (b.videos.length < 5 && !isRegional) b.videos.push(video);
         b.totalViews += (video.views || 0);
         b.channels.add(video.channel_id);
 
@@ -1221,10 +1739,21 @@ router.get('/what-to-post', (req, res) => {
     const gaps        = [];
     let risingCnt = 0, evergreenCnt = 0, unexploredCnt = 0, saturatedCnt = 0;
 
+    // Scale thresholds to pool size:
+    // ≤3 channels → require 1 channel, enforce 1K avg_views floor
+    // ≤9 channels → require 2 channels, enforce 5K avg_views floor
+    // 10+ channels → require 3 channels, enforce 8K avg_views floor
+    // The avg_views floor removes grammatical phrase fragments (e.g. Hindi verb forms)
+    // that appear in enough titles but represent no real content idea.
+    const minChannels = communityIds.length <= 3 ? 1 : communityIds.length <= 9 ? 2 : 3;
+    const minVideos   = 1;
+    const minAvgViews = communityIds.length <= 3 ? 1000 : communityIds.length <= 9 ? 5000 : 8000;
+
     for (const [phrase, b] of topicMap.entries()) {
-      if (b.channels.size < 3)       continue;
-      if (b.videos.length < 3)       continue;
-      if (userPhraseSet.has(phrase)) continue;
+      if (b.channels.size < minChannels) continue;
+      if (b.videos.length < minVideos)   continue;
+      if (userPhraseSet.has(phrase))     continue;
+      if (minAvgViews > 0 && (b.totalViews / b.videos.length) < minAvgViews) continue;
 
       // For news/politics/sports: discard topics with no historical coverage.
       // If all coverage is within the last 30 days and nothing older exists,
@@ -1290,14 +1819,26 @@ router.get('/what-to-post', (req, res) => {
 
     gaps.sort((a, b) => b.score - a.score);
 
-    // ── Deduplicate overlapping phrases ────────────────────────────────────
-    const deduped   = [];
-    const usedWords = new Set();
+    // ── Deduplicate overlapping phrases + same-video ideas ─────────────────
+    // Two passes:
+    // 1. Drop ideas whose example videos are already covered by a higher-scoring idea.
+    //    This catches same-content-different-phrase cases (e.g. regional channel siblings
+    //    all posting the same clip, producing two phrases that look unrelated).
+    // 2. Drop ideas whose topic words mostly overlap with an already-accepted idea.
+    const deduped        = [];
+    const usedWords      = new Set();
+    const usedVideoIds   = new Set();
 
     for (const gap of gaps) {
-      const words   = gap.topic.toLowerCase().split(' ');
-      const overlap = words.filter(w => usedWords.has(w)).length;
-      if (overlap >= words.length - 1) continue;
+      const exampleIds = (gap.examples || []).map(e => e.title); // use title as proxy (no id in examples)
+      const videoOverlap = exampleIds.filter(t => usedVideoIds.has(t)).length;
+      if (videoOverlap >= 2) continue; // 2+ same example videos = same content
+
+      const words  = gap.topic.toLowerCase().split(' ');
+      const wOverlap = words.filter(w => usedWords.has(w)).length;
+      if (wOverlap >= words.length - 1) continue;
+
+      exampleIds.forEach(t => usedVideoIds.add(t));
       words.forEach(w => usedWords.add(w));
       deduped.push(gap);
       if (deduped.length >= 15) break;
@@ -1345,7 +1886,7 @@ router.get('/topic-search', (req, res) => {
     }
     if (communityIds.length < 5 && resolvedNiche) {
       communityIds = db.all(
-        `SELECT channel_id FROM ingested_channels WHERE niche = ? ${channel_id ? 'AND channel_id != ?' : ''} LIMIT 300`,
+        `SELECT channel_id FROM ingested_channels WHERE COALESCE(primary_niche, niche) = ? ${channel_id ? 'AND channel_id != ?' : ''} LIMIT 300`,
         channel_id ? [resolvedNiche, channel_id] : [resolvedNiche],
       ).map(r => r.channel_id);
     }
@@ -1452,7 +1993,7 @@ router.get('/adjacent-ideas', (req, res) => {
     const sources = [];
     for (const adjNiche of adjacentNiches) {
       const channelIds = db.all(
-        `SELECT channel_id FROM ingested_channels WHERE niche = ? ${rc} LIMIT 200`,
+        `SELECT channel_id FROM ingested_channels WHERE COALESCE(primary_niche, niche) = ? ${rc} LIMIT 200`,
         [adjNiche],
       ).map(r => r.channel_id);
 
@@ -1504,7 +2045,7 @@ router.get('/foreign-signal', (req, res) => {
 
     const ph = FOREIGN_REGIONS.map(() => '?').join(',');
     const foreignIds = db.all(
-      `SELECT channel_id FROM ingested_channels WHERE niche = ? AND region IN (${ph}) LIMIT 200`,
+      `SELECT channel_id FROM ingested_channels WHERE COALESCE(primary_niche, niche) = ? AND region IN (${ph}) LIMIT 200`,
       [resolvedNiche, ...FOREIGN_REGIONS],
     ).map(r => r.channel_id);
 
@@ -1565,7 +2106,7 @@ router.get('/trending-topics', async (req, res) => {
 
     // Get community videos for this niche (last 90d)
     const communityIds = db.all(
-      `SELECT channel_id FROM ingested_channels WHERE niche = ? ${channel_id ? 'AND channel_id != ?' : ''} LIMIT 300`,
+      `SELECT channel_id FROM ingested_channels WHERE COALESCE(primary_niche, niche) = ? ${channel_id ? 'AND channel_id != ?' : ''} LIMIT 300`,
       channel_id ? [resolvedNiche, channel_id] : [resolvedNiche],
     ).map(r => r.channel_id);
 

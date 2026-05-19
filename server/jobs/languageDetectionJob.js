@@ -356,11 +356,9 @@ async function runBatchDetection(limit = 5) {
 }
 
 function startLanguageDetectionCron() {
-  // Top 15 by subscriber count at startup — free fast-paths (steps 2-6) cover most
-  runBatchDetection(15).catch(() => {});
-  // Every 30 min: 5 more channels (240 comment API calls/day max, well within 10K quota)
+  // Every 30 min: 5 untagged channels (run on-demand via admin for bulk detection)
   setInterval(() => runBatchDetection(5).catch(() => {}), 30 * 60 * 1000);
-  console.log('[country] country detection cron started (15 now, 5 per 30 min)');
+  console.log('[country] country detection cron started (5 per 30 min)');
 }
 
 // ── Bulk name fix ─────────────────────────────────────────────────────────────

@@ -4,7 +4,9 @@ import { T, spring, ease } from './tokens';
 import HomeScreen         from './screens/HomeScreen';
 import CommunityDashboard from './screens/CommunityDashboard';
 import WhatToPost         from './screens/WhatToPost';
+import TrendDetection     from './screens/TrendDetection';
 import PlaceholderScreen  from './screens/PlaceholderScreen';
+import CopilotPanel       from './screens/CopilotPanel';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,13 @@ const IconBlueprint = ({ size = 16, color = 'currentColor' }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
     <rect x="3.5" y="3.5" width="13" height="13" rx="2" stroke={color} strokeWidth="1.5"/>
     <path d="M7 7h6M7 10h6M7 13h4" stroke={color} strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+);
+
+const IconTrend = ({ size = 16, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
+    <path d="M3 14l4.5-5 3.5 3 4-5.5" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
+    <path d="M14.5 6.5H17V9" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 );
 
@@ -120,6 +129,7 @@ function StarField() {
 const NAV = [
   { id: 'channel',   label: 'My Channel',  Icon: IconChannel,   badge: null  },
   { id: 'post',      label: 'What to Post', Icon: IconPost,      badge: 'new' },
+  { id: 'trends',    label: 'Trends',       Icon: IconTrend,     badge: 'new' },
   { id: 'publish',   label: 'Pre-Publish',  Icon: IconPublish,   badge: null  },
   { id: 'compete',   label: 'Compete',      Icon: IconCompete,   badge: null  },
   { id: 'blueprint', label: 'Blueprint',    Icon: IconBlueprint, badge: null  },
@@ -190,19 +200,16 @@ export default function App() {
       });
 
       // When YouTube arrives, merge — add new channels + fill in missing thumbnails
-      Promise.all([dbPromise, ytPromise]).then(([dbResults, ytResults]) => {
-        const knownIds = new Set(dbResults.map(r => r.channel_id));
-        const newLive  = ytResults.filter(r => !knownIds.has(r.channel_id));
-        if (newLive.length) {
-          setCmdResults(prev => {
-            // Also update thumbnails on existing results that were missing one
-            const thumbMap = {};
-            for (const r of ytResults) if (r.thumbnail) thumbMap[r.channel_id] = r.thumbnail;
-            const patched = prev.map(r => (!r.thumbnail && thumbMap[r.channel_id])
-              ? { ...r, thumbnail: thumbMap[r.channel_id] } : r);
-            return [...patched, ...newLive];
-          });
-        }
+      Promise.all([dbPromise, ytPromise]).then(([, ytResults]) => {
+        setCmdResults(prev => {
+          const knownIds = new Set(prev.map(r => r.channel_id).filter(Boolean));
+          const thumbMap = {};
+          for (const r of ytResults) if (r.thumbnail) thumbMap[r.channel_id] = r.thumbnail;
+          const patched  = prev.map(r => (!r.thumbnail && thumbMap[r.channel_id])
+            ? { ...r, thumbnail: thumbMap[r.channel_id] } : r);
+          const newLive  = ytResults.filter(r => r.channel_id && !knownIds.has(r.channel_id));
+          return [...patched, ...newLive];
+        });
       });
     }, 220);
   };
@@ -408,6 +415,8 @@ export default function App() {
           <motion.div key={!channel ? 'home' : activeNav} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
             {activeNav === 'post' ? (
               <WhatToPost channel={channel} onSearch={openCmd} />
+            ) : activeNav === 'trends' ? (
+              <TrendDetection channel={channel} />
             ) : !channel ? (
               <HomeScreen onSearch={openCmd} />
             ) : activeNav === 'channel' ? (
@@ -520,6 +529,10 @@ export default function App() {
           </>
         )}
       </AnimatePresence>
+
+      {/* ── Copilot floating panel ────────────────────────────────────────── */}
+      <CopilotPanel channel={channel} />
+
     </div>
   );
 }
