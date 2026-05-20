@@ -23,7 +23,7 @@ const quotaGuard                 = require('./quotaGuard');
 const { runDiscoveryCycle }      = require('./discoveryAgent');
 const { lightIngestChannelFull } = require('./lightIngestAgent');
 const { evaluateChannelQuality } = require('./qualityAgent');
-const { runFullEvaluationPass }  = require('./trainingAgent');
+const { runFullEvaluationPass, runFullEvaluationPassAsync } = require('./trainingAgent');
 const { rescoreAllChannels, planQuotaAllocation, estimateChannelCapacity } = require('./priorityEngine');
 const { runTrustEvaluationPass, initializeProbation }   = require('./trainingTrustEngine');
 const { runAIDiscoveryCycle }                            = require('./aiDiscoveryAgent');
@@ -49,7 +49,7 @@ const { upsertIngestedChannel } = require('../db/queries');
 const { classifyChannel }       = require('./channelClassifier');
 
 const MIN_RUN_INTERVAL_HOURS = parseInt(process.env.CORPUS_RUN_INTERVAL_HOURS ?? '24', 10);
-const STARTUP_DELAY_MS       = 45_000;   // 45s after boot before first eligibility check
+const STARTUP_DELAY_MS       = 3 * 60_000;   // 3 min after boot — lets server handle requests first
 const CHECK_INTERVAL_MS      = 30 * 60 * 1000; // recheck every 30 minutes
 const MAX_QUOTA_PER_CYCLE    = parseInt(process.env.CORPUS_QUOTA_BUDGET ?? '4000', 10);
 
@@ -134,7 +134,9 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
   const runId = startRunLog(db, budget);
 
   function record(step, data) {
-    console.log(`[corpusScheduler] ${step}:`, JSON.stringify(data));
+    // Strip niche_gaps from console output — it's huge and unreadable in logs
+    const { niche_gaps: _ng, ...printable } = (data && typeof data === 'object') ? data : { _: data };
+    console.log(`[corpusScheduler] ${step}:`, JSON.stringify(printable));
     log.push({ step, data, ts: new Date().toISOString() });
   }
 
@@ -302,16 +304,17 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     if (mode !== 'discover') {
       toEvaluate = getCorpusChannelsForQualityEval(db, 500);
       const evalRes = { evaluated: 0, errors: 0 };
-      for (const ch of toEvaluate) {
-        try { evaluateChannelQuality(db, ch); evalRes.evaluated++; summary.channels_evaluated++; }
+      for (let i = 0; i < toEvaluate.length; i++) {
+        try { evaluateChannelQuality(db, toEvaluate[i]); evalRes.evaluated++; summary.channels_evaluated++; }
         catch (e) { evalRes.errors++; }
+        if (i % 20 === 0) await new Promise(r => setImmediate(r)); // yield every 20
       }
       record('quality_eval', evalRes);
     }
 
     // ── Step 7: Training eligibility gate (no quota) ──────────────────────────
     if (mode !== 'discover') {
-      const trainingRes = runFullEvaluationPass(db, toEvaluate);
+      const trainingRes = await runFullEvaluationPassAsync(db, toEvaluate);
       summary.channels_promoted = trainingRes.promoted;
       summary.channels_demoted  = trainingRes.demoted;
       record('training_gate', trainingRes);

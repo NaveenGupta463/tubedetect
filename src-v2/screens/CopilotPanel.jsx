@@ -2,6 +2,14 @@ import { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { T, spring, ease } from '../tokens';
 
+function genId() { return crypto.randomUUID(); }
+
+function getClientId() {
+  let id = localStorage.getItem('ti_client_id');
+  if (!id) { id = crypto.randomUUID(); localStorage.setItem('ti_client_id', id); }
+  return id;
+}
+
 const API = 'http://localhost:3002';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
@@ -99,7 +107,7 @@ function ChannelCard({ data }) {
   );
 }
 
-function OpportunityCard({ data }) {
+function OpportunityCard({ data, onAction }) {
   return (
     <div style={{
       padding: '10px 14px', borderRadius: 10, marginBottom: 6,
@@ -108,13 +116,33 @@ function OpportunityCard({ data }) {
     }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
         <span style={{ fontSize: '0.78rem', marginTop: 1 }}>💡</span>
-        <div>
+        <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: '0.82rem', fontWeight: 600, color: T.text, marginBottom: 3 }}>{data.topic}</div>
-          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap' }}>
+          <div style={{ display: 'flex', gap: 14, flexWrap: 'wrap', marginBottom: onAction ? 8 : 0 }}>
             {data.peer_count && <span style={{ fontSize: '0.71rem', color: T.muted }}>{data.peer_count} peers making this</span>}
             {data.avg_views  && <span style={{ fontSize: '0.71rem', color: T.success }}>{data.avg_views} avg views</span>}
             {data.gap        && <span style={{ fontSize: '0.71rem', color: T.warning }}>{data.gap}</span>}
           </div>
+          {onAction && (
+            <div style={{ display: 'flex', gap: 5 }}>
+              <button
+                onClick={() => onAction({ type: 'draft_outline', label: 'Draft video outline', payload: { topic: data.topic } })}
+                style={{
+                  padding: '3px 9px', borderRadius: 5, cursor: 'pointer', border: 'none',
+                  background: 'rgba(157,111,255,0.15)', color: T.accent,
+                  fontSize: '0.68rem', fontWeight: 600,
+                }}
+              >Draft this</button>
+              <button
+                onClick={() => onAction({ type: 'save_idea', label: 'Save this idea', payload: { topic: data.topic } })}
+                style={{
+                  padding: '3px 9px', borderRadius: 5, cursor: 'pointer', border: 'none',
+                  background: 'rgba(255,255,255,0.06)', color: T.muted,
+                  fontSize: '0.68rem', fontWeight: 500,
+                }}
+              >Save idea</button>
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -137,7 +165,7 @@ function VideoCard({ data }) {
   );
 }
 
-function OutlineCard({ data }) {
+function OutlineCard({ data, placeholders }) {
   return (
     <div style={{
       padding: '14px 16px', borderRadius: 12, marginBottom: 6,
@@ -165,8 +193,9 @@ function OutlineCard({ data }) {
             fontSize: '0.8rem', color: T.text, lineHeight: 1.5,
             padding: '8px 12px', borderRadius: 8,
             background: 'rgba(255,255,255,0.04)', border: `1px solid ${T.border}`,
-            fontStyle: 'italic',
-          }}>{data.hook}</div>
+          }}>
+            <ScriptTextWithPlaceholders text={data.hook} placeholders={placeholders} />
+          </div>
         </div>
       )}
 
@@ -184,7 +213,14 @@ function OutlineCard({ data }) {
               }}>{i + 1}</div>
               <div>
                 <div style={{ fontSize: '0.78rem', fontWeight: 600, color: T.text }}>{s.title}</div>
-                {s.brief && <div style={{ fontSize: '0.72rem', color: T.muted, marginTop: 2 }}>{s.brief}</div>}
+                {s.brief && (
+                  <div style={{ fontSize: '0.72rem', color: T.muted, marginTop: 2 }}>
+                    <ScriptTextWithPlaceholders text={s.brief} placeholders={placeholders} />
+                  </div>
+                )}
+                {s.why && (
+                  <div style={{ fontSize: '0.67rem', color: T.subtle, marginTop: 3, fontStyle: 'italic' }}>{s.why}</div>
+                )}
               </div>
             </div>
           ))}
@@ -220,6 +256,176 @@ function OutlineCard({ data }) {
   );
 }
 
+// ── Inline placeholder rendering ──────────────────────────────────────────────
+
+const PH_CHIP = {
+  story:      { bg: 'rgba(79,130,255,0.12)',  border: 'rgba(79,130,255,0.3)',   text: '#5B9AFF' },
+  experience: { bg: 'rgba(79,130,255,0.12)',  border: 'rgba(79,130,255,0.3)',   text: '#5B9AFF' },
+  example:    { bg: 'rgba(180,180,180,0.09)', border: 'rgba(180,180,180,0.22)', text: '#aaa'    },
+  stat:       { bg: 'rgba(255,179,0,0.1)',    border: 'rgba(255,179,0,0.28)',   text: '#FFBA00' },
+  source:     { bg: 'rgba(255,179,0,0.1)',    border: 'rgba(255,179,0,0.28)',   text: '#FFBA00' },
+  override:   { bg: 'rgba(255,140,0,0.1)',    border: 'rgba(255,140,0,0.28)',   text: '#FFA040' },
+  medical:    { bg: 'rgba(255,80,80,0.1)',    border: 'rgba(255,80,80,0.28)',   text: '#FF6B6B' },
+};
+const EXPANDABLE_PH = new Set(['story', 'experience', 'example']);
+const PH_RE = /\[([A-Z][A-Z_\s]*[A-Z])(?::\s*([^\]]*))?\]/g;
+
+function parseScriptText(text) {
+  const segs = [];
+  let last = 0;
+  PH_RE.lastIndex = 0;
+  let m;
+  while ((m = PH_RE.exec(text)) !== null) {
+    if (m.index > last) segs.push({ kind: 'text', content: text.slice(last, m.index) });
+    const label = m[1].trim();
+    const desc  = (m[2] || '').trim();
+    const phType = /STORY|ANECDOTE/.test(label) ? 'story'
+      : /EXPERIENCE/.test(label)               ? 'experience'
+      : /EXAMPLE/.test(label)                  ? 'example'
+      : /VERIFY|STAT/.test(label)              ? 'stat'
+      : /SOURCE/.test(label)                   ? 'source'
+      : /OVERRIDE/.test(label)                 ? 'override'
+      : /MEDICAL/.test(label)                  ? 'medical'
+      : 'example';
+    segs.push({ kind: 'ph', label, desc, phType });
+    last = m.index + m[0].length;
+  }
+  if (last < text.length) segs.push({ kind: 'text', content: text.slice(last) });
+  return segs;
+}
+
+function ScriptTextWithPlaceholders({ text, placeholders }) {
+  const [open, setOpen] = useState({});
+  const segs = parseScriptText(text);
+  return (
+    <>
+      {segs.map((seg, i) => {
+        if (seg.kind === 'text') return <span key={i} style={{ whiteSpace: 'pre-wrap' }}>{seg.content}</span>;
+
+        const ph = (placeholders || []).find(p => {
+          if (!p.description || !seg.desc) return false;
+          if (p.description === seg.desc) return true;
+          const a = p.description.toLowerCase().slice(0, 30);
+          const b = seg.desc.toLowerCase().slice(0, 30);
+          return a === b || a.startsWith(b.slice(0, 18)) || b.startsWith(a.slice(0, 18));
+        });
+        const canExpand = EXPANDABLE_PH.has(seg.phType) && ph?.example;
+        const isOpen    = open[i];
+        const c = PH_CHIP[seg.phType] || PH_CHIP.example;
+
+        return (
+          <span key={i}>
+            <span
+              onClick={canExpand ? () => setOpen(s => ({ ...s, [i]: !s[i] })) : undefined}
+              title={canExpand ? 'Click to see an example' : undefined}
+              style={{
+                display: 'inline-flex', alignItems: 'center', gap: 4,
+                padding: '2px 8px', borderRadius: 5, margin: '1px 2px',
+                background: c.bg, border: `1px solid ${c.border}`,
+                color: c.text, fontSize: '0.71rem',
+                cursor: canExpand ? 'pointer' : 'default',
+                userSelect: 'none', verticalAlign: 'middle',
+              }}
+            >
+              <span style={{ fontWeight: 800, fontSize: '0.6rem', letterSpacing: '0.05em' }}>
+                {seg.label}
+              </span>
+              {seg.desc && (
+                <span style={{ opacity: 0.78, maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {seg.desc}
+                </span>
+              )}
+              {canExpand && (
+                <span style={{ fontSize: '0.58rem', opacity: 0.6, flexShrink: 0 }}>
+                  {isOpen ? '▲' : '▼'}
+                </span>
+              )}
+            </span>
+            {isOpen && ph?.example && (
+              <span style={{
+                display: 'block', margin: '6px 0 8px',
+                padding: '10px 13px', borderRadius: 8,
+                background: 'rgba(79,130,255,0.07)', border: '1px solid rgba(79,130,255,0.22)',
+              }}>
+                <span style={{
+                  display: 'block', fontSize: '0.59rem', fontWeight: 800,
+                  color: '#5B9AFF', letterSpacing: '0.07em', marginBottom: 5,
+                }}>EXAMPLE — replace with your actual story</span>
+                <span style={{
+                  display: 'block', fontSize: '0.77rem', color: T.text,
+                  lineHeight: 1.6, fontStyle: 'italic',
+                }}>{ph.example}</span>
+              </span>
+            )}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+function ScriptCard({ data, overrideCount, placeholders }) {
+  const partLabel  = data.part === 'ending' ? 'Ending & CTA' : 'Body Script';
+  const hasOverride = overrideCount > 0;
+  const partColor  = hasOverride ? 'rgba(255,179,0,0.06)'
+    : data.part === 'ending' ? 'rgba(18,217,138,0.08)' : 'rgba(157,111,255,0.08)';
+  const partBorder = hasOverride ? 'rgba(255,179,0,0.45)'
+    : data.part === 'ending' ? 'rgba(18,217,138,0.2)' : T.accentBorder;
+
+  return (
+    <div style={{
+      padding: '14px 16px', borderRadius: 12, marginBottom: 6,
+      background: `linear-gradient(160deg, ${partColor} 0%, rgba(14,14,16,0.4))`,
+      border: `1px solid ${partBorder}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12 }}>
+        <span style={{ fontSize: '0.78rem' }}>{data.part === 'ending' ? '🎯' : '📝'}</span>
+        <span style={{ fontSize: '0.82rem', fontWeight: 700, color: T.accent }}>{data.topic}</span>
+        <span style={{
+          fontSize: '0.65rem', fontWeight: 600,
+          background: hasOverride ? 'rgba(255,179,0,0.12)' : data.part === 'ending' ? 'rgba(18,217,138,0.12)' : T.accentGlow,
+          border: `1px solid ${partBorder}`,
+          borderRadius: 5, padding: '2px 7px',
+          color: hasOverride ? '#FFBA00' : data.part === 'ending' ? T.success : T.accent,
+        }}>{partLabel}</span>
+        {hasOverride && (
+          <span style={{
+            fontSize: '0.62rem', fontWeight: 700, color: '#FFBA00',
+            background: 'rgba(255,179,0,0.1)', border: '1px solid rgba(255,179,0,0.3)',
+            borderRadius: 4, padding: '1px 6px',
+          }}>{overrideCount} override{overrideCount > 1 ? 's' : ''} to replace</span>
+        )}
+      </div>
+
+      {data.sections?.map((s, i) => (
+        <div key={i} style={{ marginBottom: 14 }}>
+          {s.title && (
+            <div style={{
+              fontSize: '0.7rem', fontWeight: 700, color: T.muted,
+              letterSpacing: '0.05em', marginBottom: 6, textTransform: 'uppercase',
+            }}>{s.title}</div>
+          )}
+          <div style={{
+            fontSize: '0.8rem', color: T.text, lineHeight: 1.65,
+            padding: '10px 14px', borderRadius: 8,
+            background: 'rgba(255,255,255,0.03)',
+            border: `1px solid ${T.border}`,
+          }}>
+            <ScriptTextWithPlaceholders text={s.script} placeholders={placeholders} />
+          </div>
+        </div>
+      ))}
+
+      {data.cta && (
+        <div style={{ marginTop: 4 }}>
+          <div style={{ fontSize: '0.68rem', fontWeight: 700, color: T.muted, letterSpacing: '0.06em', marginBottom: 4 }}>CTA</div>
+          <div style={{ fontSize: '0.76rem', color: data.part === 'ending' ? T.success : T.muted, lineHeight: 1.5 }}>{data.cta}</div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ComparisonCard({ data }) {
   const a = data.channel_a;
   const b = data.channel_b;
@@ -247,14 +453,18 @@ function ComparisonCard({ data }) {
   );
 }
 
-function renderCard(card, idx) {
+function renderCard(card, idx, onAction, placeholders) {
+  if (card.type === 'script') {
+    const count = (placeholders || []).filter(p => p.type === 'override').length;
+    return <ScriptCard key={idx} data={card.data} overrideCount={count} placeholders={placeholders} />;
+  }
   switch (card.type) {
     case 'topic':      return <TopicCard       key={idx} data={card.data} />;
     case 'channel':    return <ChannelCard     key={idx} data={card.data} />;
-    case 'opportunity':return <OpportunityCard key={idx} data={card.data} />;
+    case 'opportunity':return <OpportunityCard key={idx} data={card.data} onAction={onAction} />;
     case 'video':      return <VideoCard       key={idx} data={card.data} />;
     case 'comparison': return <ComparisonCard  key={idx} data={card.data} />;
-    case 'outline':    return <OutlineCard     key={idx} data={card.data} />;
+    case 'outline':    return <OutlineCard     key={idx} data={card.data} placeholders={placeholders} />;
     default:           return null;
   }
 }
@@ -278,11 +488,14 @@ function ActionButtons({ actions, onAction }) {
             color: T.accent, fontSize: '0.73rem', fontWeight: 500, cursor: 'pointer',
           }}
         >
-          {a.type === 'track_niche'    && <IconTrend   size={11} />}
-          {a.type === 'save_idea'      && <IconPin     size={11} />}
-          {a.type === 'draft_outline'  && <IconSparkle size={11} />}
-          {a.type === 'write_hook'     && <IconSend    size={11} />}
-          {a.type === 'new_draft'      && <IconSparkle size={11} />}
+          {a.type === 'track_niche'       && <IconTrend   size={11} />}
+          {a.type === 'save_idea'         && <IconPin     size={11} />}
+          {a.type === 'draft_outline'     && <IconSparkle size={11} />}
+          {a.type === 'write_hook'        && <IconSend    size={11} />}
+          {a.type === 'write_body'        && <IconSend    size={11} />}
+          {a.type === 'write_ending'      && <IconSend    size={11} />}
+          {a.type === 'new_draft'         && <IconSparkle size={11} />}
+          {a.type === 'regenerate_ideas'  && <IconSparkle size={11} />}
           {a.label}
         </motion.button>
       ))}
@@ -292,7 +505,21 @@ function ActionButtons({ actions, onAction }) {
 
 // ── Message bubble ────────────────────────────────────────────────────────────
 
-function MessageBubble({ msg, onAction }) {
+const IconSave = ({ size = 13 }) => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none">
+    <path d="M2 3a1 1 0 011-1h7.5L13 4.5V13a1 1 0 01-1 1H3a1 1 0 01-1-1V3z" stroke="currentColor" strokeWidth="1.3"/>
+    <path d="M5 14V9h6v5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+    <path d="M5 2v3.5h5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round"/>
+  </svg>
+);
+
+function getMsgPartKeys(msg) {
+  return (msg.cards || [])
+    .filter(c => c.type === 'outline' || c.type === 'script')
+    .map(c => c.type === 'script' ? `script:${c.data?.part || 'body'}` : 'outline');
+}
+
+function MessageBubble({ msg, onAction, onSave, onSelectVersion }) {
   const isUser = msg.role === 'user';
   return (
     <motion.div
@@ -330,16 +557,86 @@ function MessageBubble({ msg, onAction }) {
           {msg.content}
         </div>
 
+        {/* Merge warning banner */}
+        {msg.thread_state?.merge_warning && (
+          <div style={{
+            marginTop: 6, padding: '6px 10px', borderRadius: 7,
+            background: 'rgba(255,179,0,0.08)', border: '1px solid rgba(255,179,0,0.25)',
+            fontSize: '0.72rem', color: '#FFBA00', lineHeight: 1.45,
+          }}>
+            {msg.thread_state.merge_warning}
+          </div>
+        )}
+
         {/* Cards */}
         {msg.cards?.length > 0 && (
           <div style={{ marginTop: 8 }}>
-            {msg.cards.map((card, i) => renderCard(card, i))}
+            {msg.cards.map((card, i) => renderCard(card, i, onAction, msg.placeholders))}
           </div>
+        )}
+
+        {/* Placeholder task list */}
+        {msg.placeholders?.length > 0 && (
+          <PlaceholderPanel placeholders={msg.placeholders} />
+        )}
+
+        {/* Evidence claims panel */}
+        {msg.evidence?.length > 0 && (
+          <EvidencePanel evidence={msg.evidence} />
         )}
 
         {/* Actions */}
         {msg.actions?.length > 0 && (
           <ActionButtons actions={msg.actions} onAction={onAction} />
+        )}
+
+        {/* Credit deduction feedback */}
+        {msg.credits?.deducted > 0 && (
+          <div style={{ fontSize: '0.63rem', color: T.subtle, marginTop: 5, textAlign: 'right' }}>
+            −{msg.credits.deducted} credits · {msg.credits.balance} remaining
+          </div>
+        )}
+
+        {/* Version selector + Save */}
+        {!msg.saved && msg.cards?.some(c => ['outline', 'script'].includes(c.type)) && (
+          <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
+            {onSelectVersion && (
+              <motion.button
+                whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}
+                onClick={() => onSelectVersion(msg)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 4,
+                  padding: '4px 10px', borderRadius: 7, cursor: 'pointer',
+                  background: msg.preferred ? 'rgba(157,111,255,0.18)' : 'rgba(255,255,255,0.05)',
+                  border: `1px solid ${msg.preferred ? T.accentBorder : T.border}`,
+                  color: msg.preferred ? T.accent : T.muted,
+                  fontSize: '0.68rem', fontWeight: 600, transition: 'all 0.15s',
+                }}
+              >
+                {msg.preferred ? '✓ Using this version' : 'Use this version'}
+              </motion.button>
+            )}
+            {onSave && (
+              <motion.button
+                whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}
+                onClick={() => onSave(msg)}
+                style={{
+                  display: 'inline-flex', alignItems: 'center', gap: 5,
+                  padding: '4px 10px', borderRadius: 7, cursor: 'pointer',
+                  background: 'rgba(18,217,138,0.08)', border: '1px solid rgba(18,217,138,0.22)',
+                  color: T.success, fontSize: '0.68rem', fontWeight: 600,
+                }}
+              >
+                <IconSave size={12} />
+                Save Full Draft to Hub
+              </motion.button>
+            )}
+          </div>
+        )}
+        {msg.saved && (
+          <div style={{ marginTop: 6, textAlign: 'right', fontSize: '0.63rem', color: T.success }}>
+            Saved to Hub
+          </div>
         )}
       </div>
     </motion.div>
@@ -381,6 +678,515 @@ function TypingDots() {
   );
 }
 
+// ── Placeholder panel — shows creator task list after script generation ────────
+
+const PLACEHOLDER_COLORS = {
+  story:      { bg: 'rgba(79,130,255,0.08)', border: 'rgba(79,130,255,0.25)', label: '#5B9AFF' },
+  experience: { bg: 'rgba(79,130,255,0.08)', border: 'rgba(79,130,255,0.25)', label: '#5B9AFF' },
+  stat:       { bg: 'rgba(255,179,0,0.08)',  border: 'rgba(255,179,0,0.25)',  label: '#FFBA00' },
+  source:     { bg: 'rgba(255,179,0,0.08)',  border: 'rgba(255,179,0,0.25)',  label: '#FFBA00' },
+  example:    { bg: 'rgba(180,180,180,0.06)', border: 'rgba(180,180,180,0.18)', label: T.muted },
+  medical:    { bg: 'rgba(255,80,80,0.08)',  border: 'rgba(255,80,80,0.25)',  label: '#FF6B6B' },
+  case_study: { bg: 'rgba(180,180,180,0.06)', border: 'rgba(180,180,180,0.18)', label: T.muted },
+  override:   { bg: 'rgba(255,179,0,0.08)',  border: 'rgba(255,140,0,0.3)',   label: '#FFBA00' },
+};
+
+const PLACEHOLDER_TYPE_LABELS = {
+  story:      'YOUR STORY',
+  experience: 'YOUR EXPERIENCE',
+  stat:       'VERIFY',
+  source:     'SOURCE NEEDED',
+  example:    'EXAMPLE NEEDED',
+  medical:    'MEDICAL CLAIM',
+  case_study: 'CASE STUDY NEEDED',
+  override:   'OVERRIDE ⚠',
+};
+
+function PlaceholderPanel({ placeholders }) {
+  if (!placeholders?.length) return null;
+  return (
+    <div style={{
+      marginTop: 10, padding: '10px 12px', borderRadius: 10,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}`,
+    }}>
+      <div style={{
+        fontSize: '0.63rem', fontWeight: 700, color: T.muted,
+        letterSpacing: '0.07em', marginBottom: 8,
+      }}>CREATOR TASKS — fill these before filming</div>
+      {placeholders.map((ph, i) => {
+        const colors = PLACEHOLDER_COLORS[ph.type] || PLACEHOLDER_COLORS.example;
+        return (
+          <div key={ph.id} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 5,
+            padding: '6px 10px', borderRadius: 7,
+            background: colors.bg, border: `1px solid ${colors.border}`,
+          }}>
+            <div style={{
+              fontSize: '0.58rem', fontWeight: 800, color: colors.label,
+              letterSpacing: '0.05em', flexShrink: 0, marginTop: 2, minWidth: 60,
+            }}>
+              {PLACEHOLDER_TYPE_LABELS[ph.type] || ph.type.toUpperCase()}
+            </div>
+            <div style={{ fontSize: '0.74rem', color: T.text, lineHeight: 1.45 }}>
+              {ph.description}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Evidence panel ────────────────────────────────────────────────────────────
+
+const EVIDENCE_STATUS_STYLE = {
+  PLACEHOLDER: { bg: 'rgba(255,179,0,0.07)',  border: 'rgba(255,179,0,0.22)',  label: '#FFBA00', text: 'NEEDS VERIFICATION' },
+  UNVERIFIED:  { bg: 'rgba(255,100,100,0.06)', border: 'rgba(255,100,100,0.2)', label: '#FF7070', text: 'UNVERIFIED'          },
+  VERIFIED_WEB:{ bg: 'rgba(18,217,138,0.06)', border: 'rgba(18,217,138,0.2)', label: T.success, text: 'VERIFIED'             },
+};
+
+function EvidencePanel({ evidence }) {
+  if (!evidence?.length) return null;
+  return (
+    <div style={{
+      marginTop: 10, padding: '10px 12px', borderRadius: 10,
+      background: 'rgba(255,255,255,0.02)', border: `1px solid ${T.border}`,
+    }}>
+      <div style={{
+        fontSize: '0.63rem', fontWeight: 700, color: T.muted,
+        letterSpacing: '0.07em', marginBottom: 8,
+      }}>CLAIMS — verify before publishing</div>
+      {evidence.map((ev, i) => {
+        const style = EVIDENCE_STATUS_STYLE[ev.status] || EVIDENCE_STATUS_STYLE.UNVERIFIED;
+        return (
+          <div key={i} style={{
+            display: 'flex', alignItems: 'flex-start', gap: 8, marginBottom: 5,
+            padding: '6px 10px', borderRadius: 7,
+            background: style.bg, border: `1px solid ${style.border}`,
+          }}>
+            <div style={{
+              fontSize: '0.58rem', fontWeight: 800, color: style.label,
+              letterSpacing: '0.04em', flexShrink: 0, marginTop: 2, minWidth: 56,
+            }}>{style.text}</div>
+            <div style={{ fontSize: '0.74rem', color: T.text, lineHeight: 1.4, flex: 1 }}>
+              {ev.claim}
+              {ev.source && (
+                <span style={{ marginLeft: 6, fontSize: '0.65rem', color: T.accent }}>
+                  — {ev.source}
+                </span>
+              )}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// ── Credits panel ─────────────────────────────────────────────────────────────
+
+const PLAN_LABELS = {
+  free:           'Free',
+  starter:        'Starter',
+  creator_pro:    'Creator Pro',
+  pro:            'Pro',
+  agency_starter: 'Agency Starter',
+  agency_pro:     'Agency Pro',
+};
+const PLAN_CR = { free: 50, starter: 300, creator_pro: 500, pro: 1000, agency_starter: 3000, agency_pro: 10000 };
+
+function CreditPanel({ detail, onSetPlan, onClose }) {
+  return (
+    <div style={{
+      position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 40,
+      background: 'rgba(14,14,18,0.98)', border: `1px solid ${T.border}`,
+      borderRadius: 10, padding: '12px 14px', minWidth: 210,
+      boxShadow: '0 8px 32px rgba(0,0,0,0.7)',
+    }}>
+      {/* Plan row */}
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}>
+        <span style={{
+          fontSize: '0.68rem', fontWeight: 800, color: T.accent,
+          letterSpacing: '0.04em', textTransform: 'uppercase',
+        }}>
+          {PLAN_LABELS[detail.plan] || detail.plan}
+        </span>
+        <span style={{ fontSize: '0.72rem', color: T.text, fontWeight: 700 }}>
+          {detail.balance} credits
+        </span>
+      </div>
+
+      {/* Breakdown */}
+      <div style={{
+        fontSize: '0.64rem', color: T.muted, lineHeight: 1.9,
+        padding: '6px 8px', borderRadius: 6,
+        background: 'rgba(255,255,255,0.03)', marginBottom: 10,
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Monthly credits</span><span style={{ color: T.text }}>{detail.credits}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Rollover</span><span style={{ color: detail.rollover > 0 ? T.success : T.subtle }}>{detail.rollover}</span>
+        </div>
+        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+          <span>Top-up</span><span style={{ color: detail.topup > 0 ? T.success : T.subtle }}>{detail.topup}</span>
+        </div>
+      </div>
+
+      {/* Divider */}
+      <div style={{ borderTop: `1px solid ${T.border}`, margin: '0 -14px 10px' }} />
+
+      <div style={{
+        fontSize: '0.59rem', fontWeight: 800, color: T.muted,
+        letterSpacing: '0.07em', marginBottom: 6,
+      }}>CHANGE PLAN</div>
+
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 4 }}>
+        {Object.entries(PLAN_LABELS).map(([key, label]) => {
+          const active = key === detail.plan;
+          return (
+            <button
+              key={key}
+              onClick={() => { onSetPlan(key); onClose(); }}
+              style={{
+                padding: '6px 8px', borderRadius: 7, cursor: 'pointer',
+                background: active ? 'rgba(157,111,255,0.18)' : 'rgba(255,255,255,0.04)',
+                border: `1px solid ${active ? T.accentBorder : 'rgba(255,255,255,0.07)'}`,
+                color: active ? T.accent : T.muted,
+                textAlign: 'left', transition: 'background 0.12s, color 0.12s',
+              }}
+              onMouseEnter={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.08)'; }}
+              onMouseLeave={e => { if (!active) e.currentTarget.style.background = 'rgba(255,255,255,0.04)'; }}
+            >
+              <div style={{ fontSize: '0.67rem', fontWeight: active ? 700 : 500 }}>{label}</div>
+              <div style={{ fontSize: '0.58rem', opacity: 0.65 }}>{PLAN_CR[key].toLocaleString()} cr</div>
+            </button>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+// ── Brief collection modal ────────────────────────────────────────────────────
+
+const BRIEF_FIELD_LABELS = {
+  topic:              'What is the video topic?',
+  angle:              'What angle or perspective are you taking?',
+  audience_level:     'Who is your audience?',
+  destination:        'What destination does this video cover?',
+  trip_duration:      'How long was the trip?',
+  best_moments:       'Your 3 best moments from the footage?',
+  challenge_or_surprise: 'Biggest challenge or surprise?',
+  mood_vibe:          'What is the mood/vibe?',
+  duration:           'How long is the video?',
+  travel_style:       'Travel style? (budget / luxury / adventure)',
+  audience_type:      'Who is this for?',
+  target_audience:    'Target audience?',
+  depth_level:        'Depth level? (intro / intermediate / expert)',
+  time_period:        'What time period does this cover?',
+  narrative_angle:    'Narrative angle?',
+  premise:            'Core premise or concept?',
+  tone:               'What tone are you going for?',
+};
+
+function BriefModal({ fields, threadId, niche, onSubmit, onSkip }) {
+  const [values, setValues] = useState({});
+
+  const set = (f, v) => setValues(prev => ({ ...prev, [f]: v }));
+  const filled = fields.filter(f => values[f]?.trim()).length;
+  const canSubmit = filled >= Math.min(2, fields.length);
+
+  const handleSubmit = async () => {
+    if (!canSubmit) return;
+    try {
+      await fetch(`${API}/api/copilot/thread/${threadId}/brief`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ brief: values }),
+      });
+    } catch (_) {}
+    onSubmit(values);
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      style={{
+        position: 'absolute', inset: 0, zIndex: 20,
+        background: 'rgba(10,10,14,0.96)', backdropFilter: 'blur(10px)',
+        display: 'flex', flexDirection: 'column', padding: '24px 20px 20px',
+        overflowY: 'auto',
+      }}
+    >
+      <div style={{ fontSize: '0.88rem', fontWeight: 700, color: T.text, marginBottom: 4 }}>
+        Tell me about your video
+      </div>
+      <div style={{ fontSize: '0.72rem', color: T.muted, marginBottom: 16, lineHeight: 1.5 }}>
+        {niche ? `${niche.replace(/_/g, ' ')} — ` : ''}Fill in what you can. I'll write around any blanks.
+      </div>
+
+      <div style={{ flex: 1 }}>
+        {fields.map(f => (
+          <div key={f} style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: '0.7rem', fontWeight: 600, color: T.muted, marginBottom: 5 }}>
+              {BRIEF_FIELD_LABELS[f] || f}
+            </div>
+            <textarea
+              rows={2}
+              value={values[f] || ''}
+              onChange={e => set(f, e.target.value)}
+              placeholder={`Your answer…`}
+              style={{
+                width: '100%', resize: 'none', borderRadius: 8, padding: '7px 10px',
+                background: 'rgba(255,255,255,0.04)', border: `1px solid ${T.border}`,
+                color: T.text, fontSize: '0.78rem', fontFamily: 'inherit', lineHeight: 1.5,
+                outline: 'none', boxSizing: 'border-box',
+              }}
+              onFocus={e => e.target.style.borderColor = T.accentBorder}
+              onBlur={e => e.target.style.borderColor = T.border}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 12 }}>
+        <motion.button
+          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+          onClick={handleSubmit}
+          disabled={!canSubmit}
+          style={{
+            padding: '10px', borderRadius: 9, border: 'none',
+            cursor: canSubmit ? 'pointer' : 'default',
+            background: canSubmit
+              ? 'linear-gradient(135deg, #7C3AED, #4F46E5)'
+              : 'rgba(255,255,255,0.06)',
+            color: canSubmit ? '#fff' : T.subtle,
+            fontSize: '0.8rem', fontWeight: 600,
+            transition: 'background 0.2s, color 0.2s',
+          }}
+        >
+          Generate script
+        </motion.button>
+        <button
+          onClick={onSkip}
+          style={{
+            background: 'none', border: 'none', cursor: 'pointer',
+            color: T.subtle, fontSize: '0.7rem', padding: '4px', lineHeight: 1.5,
+          }}
+        >
+          Skip — write with general structure only
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Voice setup modal ─────────────────────────────────────────────────────────
+
+function VoiceSetupModal({ channelId, onComplete, onSkip, onDismiss }) {
+  const [scripts,   setScripts]   = useState('');
+  const [analyzing, setAnalyzing] = useState(false);
+  const [skipping,  setSkipping]  = useState(false);
+  const [error,     setError]     = useState(null);
+
+  const handleAnalyze = async () => {
+    if (!scripts.trim() || analyzing) return;
+    setAnalyzing(true);
+    setError(null);
+    try {
+      const res  = await fetch(`${API}/api/copilot/voice/${channelId}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ scripts: scripts.trim() }),
+      });
+      const data = await res.json();
+      if (data.error) { setError(data.error); setAnalyzing(false); return; }
+      onComplete(data);
+    } catch (_) {
+      setError('Analysis failed. Check your connection and try again.');
+      setAnalyzing(false);
+    }
+  };
+
+  const handleSkip = async (e) => {
+    e.stopPropagation();
+    if (skipping) return;
+    setSkipping(true);
+    await onSkip();
+  };
+
+  return (
+    <motion.div
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0 }}
+      onClick={e => e.stopPropagation()}
+      style={{
+        position: 'absolute', inset: 0, zIndex: 20,
+        background: 'rgba(10,10,14,0.96)',
+        backdropFilter: 'blur(10px)',
+        display: 'flex', flexDirection: 'column',
+        padding: '22px 22px 22px',
+      }}
+    >
+      {/* Header row with close button */}
+      <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 10 }}>
+        <div style={{ fontSize: '0.9rem', fontWeight: 700, color: T.text, lineHeight: 1.3 }}>
+          Help Copilot sound like you
+        </div>
+        <button
+          onClick={e => { e.stopPropagation(); onDismiss(); }}
+          style={{
+            width: 26, height: 26, borderRadius: 6, flexShrink: 0, marginLeft: 8,
+            background: 'rgba(255,255,255,0.06)', border: `1px solid ${T.border}`,
+            color: T.muted, cursor: 'pointer',
+            display: 'flex', alignItems: 'center', justifyContent: 'center',
+          }}
+        >
+          <IconX size={12} />
+        </button>
+      </div>
+      <div style={{ fontSize: '0.74rem', color: T.muted, marginBottom: 16, lineHeight: 1.55 }}>
+        Paste 2–3 of your recent video scripts. Copilot will learn your tone, language, and style — all future hooks, outlines, and scripts will match your voice.
+      </div>
+      <textarea
+        value={scripts}
+        onChange={e => setScripts(e.target.value)}
+        placeholder="Paste your video scripts here — the more detail, the better your voice profile…"
+        style={{
+          flex: 1, resize: 'none', borderRadius: 10, padding: '10px 12px',
+          background: 'rgba(255,255,255,0.04)', border: `1px solid ${T.border}`,
+          color: T.text, fontSize: '0.78rem', fontFamily: 'inherit', lineHeight: 1.55,
+          outline: 'none',
+        }}
+        onFocus={e => e.target.style.borderColor = T.accentBorder}
+        onBlur={e => e.target.style.borderColor = T.border}
+      />
+      {error && (
+        <div style={{ fontSize: '0.72rem', color: '#ff6b6b', marginTop: 8 }}>{error}</div>
+      )}
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginTop: 14 }}>
+        <motion.button
+          whileHover={{ scale: 1.02 }} whileTap={{ scale: 0.98 }}
+          onClick={handleAnalyze}
+          disabled={!scripts.trim() || analyzing}
+          style={{
+            padding: '10px', borderRadius: 9, border: 'none',
+            cursor: scripts.trim() && !analyzing ? 'pointer' : 'default',
+            background: scripts.trim() && !analyzing
+              ? 'linear-gradient(135deg, #7C3AED, #4F46E5)'
+              : 'rgba(255,255,255,0.06)',
+            color: scripts.trim() && !analyzing ? '#fff' : T.subtle,
+            fontSize: '0.8rem', fontWeight: 600,
+            transition: 'background 0.2s, color 0.2s',
+          }}
+        >
+          {analyzing ? 'Analyzing your voice…' : 'Analyze & Save'}
+        </motion.button>
+        <button
+          onClick={handleSkip}
+          disabled={skipping}
+          style={{
+            background: 'none', border: 'none', cursor: skipping ? 'default' : 'pointer',
+            color: T.subtle, fontSize: '0.7rem', padding: '4px',
+            lineHeight: 1.5, opacity: skipping ? 0.5 : 1,
+          }}
+        >
+          {skipping ? 'Skipping…' : 'Skip for now — scripts may not feel like your content'}
+        </button>
+      </div>
+    </motion.div>
+  );
+}
+
+// ── Settings overflow menu ────────────────────────────────────────────────────
+
+function SettingsMenu({ format, setFormat, isHinglish, setLang, channelId, voiceReady, voiceSkipped, onVoiceModal, onVoiceDelete, canReset, onReset }) {
+  const row = {
+    display: 'flex', alignItems: 'center', width: '100%', textAlign: 'left',
+    padding: '7px 10px', borderRadius: 7, cursor: 'pointer',
+    background: 'none', border: 'none', color: T.muted, fontSize: '0.73rem', fontWeight: 500,
+  };
+  const label = {
+    fontSize: '0.58rem', fontWeight: 700, color: T.subtle,
+    letterSpacing: '0.1em', marginBottom: 5, paddingLeft: 1,
+  };
+  const seg = (active) => ({
+    flex: 1, padding: '5px 4px', cursor: 'pointer', border: 'none',
+    background: active ? '#7C3AED' : 'transparent',
+    color: active ? '#fff' : T.muted,
+    fontSize: '0.68rem', fontWeight: 600, transition: 'all 0.12s',
+  });
+  const divider = { height: 1, background: T.border, margin: '8px -10px' };
+
+  return (
+    <div style={{
+      position: 'absolute', right: 0, top: 'calc(100% + 6px)', zIndex: 40,
+      background: 'rgba(12,12,18,0.99)', border: `1px solid rgba(255,255,255,0.1)`,
+      borderRadius: 12, padding: 10, minWidth: 214,
+      boxShadow: '0 20px 60px rgba(0,0,0,0.85)',
+      backdropFilter: 'blur(24px)',
+    }}>
+      <div style={{ marginBottom: 10 }}>
+        <div style={label}>FORMAT</div>
+        <div style={{ display: 'flex', borderRadius: 7, overflow: 'hidden', border: `1px solid ${T.border}` }}>
+          {[{ val: 'long', label: 'Long-form' }, { val: 'short', label: 'Shorts' }, { val: 'mixed', label: 'Both' }].map(({ val, label: l }) => (
+            <button key={val} onClick={() => setFormat(val)} style={seg(format === val)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      <div style={{ marginBottom: 2 }}>
+        <div style={label}>LANGUAGE</div>
+        <div style={{ display: 'flex', borderRadius: 7, overflow: 'hidden', border: `1px solid ${T.border}` }}>
+          {[{ val: 'en', l: 'English' }, { val: 'hi', l: 'Hinglish' }].map(({ val, l }) => (
+            <button key={val} onClick={() => setLang(val)} style={seg(val === 'hi' ? isHinglish : !isHinglish)}>{l}</button>
+          ))}
+        </div>
+      </div>
+
+      {channelId && (
+        <>
+          <div style={divider} />
+          <div style={{ ...label, marginTop: 8, marginBottom: 6 }}>VOICE PROFILE</div>
+          {voiceReady ? (
+            <div style={{ display: 'flex', gap: 5 }}>
+              <button onClick={onVoiceModal} style={{ ...row, flex: 1, justifyContent: 'center', background: 'rgba(18,217,138,0.08)', border: '1px solid rgba(18,217,138,0.18)', color: T.success, fontSize: '0.7rem', fontWeight: 600 }}>
+                Voice ✓ · Update
+              </button>
+              <button onClick={onVoiceDelete} style={{ ...row, padding: '7px 10px', background: 'rgba(255,80,80,0.07)', border: '1px solid rgba(255,80,80,0.15)', color: '#ff7070', fontSize: '0.7rem', fontWeight: 600 }}>
+                Delete
+              </button>
+            </div>
+          ) : (
+            <button onClick={onVoiceModal} style={{ ...row }}
+              onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >
+              {voiceSkipped ? '+ Set voice profile' : '+ Add voice profile'}
+            </button>
+          )}
+        </>
+      )}
+
+      {canReset && (
+        <>
+          <div style={divider} />
+          <button onClick={onReset} style={{ ...row, marginTop: 2 }}
+            onMouseEnter={e => e.currentTarget.style.background = 'rgba(255,255,255,0.06)'}
+            onMouseLeave={e => e.currentTarget.style.background = 'none'}
+          >
+            ↺ New chat
+          </button>
+        </>
+      )}
+    </div>
+  );
+}
+
 // ── Main panel ────────────────────────────────────────────────────────────────
 
 export default function CopilotPanel({ channel }) {
@@ -388,26 +1194,84 @@ export default function CopilotPanel({ channel }) {
   const [input,   setInput]   = useState('');
   const [messages, setMessages] = useState([]);
   const [loading, setLoading] = useState(false);
-  const [lang,    setLang]    = useState(null); // null = auto-detect from channel
+  const [lang,    setLang]    = useState(null); // null = auto from channel
+  const [format,  setFormat]  = useState('long'); // 'long' | 'short' | 'mixed'
+  const [voiceProfile,       setVoiceProfile]       = useState(undefined); // undefined=loading, null=none
+  const [showVoiceModal,     setShowVoiceModal]     = useState(false);
+  const [showVoiceManage,    setShowVoiceManage]    = useState(false);
+  const [pendingScriptAction, setPendingScriptAction] = useState(null);
+  const [creditBalance,       setCreditBalance]       = useState(null);
+  const [creditDetail,        setCreditDetail]        = useState(null);
+  const [showCreditPanel,     setShowCreditPanel]     = useState(false);
+  const [showSettingsMenu,    setShowSettingsMenu]    = useState(false);
+  // Thread state
+  const threadIdRef   = useRef(genId());  // stable across re-renders, reset on new chat
+  const [threadState, setThreadState]   = useState(null);
+  const [showBriefModal, setShowBriefModal] = useState(false);
+  const [pendingMessage, setPendingMessage] = useState(null); // message to resend after brief
   const scrollRef = useRef(null);
   const inputRef  = useRef(null);
 
-  const channelId   = channel?.channel_id || null;
-  // Auto-detect: use override if set, otherwise fall back to channel's primary_language
-  const activeLang  = lang || channel?.language || 'en';
-  const isHinglish  = activeLang === 'hi';
+  const channelId  = channel?.channel_id || null;
+  const activeLang = lang || channel?.language || 'en';
+  const isHinglish = activeLang === 'hi';
+  const voiceLoaded  = voiceProfile !== undefined;
+  const voiceReady   = voiceProfile?.voice_analysis != null;
+  const voiceSkipped = voiceProfile != null && !voiceReady && voiceProfile.skipped_at != null;
 
   useEffect(() => {
+    if (!channelId) { setVoiceProfile(null); return; }
+    fetch(`${API}/api/copilot/voice/${channelId}`)
+      .then(r => r.json())
+      .then(data => setVoiceProfile(data))
+      .catch(() => setVoiceProfile(null));
+  }, [channelId]);
+
+  const storageKey = `copilot_draft_${channelId || 'none'}`;
+
+  const greeting = {
+    role: 'assistant',
+    content: channel
+      ? `Hi! I'm your TubeIntel Copilot. I know your channel, your peer community, and what's working in your niche. What do you want to figure out?`
+      : `Hi! I'm TubeIntel Copilot. Search for a channel first and I can give you specific insights about peers, topics, and opportunities.`,
+    cards: [], actions: [], placeholders: [],
+  };
+
+  // Load draft from localStorage when channel changes
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(storageKey);
+      if (raw) {
+        const saved = JSON.parse(raw);
+        const age = Date.now() - (saved.savedAt || 0);
+        if (age < 7 * 24 * 60 * 60 * 1000 && Array.isArray(saved.messages) && saved.messages.length > 1) {
+          setMessages(saved.messages);
+          if (saved.threadState) setThreadState(saved.threadState);
+          if (saved.lang) setLang(saved.lang);
+          return;
+        }
+      }
+    } catch (_) {}
+    setMessages([greeting]);
+    setThreadState(null);
+  }, [channelId]);
+
+  // Save draft + language preference to localStorage whenever messages change
+  useEffect(() => {
+    if (messages.length <= 1) return;
+    try {
+      localStorage.setItem(storageKey, JSON.stringify({ messages, threadState, lang, savedAt: Date.now() }));
+    } catch (_) {}
+  }, [messages, threadState, lang]);
+
+  // Fetch credit balance when panel opens
+  useEffect(() => {
     if (!open) return;
-    setMessages([{
-      role: 'assistant',
-      content: channel
-        ? `Hi! I'm your TubeIntel Copilot. I know your channel, your peer community, and what's working in your niche. What do you want to figure out?`
-        : `Hi! I'm TubeIntel Copilot. Search for a channel first and I can give you specific insights about peers, topics, and opportunities.`,
-      cards: [],
-      actions: [],
-    }]);
-  }, [open, channel?.channel_id]);
+    fetch(`${API}/api/credits/balance?client_id=${encodeURIComponent(getClientId())}`)
+      .then(r => r.json())
+      .then(d => { if (d.balance != null) setCreditBalance(d.balance); })
+      .catch(() => {});
+  }, [open]);
 
   useEffect(() => {
     if (scrollRef.current) {
@@ -419,6 +1283,63 @@ export default function CopilotPanel({ channel }) {
     if (open) setTimeout(() => inputRef.current?.focus(), 100);
   }, [open]);
 
+  const handleSave = async (msg) => {
+    // Preferred version wins per part; if none marked, latest wins
+    const partMap = new Map(); // key → { card, msgIndex, preferred }
+    for (let i = 0; i < messages.length; i++) {
+      const m = messages[i];
+      for (const c of (m.cards || [])) {
+        if (c.type !== 'outline' && c.type !== 'script') continue;
+        const key = c.type === 'script' ? `script:${c.data?.part || 'body'}` : 'outline';
+        const existing = partMap.get(key);
+        if (!existing) {
+          partMap.set(key, { card: c, msgIndex: i, preferred: !!m.preferred });
+        } else if (m.preferred && !existing.preferred) {
+          partMap.set(key, { card: c, msgIndex: i, preferred: true });
+        } else if (!m.preferred && !existing.preferred) {
+          partMap.set(key, { card: c, msgIndex: i, preferred: false });
+        }
+      }
+    }
+    const allCards = [...partMap.values()].sort((a, b) => a.msgIndex - b.msgIndex).map(v => v.card);
+    const topic = allCards.find(c => c.data?.topic)?.data?.topic || null;
+    try {
+      await fetch(`${API}/api/drafts`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          client_id:  getClientId(),
+          channel_id: channelId,
+          topic,
+          cards: allCards.length > 0 ? allCards : msg.cards,
+        }),
+      });
+      // Mark all messages that have script/outline cards as saved
+      setMessages(prev => prev.map(m =>
+        m.cards?.some(c => ['outline', 'script'].includes(c.type)) ? { ...m, saved: true } : m
+      ));
+    } catch (_) {}
+  };
+
+  const openCreditPanel = () => {
+    fetch(`${API}/api/credits/balance?client_id=${encodeURIComponent(getClientId())}`)
+      .then(r => r.json())
+      .then(d => { setCreditDetail(d); setShowCreditPanel(true); })
+      .catch(() => {});
+  };
+
+  const handleSetPlan = async (plan) => {
+    const res = await fetch(`${API}/api/credits/set-plan`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ client_id: getClientId(), plan }),
+    }).then(r => r.json()).catch(() => null);
+    if (res?.balance != null) {
+      setCreditBalance(res.balance);
+      setCreditDetail(d => d ? { ...d, plan, balance: res.balance, credits: res.credits, rollover: 0 } : null);
+    }
+  };
+
   const send = async (text) => {
     const msg = text || input.trim();
     if (!msg || loading) return;
@@ -428,62 +1349,148 @@ export default function CopilotPanel({ channel }) {
     setMessages(prev => [...prev, userMsg]);
     setLoading(true);
 
-    // Build history as plain {role, content} for the server
-    // Skip the greeting (index 0 is always an assistant-initiated message, not a real turn).
-    // Anthropic requires messages to start with 'user' — sending assistant-first causes errors.
     const history = messages.slice(1).map(m => ({ role: m.role, content: m.content }));
 
     try {
       const res = await fetch(`${API}/api/copilot/chat`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ message: msg, channel_id: channelId, history, lang: activeLang }),
+        body: JSON.stringify({
+          message:    msg,
+          channel_id: channelId,
+          history,
+          lang:       activeLang,
+          format,
+          thread_id:  threadIdRef.current,
+          client_id:  getClientId(),
+        }),
       });
       const data = await res.json();
 
-      if (data.error) {
+      if (data.credits?.balance != null) setCreditBalance(data.credits.balance);
+
+      if (data.error === 'insufficient_credits') {
+        setMessages(prev => [...prev, {
+          role: 'assistant',
+          content: data.message || 'Not enough credits for this action.',
+          cards: [], actions: [], placeholders: [],
+        }]);
+      } else if (data.error) {
         setMessages(prev => [...prev, {
           role: 'assistant',
           content: `Something went wrong: ${data.error}`,
-          cards: [], actions: [],
+          cards: [], actions: [], placeholders: [],
         }]);
       } else {
+        // Update thread state
+        if (data.thread_state) setThreadState(data.thread_state);
+
         setMessages(prev => [...prev, {
-          role: 'assistant',
-          content: data.answer,
-          cards: data.cards || [],
-          actions: data.actions || [],
+          role:         'assistant',
+          content:      data.answer,
+          cards:        data.cards        || [],
+          actions:      data.actions      || [],
+          placeholders: data.placeholders || [],
+          evidence:     data.evidence     || [],
+          thread_state: data.thread_state || null,
+          credits:      data.credits      || null,
         }]);
       }
-    } catch (err) {
+    } catch (_) {
       setMessages(prev => [...prev, {
         role: 'assistant',
         content: 'Could not reach the server. Make sure the backend is running.',
-        cards: [], actions: [],
+        cards: [], actions: [], placeholders: [],
       }]);
     } finally {
       setLoading(false);
     }
   };
 
-  const handleAction = (action) => {
+  const executeAction = (action) => {
     const t = action.payload?.topic || '';
     const n = action.payload?.niche  || '';
     switch (action.type) {
-      case 'track_niche':    return send(`Track the "${n}" topic for me`);
-      case 'compare_channel':return send(`Compare me with channel ${action.payload?.channel_id}`);
-      case 'save_idea':      return send(`Save "${t}" as a content idea`);
-      case 'draft_outline':  return send(`Draft a full video outline for "${t}"`);
-      case 'write_hook':     return send(`Write the opening 60-second script for "${t}"`);
-      case 'new_draft':      return send(`Give me a different angle for the "${t}" video outline`);
+      case 'track_niche':      return send(`Track the "${n}" topic for me`);
+      case 'compare_channel':  return send(`Compare me with channel ${action.payload?.channel_id}`);
+      case 'save_idea':        return send(`Save "${t}" as a content idea`);
+      case 'draft_outline':    return send(`Draft a full video outline for "${t}"`);
+      case 'write_hook':       return send(`Write the opening 60-second script for "${t}"`);
+      case 'write_body':       return send(`Write the full detailed body script for "${t}"`);
+      case 'write_ending':     return send(`Write the ending and CTA for "${t}"`);
+      case 'new_draft':        return send(`Give me a different angle for the "${t}" video outline`);
+      case 'regenerate_ideas': return send('Show me different content opportunities');
     }
+  };
+
+  const handleSelectVersion = (msg) => {
+    const selectedKeys = new Set(getMsgPartKeys(msg));
+    setMessages(prev => prev.map(m => {
+      const mKeys = getMsgPartKeys(m);
+      const sharesKey = mKeys.some(k => selectedKeys.has(k));
+      if (m === msg) return { ...m, preferred: !m.preferred };
+      if (sharesKey) return { ...m, preferred: false };
+      return m;
+    }));
+  };
+
+  const handleAction = (action) => {
+    const SCRIPT_TYPES = ['write_hook', 'write_body', 'write_ending'];
+    if (SCRIPT_TYPES.includes(action.type) && channelId && voiceLoaded && !voiceReady && !voiceSkipped) {
+      setPendingScriptAction(action);
+      setShowVoiceModal(true);
+      return;
+    }
+    executeAction(action);
   };
 
   const handleKeyDown = (e) => {
     if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); }
   };
 
-  const reset = () => setMessages([]);
+  const reset = () => {
+    try { localStorage.removeItem(storageKey); } catch (_) {}
+    threadIdRef.current = genId();
+    setThreadState(null);
+    setShowBriefModal(false);
+    setPendingMessage(null);
+    setMessages([greeting]);
+  };
+
+  const handleBriefSubmit = (values) => {
+    setShowBriefModal(false);
+    const msg = pendingMessage;
+    setPendingMessage(null);
+    if (msg) send(msg);
+  };
+
+  const handleBriefSkip = () => {
+    setShowBriefModal(false);
+    const msg = pendingMessage;
+    setPendingMessage(null);
+    if (msg) send(msg);
+  };
+
+  const handleVoiceComplete = (data) => {
+    setVoiceProfile({ voice_analysis: JSON.stringify(data.analysis), sample_sentences: JSON.stringify(data.sample_sentences) });
+    setShowVoiceModal(false);
+    if (pendingScriptAction) { executeAction(pendingScriptAction); setPendingScriptAction(null); }
+  };
+
+  const handleVoiceSkip = async () => {
+    if (channelId) {
+      await fetch(`${API}/api/copilot/voice/${channelId}/skip`, { method: 'POST' }).catch(() => {});
+    }
+    setVoiceProfile({ skipped_at: new Date().toISOString() });
+    setShowVoiceModal(false);
+    if (pendingScriptAction) { executeAction(pendingScriptAction); setPendingScriptAction(null); }
+  };
+
+  const handleVoiceDelete = async () => {
+    await fetch(`${API}/api/copilot/voice/${channelId}`, { method: 'DELETE' }).catch(() => {});
+    setVoiceProfile(null);
+    setShowVoiceManage(false);
+  };
 
   return (
     <>
@@ -517,6 +1524,12 @@ export default function CopilotPanel({ channel }) {
       {/* ── Chat panel ─────────────────────────────────────────────────────── */}
       <AnimatePresence>
         {open && (
+          <>
+          {/* Backdrop — clicking outside closes the panel */}
+          <div
+            onClick={() => setOpen(false)}
+            style={{ position: 'fixed', inset: 0, zIndex: 199 }}
+          />
           <motion.div
             key="panel"
             initial={{ opacity: 0, y: 24, scale: 0.95 }}
@@ -543,56 +1556,85 @@ export default function CopilotPanel({ channel }) {
           >
             {/* Header */}
             <div style={{
-              padding: '14px 16px', borderBottom: `1px solid ${T.border}`,
+              padding: '12px 14px', borderBottom: `1px solid ${T.border}`,
               display: 'flex', alignItems: 'center', gap: 10, flexShrink: 0,
             }}>
               <div style={{
-                width: 32, height: 32, borderRadius: 9,
+                width: 30, height: 30, borderRadius: 9, flexShrink: 0,
                 background: 'linear-gradient(135deg, #7C3AED, #4F46E5)',
                 display: 'flex', alignItems: 'center', justifyContent: 'center',
-                boxShadow: '0 0 12px rgba(124,58,237,0.4)', flexShrink: 0,
+                boxShadow: '0 0 12px rgba(124,58,237,0.4)',
               }}>
-                <IconSparkle size={15} />
+                <IconSparkle size={14} />
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: '0.85rem', fontWeight: 700, color: T.text, letterSpacing: '-0.01em' }}>TubeIntel Copilot</div>
+
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: '0.83rem', fontWeight: 700, color: T.text, letterSpacing: '-0.01em', lineHeight: 1 }}>
+                  Copilot
+                </div>
                 {channel && (
-                  <div style={{ fontSize: '0.7rem', color: T.accent }}>{channel.name}</div>
+                  <div style={{ fontSize: '0.67rem', color: T.accent, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    {channel.channel_name || channel.name}
+                  </div>
                 )}
               </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                {/* Language toggle — only show for Hindi channels or when manually overridden */}
-                <motion.button
-                  whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.95 }}
-                  onClick={() => setLang(isHinglish ? 'en' : 'hi')}
-                  title={isHinglish ? 'Switch to English' : 'Switch to Hinglish'}
-                  style={{
-                    padding: '3px 9px', borderRadius: 6, cursor: 'pointer',
-                    background: isHinglish ? T.accentGlow : 'transparent',
-                    border: `1px solid ${isHinglish ? T.accentBorder : T.border}`,
-                    color: isHinglish ? T.accent : T.muted,
-                    fontSize: '0.65rem', fontWeight: 700, letterSpacing: '0.04em',
-                  }}
-                >
-                  {isHinglish ? 'HI' : 'EN'}
-                </motion.button>
 
-                <div style={{ display: 'flex', gap: 4 }}>
-                {messages.length > 1 && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+                {/* Credits pill */}
+                {creditBalance !== null && (
+                  <div style={{ position: 'relative' }}>
+                    <motion.button
+                      whileHover={{ scale: 1.05 }} whileTap={{ scale: 0.96 }}
+                      onClick={() => showCreditPanel ? setShowCreditPanel(false) : openCreditPanel()}
+                      style={{
+                        padding: '4px 10px', borderRadius: 6, cursor: 'pointer',
+                        background: showCreditPanel ? 'rgba(157,111,255,0.15)' : 'rgba(255,255,255,0.05)',
+                        border: `1px solid ${showCreditPanel ? T.accentBorder : T.border}`,
+                        fontSize: '0.7rem', fontWeight: 700,
+                        color: showCreditPanel ? T.accent : T.muted,
+                        whiteSpace: 'nowrap',
+                      }}
+                    >
+                      {creditBalance} cr
+                    </motion.button>
+                    {showCreditPanel && creditDetail && (
+                      <CreditPanel detail={creditDetail} onSetPlan={handleSetPlan} onClose={() => setShowCreditPanel(false)} />
+                    )}
+                  </div>
+                )}
+
+                {/* Settings overflow */}
+                <div style={{ position: 'relative' }}>
                   <motion.button
                     whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
-                    onClick={reset}
-                    title="New chat"
+                    onClick={() => setShowSettingsMenu(v => !v)}
+                    title="Settings"
                     style={{
                       width: 28, height: 28, borderRadius: 7,
-                      background: 'transparent', border: `1px solid ${T.border}`,
-                      color: T.muted, cursor: 'pointer', fontSize: '0.65rem',
+                      background: showSettingsMenu ? 'rgba(255,255,255,0.08)' : 'transparent',
+                      border: `1px solid ${showSettingsMenu ? T.border : 'transparent'}`,
+                      color: T.muted, cursor: 'pointer',
                       display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontSize: '1.05rem', letterSpacing: '0.04em', lineHeight: 1,
                     }}
                   >
-                    ↺
+                    ···
                   </motion.button>
-                )}
+                  {showSettingsMenu && (
+                    <SettingsMenu
+                      format={format} setFormat={setFormat}
+                      isHinglish={isHinglish} setLang={setLang}
+                      channelId={channelId}
+                      voiceReady={voiceReady} voiceSkipped={voiceSkipped}
+                      onVoiceModal={() => { setShowVoiceModal(true); setShowSettingsMenu(false); }}
+                      onVoiceDelete={() => { handleVoiceDelete(); setShowSettingsMenu(false); }}
+                      canReset={messages.length > 1}
+                      onReset={() => { reset(); setShowSettingsMenu(false); }}
+                    />
+                  )}
+                </div>
+
+                {/* Close */}
                 <motion.button
                   whileHover={{ scale: 1.1 }} whileTap={{ scale: 0.9 }}
                   onClick={() => setOpen(false)}
@@ -606,7 +1648,6 @@ export default function CopilotPanel({ channel }) {
                   <IconX size={13} />
                 </motion.button>
               </div>
-              </div>
             </div>
 
             {/* Messages */}
@@ -618,7 +1659,7 @@ export default function CopilotPanel({ channel }) {
               }}
             >
               {messages.map((m, i) => (
-                <MessageBubble key={i} msg={m} onAction={handleAction} />
+                <MessageBubble key={i} msg={m} onAction={handleAction} onSave={handleSave} onSelectVersion={handleSelectVersion} />
               ))}
 
               <AnimatePresence>
@@ -653,6 +1694,31 @@ export default function CopilotPanel({ channel }) {
               )}
             </div>
 
+            {/* Brief collection modal */}
+            <AnimatePresence>
+              {showBriefModal && threadState?.brief_fields && (
+                <BriefModal
+                  fields={threadState.brief_fields}
+                  threadId={threadIdRef.current}
+                  niche={threadState.niche}
+                  onSubmit={handleBriefSubmit}
+                  onSkip={handleBriefSkip}
+                />
+              )}
+            </AnimatePresence>
+
+            {/* Voice setup modal — overlays message+input area */}
+            <AnimatePresence>
+              {showVoiceModal && channelId && (
+                <VoiceSetupModal
+                  channelId={channelId}
+                  onComplete={handleVoiceComplete}
+                  onSkip={handleVoiceSkip}
+                  onDismiss={() => setShowVoiceModal(false)}
+                />
+              )}
+            </AnimatePresence>
+
             {/* Input area */}
             <div style={{
               padding: '10px 12px 14px', borderTop: `1px solid ${T.border}`, flexShrink: 0,
@@ -684,6 +1750,19 @@ export default function CopilotPanel({ channel }) {
                     e.target.style.height = `${Math.min(e.target.scrollHeight, 100)}px`;
                   }}
                 />
+                <button
+                  onClick={() => setLang(isHinglish ? 'en' : 'hi')}
+                  title={isHinglish ? 'Generating in Hinglish — click to switch to English' : 'Generating in English — click to switch to Hinglish'}
+                  style={{
+                    padding: '3px 7px', borderRadius: 5, cursor: 'pointer', flexShrink: 0,
+                    background: isHinglish ? 'rgba(255,179,0,0.1)' : 'rgba(79,130,255,0.1)',
+                    border: `1px solid ${isHinglish ? 'rgba(255,179,0,0.28)' : 'rgba(79,130,255,0.28)'}`,
+                    color: isHinglish ? '#FFBA00' : '#5B9AFF',
+                    fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.04em',
+                  }}
+                >
+                  {isHinglish ? 'HI' : 'EN'}
+                </button>
                 <motion.button
                   whileHover={{ scale: 1.1 }}
                   whileTap={{ scale: 0.92 }}
@@ -709,6 +1788,7 @@ export default function CopilotPanel({ channel }) {
               </div>
             </div>
           </motion.div>
+          </>
         )}
       </AnimatePresence>
     </>

@@ -851,20 +851,22 @@ function upsertIngestedVideo(db, {
   published_at, duration_seconds, category_id,
   views, likes, comments, channel_subscribers,
 }) {
+  const is_short = duration_seconds != null && duration_seconds <= 60 ? 1 : 0;
   db.run(
     `INSERT INTO ingested_videos
        (youtube_video_id, channel_id, niche, title, description, published_at,
-        duration_seconds, category_id, views, likes, comments, channel_subscribers)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        duration_seconds, category_id, views, likes, comments, channel_subscribers, is_short)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(youtube_video_id) DO UPDATE SET
        views             = excluded.views,
        likes             = excluded.likes,
        comments          = excluded.comments,
+       is_short          = excluded.is_short,
        last_refreshed_at = datetime('now')`,
     [
       youtube_video_id, channel_id, niche, title, description ?? null,
       published_at ?? null, duration_seconds ?? null, category_id ?? null,
-      views ?? 0, likes ?? 0, comments ?? 0, channel_subscribers ?? null,
+      views ?? 0, likes ?? 0, comments ?? 0, channel_subscribers ?? null, is_short,
     ],
   );
 }
@@ -943,6 +945,29 @@ function getNeverRefreshedVideosForSnapshot(db) {
     WHERE iv.published_at IS NOT NULL
       AND iv.last_refreshed_at IS NULL
     ORDER BY iv.ingested_at DESC
+  `);
+}
+
+// Videos 60d–365d old: refresh every 2 months (60 days).
+// Videos >365d old: refresh every 6 months (180 days).
+function getStaleOlderVideosForSnapshot(db) {
+  return db.all(`
+    SELECT iv.youtube_video_id, iv.channel_id, iv.niche, iv.published_at,
+           iv.duration_seconds, iv.views, iv.likes, iv.comments,
+           ic.channel_subscribers
+    FROM ingested_videos iv
+    JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+    WHERE iv.published_at IS NOT NULL
+      AND iv.last_refreshed_at IS NOT NULL
+      AND (
+        (iv.published_at <  datetime('now', '-60 days')
+         AND iv.published_at >= datetime('now', '-365 days')
+         AND iv.last_refreshed_at < datetime('now', '-60 days'))
+        OR
+        (iv.published_at < datetime('now', '-365 days')
+         AND iv.last_refreshed_at < datetime('now', '-180 days'))
+      )
+    ORDER BY iv.last_refreshed_at ASC
   `);
 }
 
@@ -1978,6 +2003,7 @@ module.exports = {
   getSnapshotCountByBucket,
   getAllIngestedVideosForSnapshot,
   getNeverRefreshedVideosForSnapshot,
+  getStaleOlderVideosForSnapshot,
   getExistingBucketsForVideo,
   upsertNicheBenchmark,
   getAllNicheBenchmarks,

@@ -75,6 +75,73 @@ function StatBox({ label, value, sub }) {
   );
 }
 
+function RssSweepControl({ token }) {
+  const [busy, setBusy]     = useState(false);
+  const [err, setErr]       = useState('');
+  const [status, setStatus] = useState(null);
+
+  const fetchStatus = async () => {
+    try {
+      const s = await apiFetch(ROUTES.adminIntelRssSweepStatus, token);
+      setStatus(s);
+      return s;
+    } catch (_) {}
+  };
+
+  useEffect(() => { fetchStatus(); }, []);
+
+  useEffect(() => {
+    if (!status?.running) return;
+    const t = setInterval(async () => {
+      const s = await fetchStatus();
+      if (!s?.running) clearInterval(t);
+    }, 2000);
+    return () => clearInterval(t);
+  }, [status?.running]);
+
+  async function trigger() {
+    setBusy(true); setErr('');
+    try {
+      await apiFetch(ROUTES.adminIntelRssSweepTrigger, token, { method: 'POST' });
+      await fetchStatus();
+    } catch (e) { setErr(e.message); }
+    finally { setBusy(false); }
+  }
+
+  const pct = status?.total > 0 ? Math.round((status.checked / status.total) * 100) : 0;
+
+  return (
+    <div style={S.card}>
+      <div style={{ fontSize: '0.7rem', color: '#444', marginBottom: 10 }}>
+        Check every channel's RSS feed for new videos — zero quota cost. Only YouTube API is called for genuinely new video IDs found.
+      </div>
+      <button onClick={trigger} disabled={busy || status?.running} style={S.btnGreen}>
+        {status?.running ? `Sweeping… ${pct}%` : busy ? 'Starting…' : 'Run RSS Sweep'}
+      </button>
+      {err && <div style={S.err}>{err}</div>}
+      {status && (
+        <div style={{ marginTop: 10 }}>
+          {status.running && (
+            <div style={{ background: '#1a1a1a', borderRadius: 4, height: 6, marginBottom: 8, overflow: 'hidden' }}>
+              <div style={{ width: `${pct}%`, height: '100%', background: '#4ade80', transition: 'width 0.4s ease' }} />
+            </div>
+          )}
+          <div style={{ fontSize: '0.68rem', color: '#888', display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+            <span>Channels: <b style={{ color: '#ccc' }}>{status.checked.toLocaleString()} / {status.total.toLocaleString()}</b></span>
+            <span>New videos: <b style={{ color: '#4ade80' }}>{status.new_videos.toLocaleString()}</b></span>
+            {status.running && status.started_at && (
+              <span>Started: <b style={{ color: '#ccc' }}>{new Date(status.started_at).toLocaleTimeString()}</b></span>
+            )}
+            {!status.running && status.last_completed_at && (
+              <span>Last run: <b style={{ color: '#ccc' }}>{new Date(status.last_completed_at).toLocaleString()}</b></span>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TriggerButton({ label, url, token, onDone, style = S.btn }) {
   const [busy, setBusy]     = useState(false);
   const [result, setResult] = useState(null);
@@ -438,7 +505,33 @@ function IdentityPanel({ ch, token, onSaved }) {
   );
 }
 
-function ChannelsTab({ token, channels, onRefresh }) {
+function ChannelsTab({ token, onRefresh }) {
+  const [channels,   setChannels]   = useState([]);
+  const [total,      setTotal]      = useState(0);
+  const [offset,     setOffset]     = useState(0);
+  const [search,     setSearch]     = useState('');
+  const [searchInput,setSearchInput]= useState('');
+  const LIMIT = 100;
+
+  const fetchPage = useCallback(async (off, q) => {
+    try {
+      const params = new URLSearchParams({ limit: LIMIT, offset: off });
+      if (q) params.set('q', q);
+      const d = await apiFetch(`${ROUTES.adminIntelChannels}?${params}`, token);
+      setChannels(d.channels ?? []);
+      setTotal(d.total ?? 0);
+      setOffset(off);
+    } catch (_) {}
+  }, [token]);
+
+  useEffect(() => { fetchPage(0, ''); }, [fetchPage]);
+
+  function doSearch() {
+    setSearch(searchInput);
+    fetchPage(0, searchInput);
+  }
+
+
   const [singleRaw,     setSingleRaw]     = useState('');
   const [singleNiche,   setSingleNiche]   = useState('technology');
   const [bulkText,      setBulkText]      = useState('');
@@ -679,11 +772,22 @@ function ChannelsTab({ token, channels, onRefresh }) {
 
       {/* Channel list */}
       <div style={S.card}>
-        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 12 }}>
-          Seeded Channels ({channels.length})
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 12, flexWrap: 'wrap' }}>
+          <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', flex: 1 }}>
+            Seeded Channels ({total.toLocaleString()}) — showing {offset + 1}–{Math.min(offset + LIMIT, total)}
+          </div>
+          <input
+            value={searchInput}
+            onChange={e => setSearchInput(e.target.value)}
+            onKeyDown={e => e.key === 'Enter' && doSearch()}
+            placeholder="Search name or ID…"
+            style={{ ...S.input, width: 180, padding: '4px 8px', fontSize: '0.72rem' }}
+          />
+          <button style={{ ...S.btn, padding: '4px 10px', fontSize: '0.72rem' }} onClick={doSearch}>Search</button>
+          {search && <button style={{ ...S.btn, padding: '4px 8px', fontSize: '0.68rem' }} onClick={() => { setSearchInput(''); setSearch(''); fetchPage(0, ''); }}>✕ Clear</button>}
         </div>
         {!channels.length ? (
-          <div style={{ color: '#333', fontSize: '0.78rem' }}>No channels seeded yet.</div>
+          <div style={{ color: '#333', fontSize: '0.78rem' }}>No channels found.</div>
         ) : (
           <div>
             {channels.map(ch => (
@@ -766,6 +870,24 @@ function ChannelsTab({ token, channels, onRefresh }) {
                 )}
               </div>
             ))}
+            {/* Pagination */}
+            {total > LIMIT && (
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginTop: 12, justifyContent: 'center' }}>
+                <button
+                  style={{ ...S.btn, padding: '4px 12px', fontSize: '0.72rem' }}
+                  disabled={offset === 0}
+                  onClick={() => fetchPage(Math.max(0, offset - LIMIT), search)}
+                >← Prev</button>
+                <span style={{ fontSize: '0.7rem', color: '#555' }}>
+                  Page {Math.floor(offset / LIMIT) + 1} of {Math.ceil(total / LIMIT)}
+                </span>
+                <button
+                  style={{ ...S.btn, padding: '4px 12px', fontSize: '0.72rem' }}
+                  disabled={offset + LIMIT >= total}
+                  onClick={() => fetchPage(offset + LIMIT, search)}
+                >Next →</button>
+              </div>
+            )}
           </div>
         )}
       </div>
@@ -1017,19 +1139,22 @@ function AutoIngestedTab({
 }
 
 // ── Tab: Ingest Status ────────────────────────────────────────────────────────
-function IngestStatusTab({ status, channels }) {
-  const snapshots = status?.snapshots?.by_bucket ?? [];
+function IngestStatusTab({ status }) {
+  const snapshots  = status?.snapshots?.by_bucket ?? [];
   const totalSnaps = snapshots.reduce((s, r) => s + (r.n ?? 0), 0);
+  const never      = status?.channels?.never_ingested ?? '—';
+  const enabled    = status?.channels?.enabled ?? '—';
+  const total      = status?.channels?.total   ?? '?';
 
   return (
     <div>
       <div style={{ ...S.row, marginBottom: 16, flexWrap: 'wrap', gap: 10 }}>
-        <StatBox label="Ingested Videos"  value={status?.videos?.ingested?.toLocaleString() ?? '—'} />
-        <StatBox label="Total Snapshots"  value={totalSnaps.toLocaleString()} />
-        <StatBox label="Channels Enabled" value={status?.channels?.enabled ?? '—'} sub={`of ${status?.channels?.total ?? '?'} total`} />
+        <StatBox label="Ingested Videos"    value={status?.videos?.ingested?.toLocaleString() ?? '—'} />
+        <StatBox label="Total Snapshots"    value={totalSnaps.toLocaleString()} />
+        <StatBox label="Channels Enabled"   value={enabled} sub={`of ${total} total`} />
+        <StatBox label="Pending Ingest"     value={never}   sub="last_ingested_at IS NULL" />
       </div>
 
-      {/* Snapshots by bucket */}
       <div style={S.card}>
         <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 12 }}>Snapshots by Bucket</div>
         <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1047,38 +1172,8 @@ function IngestStatusTab({ status, channels }) {
         </div>
       </div>
 
-      {/* Channel status */}
-      <div style={S.card}>
-        <div style={{ fontSize: '0.75rem', fontWeight: 700, color: '#666', marginBottom: 12 }}>Per-Channel Ingest Status</div>
-        {!channels.length ? (
-          <div style={{ color: '#333', fontSize: '0.78rem' }}>No channels seeded.</div>
-        ) : (
-          <table style={S.table}>
-            <thead>
-              <tr>
-                {['Channel', 'Niche', 'Last Ingested', 'Enabled'].map(h => <th key={h} style={S.th}>{h}</th>)}
-              </tr>
-            </thead>
-            <tbody>
-              {channels.map(ch => (
-                <tr key={ch.channel_id}>
-                  <td style={S.td}>{ch.channel_name || ch.channel_id}</td>
-                  <td style={S.td}><span style={S.tag}>{ch.niche}</span></td>
-                  <td style={S.td}>
-                    {ch.last_ingested_at
-                      ? <span style={{ color: '#4ade80' }}>{ch.last_ingested_at.slice(0, 19).replace('T', ' ')}</span>
-                      : <span style={{ color: '#f87171' }}>never</span>}
-                  </td>
-                  <td style={S.td}>
-                    <span style={ch.ingest_enabled ? S.tagGreen : S.tagRed}>
-                      {ch.ingest_enabled ? 'yes' : 'no'}
-                    </span>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div style={{ ...S.card, fontSize: '0.72rem', color: '#555' }}>
+        Per-channel ingest details available in the <b style={{ color: '#888' }}>Channels</b> tab — search by name or ID.
       </div>
     </div>
   );
@@ -1436,7 +1531,7 @@ function CommunitiesTab({ token }) {
 // ── Tab: Controls ─────────────────────────────────────────────────────────────
 function ControlsTab({ token, onRefresh }) {
   const triggers = [
-    { label: 'Run Historical Ingest',  url: ROUTES.adminIntelIngestTrigger,    style: S.btnGreen, note: 'Fetch latest uploads from all enabled channels (quota-guarded)' },
+    { label: 'Run Historical Ingest', url: ROUTES.adminIntelIngestTrigger, style: S.btnGreen, note: 'Fetch latest uploads from all enabled channels (quota-guarded)' },
     { label: 'Run Snapshot Refresh',         url: ROUTES.adminIntelSnapshotTrigger,       style: S.btnGreen, note: 'Refresh video stats for ALL ingested videos + fill newly eligible buckets + recompute patterns' },
     { label: 'Snapshot — New Videos Only',   url: ROUTES.adminIntelSnapshotRecentTrigger, style: S.btnGreen, note: 'Only refreshes videos that have never been snapshotted — use this after each hourly ingest to avoid wasting quota on already-refreshed videos' },
     { label: 'Recompute Patterns',     url: ROUTES.adminIntelPatternsRecompute,style: S.btn,      note: 'Rebuild niche_benchmarks from existing snapshots without API calls' },
@@ -1448,6 +1543,7 @@ function ControlsTab({ token, onRefresh }) {
 
   return (
     <div style={{ ...S.col, gap: 12 }}>
+      <RssSweepControl token={token} />
       {triggers.map(t => (
         <div key={t.label} style={S.card}>
           <div style={{ fontSize: '0.7rem', color: '#444', marginBottom: 10 }}>{t.note}</div>
@@ -3728,7 +3824,6 @@ export default function AdminIntelligence() {
   const [authed,    setAuthed]    = useState(() => !!sessionStorage.getItem('admin_token'));
   const [tab,       setTab]       = useState(0);
   const [status,    setStatus]    = useState(null);
-  const [channels,  setChannels]  = useState([]);
   const [loadErr,   setLoadErr]   = useState('');
 
   const [discoverRunning, setDiscoverRunning] = useState(false);
@@ -3824,12 +3919,8 @@ export default function AdminIntelligence() {
     const t = tok ?? token;
     setLoadErr('');
     try {
-      const [s, c] = await Promise.all([
-        apiFetch(ROUTES.adminIntelStatus,   t),
-        apiFetch(ROUTES.adminIntelChannels, t),
-      ]);
+      const s = await apiFetch(ROUTES.adminIntelStatus, t);
       setStatus(s);
-      setChannels(c.channels ?? []);
     } catch (e) {
       setLoadErr(e.message);
     }
@@ -3848,7 +3939,7 @@ export default function AdminIntelligence() {
 
   function clearToken() {
     sessionStorage.removeItem('admin_token');
-    setToken(''); setAuthed(false); setStatus(null); setChannels([]);
+    setToken(''); setAuthed(false); setStatus(null);
   }
 
   return (
@@ -3923,12 +4014,12 @@ export default function AdminIntelligence() {
           </div>
 
           {/* Tab content */}
-          {tab === 0  && <ChannelsTab         token={token} channels={channels} onRefresh={() => load()} />}
+          {tab === 0  && <ChannelsTab         token={token} onRefresh={() => load()} />}
           {tab === 1  && <AutoIngestedTab     token={token}
                           discoverRunning={discoverRunning}     discoverResult={discoverResult}     discoverErr={discoverErr}     onDiscover={triggerDiscover}
                           ingestOnlyRunning={ingestOnlyRunning} ingestOnlyResult={ingestOnlyResult} ingestOnlyErr={ingestOnlyErr} onIngestOnly={triggerIngestOnly}
                           promoteRunning={promoteRunning}       promoteResult={promoteResult}       promoteErr={promoteErr}       onPromote={triggerPromote} />}
-          {tab === 2  && <IngestStatusTab     status={status} channels={channels} />}
+          {tab === 2  && <IngestStatusTab     status={status} />}
           {tab === 3  && <QuotaTab            status={status} />}
           {tab === 4  && <CronHealthTab       status={status} />}
           {tab === 5  && <PatternsTab         token={token} />}

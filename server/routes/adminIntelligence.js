@@ -21,6 +21,7 @@ const {
 const { classifyChannel } = require('../services/channelClassifier');
 const { runBulkIdentityDetection, getJobState } = require('../jobs/identityDetectionJob');
 const { runHistoricalIngestCycle } = require('../jobs/historicalIngest');
+const { runNewVideoSweep, getSweepStatus } = require('../jobs/newVideoSweep');
 const { runFullBatchDetection }    = require('../jobs/languageDetectionJob');
 const { runSnapshotCycle, runNeverRefreshedSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
 const { runPatternMining }         = require('../services/patternMiner');
@@ -96,11 +97,43 @@ router.use(adminAuth);
 
 // ── Channel management ────────────────────────────────────────────────────────
 
-// GET /api/admin/intelligence/channels
-router.get('/admin/intelligence/channels', (_req, res) => {
+// GET /api/admin/intelligence/channels?q=&niche=&limit=100&offset=0
+// Slim columns only — identity_reasoning and inferred_topics excluded from list view.
+router.get('/admin/intelligence/channels', (req, res) => {
   try {
-    const db = getDb();
-    res.json({ channels: getAllIngestedChannels(db) });
+    const db     = getDb();
+    const q      = (req.query.q     || '').trim();
+    const niche  = (req.query.niche || '').trim();
+    const limit  = Math.min(parseInt(req.query.limit  || '100', 10), 500);
+    const offset = Math.max(parseInt(req.query.offset || '0',   10), 0);
+
+    const conditions = [];
+    const params     = [];
+    if (q) {
+      conditions.push(`(channel_name LIKE ? OR channel_id LIKE ?)`);
+      params.push(`%${q}%`, `%${q}%`);
+    }
+    if (niche) {
+      conditions.push(`(niche = ? OR primary_niche = ?)`);
+      params.push(niche, niche);
+    }
+    const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
+
+    const total    = db.get(`SELECT COUNT(*) AS n FROM ingested_channels ${where}`, params).n;
+    const channels = db.all(
+      `SELECT id, channel_id, channel_name, niche, primary_niche, secondary_niche,
+              channel_subscribers, last_ingested_at, ingest_enabled, ignore_from_benchmarks,
+              identity_confidence, identity_last_detected_at, identity_strength, identity_source,
+              content_archetype, behavior_tags, is_own_channel, added_at, community_id,
+              last_rss_scan_at
+       FROM ingested_channels
+       ${where}
+       ORDER BY added_at DESC
+       LIMIT ? OFFSET ?`,
+      [...params, limit, offset],
+    );
+
+    res.json({ channels, total, limit, offset });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -317,16 +350,37 @@ router.post('/admin/intelligence/snapshot/trigger-recent', (req, res) => {
   res.json({ ok: true, started: true, message: 'Never-refreshed snapshot running — check server logs' });
 });
 
+// POST /api/admin/intelligence/rss-sweep/trigger
+router.post('/admin/intelligence/rss-sweep/trigger', (req, res) => {
+  const status = getSweepStatus();
+  if (status.running) return res.status(409).json({ error: 'RSS sweep already running', status });
+  setImmediate(async () => {
+    try { await runNewVideoSweep(); }
+    catch (e) { console.error('[rss-sweep] Manual trigger error:', e.message); }
+  });
+  res.json({ ok: true, started: true });
+});
+
+// GET /api/admin/intelligence/rss-sweep/status
+router.get('/admin/intelligence/rss-sweep/status', (req, res) => {
+  res.json(getSweepStatus());
+});
+
 // POST /api/admin/intelligence/patterns/recompute
 // Recompute niche benchmarks from current snapshot data without refreshing stats.
+// Responds 202 immediately — runs in background (can take minutes on large datasets).
 router.post('/admin/intelligence/patterns/recompute', (req, res) => {
-  try {
-    const db     = getDb();
-    const result = runPatternMining(db);
-    res.json({ ok: true, result });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
+  const db = getDb();
+  res.json({ ok: true, status: 'running in background — check server logs for completion' });
+  setImmediate(() => {
+    try {
+      console.log('[patternMiner] recompute started…');
+      const result = runPatternMining(db);
+      console.log('[patternMiner] recompute done:', result);
+    } catch (e) {
+      console.error('[patternMiner] recompute failed:', e.message);
+    }
+  });
 });
 
 // POST /api/admin/intelligence/calibrate/trigger
@@ -352,18 +406,30 @@ router.get('/admin/intelligence/status', (_req, res) => {
   try {
     const db    = getDb();
     const quota = quotaGuard.getStats();
-    const channels = getAllIngestedChannels(db);
+
+    const chStats = db.get(`
+      SELECT
+        COUNT(*)                                              AS total,
+        SUM(CASE WHEN ingest_enabled = 1 THEN 1 ELSE 0 END) AS enabled,
+        SUM(CASE WHEN last_ingested_at IS NULL AND ingest_enabled = 1 THEN 1 ELSE 0 END) AS never_ingested
+      FROM ingested_channels
+    `);
+
+    const byNiche = db.all(`
+      SELECT niche,
+        COUNT(*) AS total,
+        SUM(CASE WHEN ingest_enabled = 1 THEN 1 ELSE 0 END) AS enabled
+      FROM ingested_channels
+      GROUP BY niche
+    `);
+
     res.json({
       quota,
       channels: {
-        total:   channels.length,
-        enabled: channels.filter(c => c.ingest_enabled).length,
-        by_niche: Object.fromEntries(
-          [...new Set(channels.map(c => c.niche))].map(n => [
-            n,
-            { total: channels.filter(c => c.niche === n).length, enabled: channels.filter(c => c.niche === n && c.ingest_enabled).length },
-          ]),
-        ),
+        total:          chStats.total,
+        enabled:        chStats.enabled,
+        never_ingested: chStats.never_ingested,
+        by_niche:       Object.fromEntries(byNiche.map(r => [r.niche, { total: r.total, enabled: r.enabled }])),
       },
       videos: {
         ingested: getIngestedVideoCount(db),

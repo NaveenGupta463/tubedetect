@@ -631,7 +631,7 @@ export default function Analyze({ canUseAI, consumeAICall, remainingCalls, onUpg
             </div>
 
             {viralPlaybook.hook_pattern && (
-              <div style={{ fontSize: 14, color: '#777', lineHeight: 1.7, marginBottom: 16, paddingLeft: 4, borderLeft: '2px solid #1e1e3a' , paddingLeft: 12 }}>
+              <div style={{ fontSize: 14, color: '#777', lineHeight: 1.7, marginBottom: 16, paddingLeft: 12, borderLeft: '2px solid #1e1e3a' }}>
                 {viralPlaybook.hook_pattern}
               </div>
             )}

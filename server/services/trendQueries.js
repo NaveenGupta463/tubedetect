@@ -123,7 +123,7 @@ function getRisingArchetypes(db, niche) {
       `iv.published_at >= datetime('now', '-60 days')`,
     ];
     const params = [];
-    if (niche) { conditions.push('ic.niche = ?'); params.push(niche); }
+    if (niche) { conditions.push('COALESCE(ic.primary_niche, ic.niche) = ?'); params.push(niche); }
 
     return db.all(`
       SELECT

@@ -914,10 +914,31 @@ function getDb() {
   migrateSignals(db);   // creates kv_store — must run before backfillNewFeatures
   backfillNewFeatures(db);
   migrateTopics(db);
+  migrateRssSweep(db);
+  migrateShorts(db);
   applyOpenAINicheOverride(db);
+  migrateVoiceProfile(db);
+  migrateNicheIntelligence(db);
+  migrateCredits(db);
+  migrateDrafts(db);
   repairCorruptedIndexes(db);
 
   return db;
+}
+
+function migrateRssSweep(database) {
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN last_rss_scan_at TEXT`); } catch (_) {}
+  console.log('[DB] RSS sweep migration complete (last_rss_scan_at on ingested_channels)');
+}
+
+function migrateShorts(database) {
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_is_short ON ingested_videos(is_short)`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_channel_short ON ingested_videos(channel_id, is_short)`); } catch (_) {}
+  // Backfill existing rows — duration_seconds <= 60 = Short
+  database.exec(`UPDATE ingested_videos SET is_short = CASE WHEN duration_seconds <= 60 THEN 1 ELSE 0 END WHERE duration_seconds IS NOT NULL`);
+  const counts = database.get(`SELECT SUM(is_short) as shorts, COUNT(*) - SUM(is_short) as long_form FROM ingested_videos`);
+  console.log(`[DB] Shorts migration complete — shorts=${counts.shorts?.toLocaleString()} long_form=${counts.long_form?.toLocaleString()}`);
 }
 
 function migrateTopics(database) {
@@ -1319,6 +1340,117 @@ function seedGovernanceRoadmap(db) {
       );
     } catch (_) {}
   }
+}
+
+function migrateNicheIntelligence(database) {
+  // Thread state persistence — one row per active topic thread
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS workspace_threads (
+        thread_id       TEXT PRIMARY KEY,
+        channel_id      TEXT NOT NULL,
+        topic           TEXT,
+        state           TEXT NOT NULL DEFAULT 'UNCLASSIFIED',
+        niche           TEXT,
+        secondary_niche TEXT,
+        mode            TEXT,
+        brief           TEXT,
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        created_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wt_channel ON workspace_threads(channel_id, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wt_state   ON workspace_threads(state);
+    `);
+  } catch (_) {}
+
+  // Passive decision logger — seeded now, activated in V4
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_decisions (
+        id               TEXT PRIMARY KEY,
+        channel_id       TEXT NOT NULL,
+        action_type      TEXT NOT NULL,
+        topic            TEXT,
+        niche            TEXT,
+        decided_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        outcome_video_id TEXT,
+        outcome_views    INTEGER,
+        outcome_filled_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cd_channel ON creator_decisions(channel_id, decided_at DESC);
+    `);
+  } catch (_) {}
+
+  // last_seen on channel_topics — needed for V2 topic evolution tracking
+  try { database.exec(`ALTER TABLE channel_topics ADD COLUMN last_seen TEXT`); } catch (_) {}
+
+  console.log('[DB] Niche intelligence migration complete (workspace_threads, creator_decisions, channel_topics.last_seen)');
+}
+
+function migrateCredits(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS user_credits (
+        client_id    TEXT PRIMARY KEY,
+        plan         TEXT NOT NULL DEFAULT 'free',
+        credits      INTEGER NOT NULL DEFAULT 50,
+        rollover     INTEGER NOT NULL DEFAULT 0,
+        topup        INTEGER NOT NULL DEFAULT 0,
+        plan_expires TEXT,
+        created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE TABLE IF NOT EXISTS credit_transactions (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id  TEXT NOT NULL,
+        action     TEXT NOT NULL,
+        amount     INTEGER NOT NULL,
+        balance    INTEGER NOT NULL,
+        thread_id  TEXT,
+        channel_id TEXT,
+        meta       TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_ct_client     ON credit_transactions(client_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ct_action     ON credit_transactions(action);
+      CREATE INDEX IF NOT EXISTS idx_uc_plan       ON user_credits(plan);
+    `);
+  } catch (_) {}
+  console.log('[DB] Credits migration complete (user_credits, credit_transactions)');
+}
+
+function migrateDrafts(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS content_drafts (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        client_id  TEXT NOT NULL,
+        channel_id TEXT,
+        topic      TEXT,
+        cards_json TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_drafts_client ON content_drafts(client_id, created_at DESC);
+    `);
+  } catch (_) {}
+  console.log('[DB] Drafts migration complete');
+}
+
+function migrateVoiceProfile(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_voice (
+        channel_id       TEXT PRIMARY KEY,
+        voice_analysis   TEXT,
+        sample_sentences TEXT,
+        skipped_at       TEXT,
+        interaction_log  TEXT NOT NULL DEFAULT '[]',
+        created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `);
+  } catch (_) {}
+  console.log('[DB] creator_voice table ready');
 }
 
 function closeDb() {

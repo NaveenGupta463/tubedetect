@@ -7,6 +7,7 @@ import WhatToPost         from './screens/WhatToPost';
 import TrendDetection     from './screens/TrendDetection';
 import PlaceholderScreen  from './screens/PlaceholderScreen';
 import CopilotPanel       from './screens/CopilotPanel';
+import ContentHub         from './screens/ContentHub';
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -45,6 +46,12 @@ const IconBlueprint = ({ size = 16, color = 'currentColor' }) => (
   </svg>
 );
 
+const IconHub = ({ size = 16, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
+    <path d="M3.5 6.5V4a.5.5 0 01.5-.5h4.5V6.5m0 0H3.5m5 0V14m0 0H5a1.5 1.5 0 01-1.5-1.5V6.5M8.5 14h3M8.5 14v2m3-2v2m0-2h3.5a1 1 0 001-1V8.5h-4.5M8.5 6.5h8V8.5" stroke={color} strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round"/>
+  </svg>
+);
+
 const IconTrend = ({ size = 16, color = 'currentColor' }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
     <path d="M3 14l4.5-5 3.5 3 4-5.5" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
@@ -75,8 +82,11 @@ function bandDist(x, y) {
   return Math.abs(dy * x - dx * y + 95 * 78 - 88 * (-dx)) / (len * 10);
 }
 
+const TWINKLE_NAMES = ['twinkle-a', 'twinkle-b', 'twinkle-c'];
+
 const STARS = (() => {
-  const rand = mkRand(8312);
+  const rand  = mkRand(8312); // positions — do not change seed
+  const twRnd = mkRand(5519); // twinkle — separate so positions are unaffected
   const stars = [];
   for (let i = 0; i < 280; i++) {
     const inBand = rand() < 0.62;
@@ -91,14 +101,20 @@ const STARS = (() => {
       x = rand() * 100;
       y = rand() * 100;
     }
-    const dist   = bandDist(x, y);
-    const near   = dist < 12;
-    const r      = rand();
-    const size   = near
+    const dist = bandDist(x, y);
+    const near = dist < 12;
+    const r    = rand();
+    const size = near
       ? (r < 0.08 ? 2.4 : r < 0.25 ? 1.6 : r < 0.55 ? 1.0 : 0.5)
       : (r < 0.05 ? 1.6 : r < 0.18 ? 0.9 : 0.4);
-    const op     = near ? 0.45 + rand() * 0.50 : 0.12 + rand() * 0.25;
-    stars.push({ x, y, size, op, near });
+    const op   = near ? 0.45 + rand() * 0.50 : 0.12 + rand() * 0.25;
+
+    // Twinkle: only on bright stars
+    const tw      = size >= 1.5 ? TWINKLE_NAMES[Math.floor(twRnd() * 3)] : null;
+    const twDur   = 2.4 + twRnd() * 3.2;
+    const twDelay = twRnd() * 5.5;
+
+    stars.push({ x, y, size, op, near, tw, twDur, twDelay });
   }
   return stars;
 })();
@@ -108,6 +124,7 @@ function StarField() {
     <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
       {STARS.map((s, i) => (
         <div key={i} style={{
+          '--op': s.op,
           position: 'absolute',
           left: `${s.x}%`, top: `${s.y}%`,
           width: s.size, height: s.size,
@@ -118,8 +135,103 @@ function StarField() {
             : s.size >= 1
             ? `0 0 ${s.size * 2}px rgba(255,255,255,${s.op * 0.5})`
             : 'none',
+          animation: s.tw ? `${s.tw} ${s.twDur.toFixed(1)}s ${s.twDelay.toFixed(1)}s ease-in-out infinite` : 'none',
         }} />
       ))}
+    </div>
+  );
+}
+
+// ── Shooting stars ────────────────────────────────────────────────────────────
+
+// angle: CSS rotate degrees — local +X = direction of travel
+// travel: px to translate (short = disappears mid-page)
+// negative delay = already mid-journey when cycle starts (appears mid-page)
+const SHOOTING_STARS = [
+  { top: '8%',  left: '-3%',   angle: 35,  dur: 3.2,  delay:  0.0,  len: 60, travel: 1800 }, // ↘ fast
+  { top: '52%', left: '-4%',   angle: 22,  dur: 10.0, delay:  6.0,  len: 54, travel: 1800 }, // ↘ slow
+  { top: '12%', left: '106%',  angle: 170, dur: 3.6,  delay:  2.2,  len: 62, travel: 1800 }, // ↙ fast
+  { top: '60%', left: '74%',   angle: 172, dur: 5.0,  delay: -2.5,  len: 50, travel: 520  }, // ↙ appears + disappears mid
+  { top: '-2%', left: '38%',   angle: 82,  dur: 7.5,  delay:  9.0,  len: 56, travel: 1800 }, // ↓ medium
+];
+
+function ShootingStars() {
+  return (
+    <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0, overflow: 'hidden' }}>
+      {SHOOTING_STARS.map((s, i) => (
+        <div
+          key={i}
+          style={{
+            position: 'absolute',
+            top: s.top,
+            left: s.left,
+            transform: `rotate(${s.angle}deg)`,
+            transformOrigin: 'left center',
+          }}
+        >
+          {/* Animated wrapper — carries both tail and head */}
+          <div style={{
+            '--travel': `${s.travel}px`,
+            position: 'relative',
+            display: 'inline-block',
+            animation: `shoot ${s.dur}s ${s.delay}s linear infinite`,
+            opacity: 0,
+          }}>
+            {/* Tail */}
+            <div style={{
+              width: s.len,
+              height: 1,
+              background: 'linear-gradient(to right, transparent 0%, rgba(255,255,255,0.03) 30%, rgba(255,255,255,0.18) 72%, rgba(255,255,255,0.32) 100%)',
+            }} />
+            {/* Head */}
+            <div style={{
+              position: 'absolute',
+              right: -1.5,
+              top: -1,
+              width: 3,
+              height: 3,
+              borderRadius: '50%',
+              background: 'rgba(255,255,255,0.55)',
+              boxShadow: '0 0 3px rgba(255,255,255,0.3)',
+            }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ── Drifting nebula overlay ───────────────────────────────────────────────────
+
+function NebulaLayer() {
+  return (
+    <div style={{ position: 'fixed', inset: 0, pointerEvents: 'none', zIndex: 0 }}>
+      <div className="nebula-blob" style={{
+        position: 'absolute',
+        width: '58%', height: '62%',
+        top: '12%', left: '32%',
+        borderRadius: '50%',
+        background: 'radial-gradient(ellipse, rgba(110,60,210,0.055) 0%, transparent 70%)',
+        filter: 'blur(55px)',
+      }} />
+      <div className="nebula-blob" style={{
+        position: 'absolute',
+        width: '42%', height: '48%',
+        top: '42%', left: '8%',
+        borderRadius: '50%',
+        background: 'radial-gradient(ellipse, rgba(50,90,200,0.045) 0%, transparent 70%)',
+        filter: 'blur(50px)',
+        animationDelay: '-18s',
+      }} />
+      <div className="nebula-blob" style={{
+        position: 'absolute',
+        width: '35%', height: '40%',
+        top: '5%', left: '60%',
+        borderRadius: '50%',
+        background: 'radial-gradient(ellipse, rgba(180,120,80,0.03) 0%, transparent 70%)',
+        filter: 'blur(45px)',
+        animationDelay: '-32s',
+      }} />
     </div>
   );
 }
@@ -130,6 +242,7 @@ const NAV = [
   { id: 'channel',   label: 'My Channel',  Icon: IconChannel,   badge: null  },
   { id: 'post',      label: 'What to Post', Icon: IconPost,      badge: 'new' },
   { id: 'trends',    label: 'Trends',       Icon: IconTrend,     badge: 'new' },
+  { id: 'hub',       label: 'Content Hub',  Icon: IconHub,       badge: null  },
   { id: 'publish',   label: 'Pre-Publish',  Icon: IconPublish,   badge: null  },
   { id: 'compete',   label: 'Compete',      Icon: IconCompete,   badge: null  },
   { id: 'blueprint', label: 'Blueprint',    Icon: IconBlueprint, badge: null  },
@@ -150,6 +263,50 @@ function fmtSubsNum(n) {
   return String(n);
 }
 
+// ── Niche clusters ────────────────────────────────────────────────────────────
+
+const NICHE_CLUSTERS = [
+  { id: 'finance',       label: 'Finance',          icon: '💰', color: '#12D98A', niches: ['finance', 'business'] },
+  { id: 'tech',          label: 'Technology',        icon: '📱', color: '#5B9AFF', niches: ['technology', 'tech'] },
+  { id: 'education',     label: 'Education',         icon: '📚', color: '#F59E0B', niches: ['education'] },
+  { id: 'gaming',        label: 'Gaming',            icon: '🎮', color: '#A78BFA', niches: ['gaming'] },
+  { id: 'health',        label: 'Health & Fitness',  icon: '💪', color: '#FF6B6B', niches: ['health', 'fitness'] },
+  { id: 'lifestyle',     label: 'Lifestyle',         icon: '✈️', color: '#EC4899', niches: ['lifestyle', 'travel'] },
+  { id: 'news',          label: 'News & Politics',   icon: '📰', color: '#FF9D42', niches: ['news', 'politics'] },
+  { id: 'entertainment', label: 'Entertainment',     icon: '🎬', color: '#9D6FFF', niches: ['entertainment'] },
+];
+
+function NicheGrid({ onSelect }) {
+  return (
+    <div style={{ padding: '14px 16px 18px' }}>
+      <div style={{ fontSize: '0.58rem', fontWeight: 700, color: T.subtle, letterSpacing: '0.1em', marginBottom: 10, textTransform: 'uppercase' }}>
+        Browse by niche
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 6 }}>
+        {NICHE_CLUSTERS.map(c => (
+          <motion.button
+            key={c.id}
+            whileHover={{ scale: 1.04, y: -1 }}
+            whileTap={{ scale: 0.96 }}
+            onClick={() => onSelect(c)}
+            style={{
+              display: 'flex', flexDirection: 'column', alignItems: 'flex-start',
+              gap: 5, padding: '10px 11px', borderRadius: 10, cursor: 'pointer',
+              background: `${c.color}10`, border: `1px solid ${c.color}22`,
+              textAlign: 'left', transition: 'all 0.12s',
+            }}
+          >
+            <span style={{ fontSize: '1.05rem', lineHeight: 1 }}>{c.icon}</span>
+            <span style={{ fontSize: '0.7rem', fontWeight: 600, color: T.text, lineHeight: 1.25 }}>
+              {c.label}
+            </span>
+          </motion.button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
@@ -159,47 +316,54 @@ export default function App() {
   const [cmdQuery,    setCmdQuery]    = useState('');
   const [cmdSelected, setCmdSelected] = useState(0);
   const [cmdResults,  setCmdResults]  = useState([]);
-  const [cmdLoading,  setCmdLoading]  = useState(false);
+  const [cmdLoading,      setCmdLoading]      = useState(false);
+  const [selectedCluster, setSelectedCluster] = useState(null);
   const cmdInputRef   = useRef(null);
   const searchTimer   = useRef(null);
 
   const filtered = cmdResults;
 
-  // Debounced search — DB + YouTube fire in parallel; DB results show first, YouTube fills in
+  const mapResult = (ch) => ({
+    channel_id: ch.channel_id,
+    handle:     `@${(ch.name || '').replace(/\s+/g, '')}`,
+    name:       ch.name || ch.channel_id,
+    subs:       fmtSubsNum(ch.subs),
+    subsRaw:    ch.subs || 0,
+    niche:      ch.niche || 'other',
+    community:  ch.community_id || ch.niche || '—',
+    language:   ch.language || null,
+    thumbnail:  ch.thumbnail || null,
+    source:     ch.source || 'corpus',
+  });
+
+  const browseNiche = (cluster) => {
+    setSelectedCluster(cluster);
+    setCmdQuery('');
+    setCmdResults([]);
+    setCmdLoading(true);
+    const nicheParam = encodeURIComponent(cluster.niches.join(','));
+    fetch(`${API}/api/channel-cache/browse?niches=${nicheParam}&limit=20`)
+      .then(r => r.json())
+      .then(({ results = [] }) => { setCmdResults(results.map(mapResult)); setCmdLoading(false); })
+      .catch(() => setCmdLoading(false));
+  };
+
   const runSearch = (q) => {
+    setSelectedCluster(null);
     clearTimeout(searchTimer.current);
     if (!q.trim()) { setCmdResults([]); setCmdLoading(false); return; }
     setCmdLoading(true);
     searchTimer.current = setTimeout(() => {
-      const mapResult = (ch) => ({
-        channel_id:   ch.channel_id,
-        handle:       `@${ch.name.replace(/\s+/g, '')}`,
-        name:         ch.name,
-        subs:         fmtSubsNum(ch.subs),
-        subsRaw:      ch.subs || 0,
-        niche:        ch.niche || 'other',
-        community:    ch.community_id || ch.niche || '—',
-        language:     ch.language || null,
-        thumbnail:    ch.thumbnail || null,
-        source:       ch.source || 'corpus',
-      });
-
       const enc = encodeURIComponent(q);
 
-      // Fire both in parallel — DB is instant, YouTube takes ~1s
       const dbPromise = fetch(`${API}/api/channel-cache/search?q=${enc}&limit=8`)
         .then(r => r.json()).then(({ results = [] }) => results.map(mapResult)).catch(() => []);
 
       const ytPromise = fetch(`${API}/api/channel-cache/search-youtube?q=${enc}&limit=5`)
         .then(r => r.json()).then(({ results = [] }) => results.map(mapResult)).catch(() => []);
 
-      // Show DB results as soon as they arrive
-      dbPromise.then(dbResults => {
-        setCmdResults(dbResults);
-        setCmdLoading(false);
-      });
+      dbPromise.then(dbResults => { setCmdResults(dbResults); setCmdLoading(false); });
 
-      // When YouTube arrives, merge — add new channels + fill in missing thumbnails
       Promise.all([dbPromise, ytPromise]).then(([, ytResults]) => {
         setCmdResults(prev => {
           const knownIds = new Set(prev.map(r => r.channel_id).filter(Boolean));
@@ -214,7 +378,7 @@ export default function App() {
     }, 220);
   };
 
-  const openCmd = () => { setCmdOpen(true); setCmdQuery(''); setCmdSelected(0); setCmdResults([]); };
+  const openCmd = () => { setCmdOpen(true); setCmdQuery(''); setCmdSelected(0); setCmdResults([]); setSelectedCluster(null); };
 
   useEffect(() => {
     const handler = (e) => {
@@ -251,7 +415,9 @@ export default function App() {
   return (
     <div style={{ minHeight: '100vh', background: T.bg }}>
 
+      <NebulaLayer />
       <StarField />
+      <ShootingStars />
 
       {/* ── Floating top bar ─────────────────────────────────────────────── */}
       <motion.div
@@ -417,6 +583,8 @@ export default function App() {
               <WhatToPost channel={channel} onSearch={openCmd} />
             ) : activeNav === 'trends' ? (
               <TrendDetection channel={channel} />
+            ) : activeNav === 'hub' ? (
+              <ContentHub />
             ) : !channel ? (
               <HomeScreen onSearch={openCmd} />
             ) : activeNav === 'channel' ? (
@@ -469,56 +637,88 @@ export default function App() {
                 <kbd style={{ background: 'rgba(255,255,255,0.06)', border: `1px solid ${T.border}`, borderRadius: 5, padding: '2px 7px', fontSize: '0.65rem', color: T.subtle, fontFamily: 'inherit' }}>ESC</kbd>
               </div>
 
-              <div style={{ padding: '8px 0', maxHeight: 320, overflowY: 'auto' }}>
+              <div style={{ padding: '8px 0', maxHeight: 360, overflowY: 'auto' }}>
                 {cmdLoading ? (
-                  <div style={{ padding: '20px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>Searching…</div>
-                ) : !cmdQuery.trim() ? (
-                  <div style={{ padding: '20px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>Search any YouTube channel — known or new</div>
+                  <div style={{ padding: '24px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>
+                    {selectedCluster ? `Finding ${selectedCluster.label} channels…` : 'Searching…'}
+                  </div>
+                ) : !cmdQuery.trim() && !selectedCluster ? (
+                  <NicheGrid onSelect={browseNiche} />
                 ) : filtered.length === 0 ? (
-                  <div style={{ padding: '20px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>No results for "{cmdQuery}"</div>
+                  <div style={{ padding: '24px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>
+                    {selectedCluster
+                      ? `No channels indexed in ${selectedCluster.label} yet — try searching by name`
+                      : `No results for "${cmdQuery}"`}
+                  </div>
                 ) : (
-                  filtered.map((s, i) => (
-                    <motion.div
-                      key={s.channel_id || s.name + i}
-                      initial={{ opacity: 0, y: 6 }}
-                      animate={{ opacity: 1, y: 0 }}
-                      transition={{ delay: i * 0.03, duration: 0.15, ease }}
-                      onClick={() => selectChannel(s)}
-                      onMouseEnter={() => setCmdSelected(i)}
-                      style={{
-                        display: 'flex', alignItems: 'center', gap: 12,
-                        padding: '10px 18px', cursor: 'pointer',
-                        background: cmdSelected === i ? 'rgba(139,92,246,0.1)' : 'transparent',
-                        borderLeft: cmdSelected === i ? `2px solid ${T.accent}` : '2px solid transparent',
-                        transition: 'background 0.1s, border-color 0.1s',
-                      }}
-                    >
-                      {s.thumbnail ? (
-                        <img
-                          src={s.thumbnail}
-                          alt={s.name}
-                          style={{ width: 32, height: 32, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
-                          onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
-                        />
-                      ) : null}
-                      <div style={{ width: 32, height: 32, borderRadius: 8, background: `hsl(${i * 47}, 55%, 22%)`, display: s.thumbnail ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#fff', flexShrink: 0 }}>
-                        {s.name.charAt(0)}
+                  <>
+                    {selectedCluster && !cmdQuery.trim() && (
+                      <div style={{
+                        padding: '6px 18px 8px',
+                        display: 'flex', alignItems: 'center', gap: 8,
+                        borderBottom: `1px solid ${T.border}`, marginBottom: 4,
+                      }}>
+                        <span style={{ fontSize: '0.88rem' }}>{selectedCluster.icon}</span>
+                        <span style={{ fontSize: '0.75rem', fontWeight: 700, color: selectedCluster.color }}>
+                          {selectedCluster.label}
+                        </span>
+                        <span style={{ fontSize: '0.7rem', color: T.subtle, marginLeft: 2 }}>
+                          · {filtered.length} channels
+                        </span>
+                        <div style={{ flex: 1 }} />
+                        <button
+                          onClick={() => { setSelectedCluster(null); setCmdResults([]); }}
+                          style={{
+                            background: 'rgba(255,255,255,0.06)', border: `1px solid rgba(255,255,255,0.1)`,
+                            borderRadius: 5, padding: '2px 8px', cursor: 'pointer',
+                            color: T.muted, fontSize: '0.65rem', fontWeight: 600,
+                          }}
+                        >
+                          ← All niches
+                        </button>
                       </div>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text }}>{s.name}</div>
-                        <div style={{ fontSize: '0.72rem', color: T.muted }}>{s.subs} subscribers · {s.niche || 'detecting…'}</div>
-                      </div>
-                      {s.source === 'youtube' ? (
-                        <div style={{ fontSize: '0.63rem', fontWeight: 600, color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)', borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                          new
+                    )}
+                    {filtered.map((s, i) => (
+                      <motion.div
+                        key={s.channel_id || s.name + i}
+                        initial={{ opacity: 0, y: 6 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ delay: i * 0.03, duration: 0.15, ease }}
+                        onClick={() => selectChannel(s)}
+                        onMouseEnter={() => setCmdSelected(i)}
+                        style={{
+                          display: 'flex', alignItems: 'center', gap: 12,
+                          padding: '10px 18px', cursor: 'pointer',
+                          background: cmdSelected === i ? 'rgba(139,92,246,0.1)' : 'transparent',
+                          borderLeft: cmdSelected === i ? `2px solid ${T.accent}` : '2px solid transparent',
+                          transition: 'background 0.1s, border-color 0.1s',
+                        }}
+                      >
+                        {s.thumbnail ? (
+                          <img src={s.thumbnail} alt={s.name}
+                            style={{ width: 32, height: 32, borderRadius: 8, objectFit: 'cover', flexShrink: 0 }}
+                            onError={e => { e.target.style.display = 'none'; e.target.nextSibling.style.display = 'flex'; }}
+                          />
+                        ) : null}
+                        <div style={{ width: 32, height: 32, borderRadius: 8, background: `hsl(${i * 47}, 55%, 22%)`, display: s.thumbnail ? 'none' : 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.75rem', fontWeight: 700, color: '#fff', flexShrink: 0 }}>
+                          {s.name.charAt(0)}
                         </div>
-                      ) : s.community && s.community !== '—' ? (
-                        <div style={{ fontSize: '0.67rem', fontWeight: 600, color: T.accent, background: T.accentGlow, border: `1px solid ${T.accentBorder}`, borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap' }}>
-                          {s.community}
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text }}>{s.name}</div>
+                          <div style={{ fontSize: '0.72rem', color: T.muted }}>{s.subs} subscribers · {s.niche || 'detecting…'}</div>
                         </div>
-                      ) : null}
-                    </motion.div>
-                  ))
+                        {s.source === 'youtube' ? (
+                          <div style={{ fontSize: '0.63rem', fontWeight: 600, color: '#34d399', background: 'rgba(52,211,153,0.1)', border: '1px solid rgba(52,211,153,0.25)', borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                            new
+                          </div>
+                        ) : s.community && s.community !== '—' ? (
+                          <div style={{ fontSize: '0.67rem', fontWeight: 600, color: T.accent, background: T.accentGlow, border: `1px solid ${T.accentBorder}`, borderRadius: 5, padding: '2px 7px', whiteSpace: 'nowrap' }}>
+                            {s.community}
+                          </div>
+                        ) : null}
+                      </motion.div>
+                    ))}
+                  </>
                 )}
               </div>
 

@@ -63,6 +63,8 @@ try {
   const creatorIntelRoute                = require('./routes/creatorIntel');
   const onboardingRoute                  = require('./routes/onboarding');
   const copilotRoute                     = require('./routes/copilot');
+  const creditsRoute                     = require('./routes/credits');
+  const draftsRoute                      = require('./routes/drafts');
   const { router: channelSignalsRoute }  = require('./routes/channelSignals');
   const { startLanguageDetectionCron }   = require('./jobs/languageDetectionJob');
   const intelligenceRoute       = require('./routes/intelligence');
@@ -77,6 +79,7 @@ try {
   const { startOutcomeRefreshJob }       = require('./jobs/outcomeRefreshJob');
   const { startHistoricalIngestCron }    = require('./jobs/historicalIngest');
   const { startSnapshotCron }            = require('./jobs/snapshotCron');
+  const { startNewVideoSweepCron }       = require('./jobs/newVideoSweep');
   const { startSyntheticCalibrationCron } = require('./jobs/syntheticCalibration');
   const { startLearningSnapshotCron }     = require('./jobs/learningSnapshotCron');
   const { startLearningConfidenceCron }   = require('./jobs/learningConfidenceCron');
@@ -112,6 +115,8 @@ try {
   app.use('/api/intel', creatorIntelRoute);
   app.use('/api/intel', onboardingRoute);
   app.use('/api/copilot', copilotRoute);
+  app.use('/api', creditsRoute);
+  app.use('/api', draftsRoute);
   app.use('/api', channelSignalsRoute);
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
@@ -143,6 +148,7 @@ try {
     startOutcomeRefreshJob();
     startHistoricalIngestCron();
     startSnapshotCron();
+    startNewVideoSweepCron();
     startSyntheticCalibrationCron();
     startLearningSnapshotCron();
     startLearningConfidenceCron();

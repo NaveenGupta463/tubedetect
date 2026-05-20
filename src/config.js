@@ -66,6 +66,8 @@ export const ROUTES = {
   adminIntelIngestTrigger:   `${SCORING_URL}/api/admin/intelligence/ingest/trigger`,
   adminIntelSnapshotTrigger:       `${SCORING_URL}/api/admin/intelligence/snapshot/trigger`,
   adminIntelSnapshotRecentTrigger: `${SCORING_URL}/api/admin/intelligence/snapshot/trigger-recent`,
+  adminIntelRssSweepTrigger:       `${SCORING_URL}/api/admin/intelligence/rss-sweep/trigger`,
+  adminIntelRssSweepStatus:        `${SCORING_URL}/api/admin/intelligence/rss-sweep/status`,
   adminIntelPatternsRecompute: `${SCORING_URL}/api/admin/intelligence/patterns/recompute`,
   adminIntelStatus:          `${SCORING_URL}/api/admin/intelligence/status`,
   adminIntelPatterns:        `${SCORING_URL}/api/admin/intelligence/patterns`,

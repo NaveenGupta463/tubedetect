@@ -1,0 +1,176 @@
+{
+  "_version": "1.0",
+  "_updated": "2026-05-20",
+  "niches": {
+    "finance": {
+      "mode": "pre",
+      "factSensitivity": "strict",
+      "verification": "cited",
+      "risk": "financial",
+      "needsWeb": true,
+      "needsExperience": false,
+      "briefFields": ["topic", "angle", "audience_level"],
+      "capabilities": {
+        "generate_full_script": true,
+        "invent_story": false,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": false,
+        "create_case_study": false
+      },
+      "redLines": [
+        "Never recommend specific securities, stocks, or funds as buy/sell",
+        "Never present past investment returns as indicative of future performance",
+        "Never state specific tax rates, loan terms, or financial regulations without a [VERIFY] marker",
+        "Never invent interest rates, market figures, or regulatory rules"
+      ],
+      "canGenerateFullScript": true
+    },
+
+    "travel": {
+      "mode": "both",
+      "factSensitivity": "moderate",
+      "verification": "optional",
+      "risk": "none",
+      "needsWeb": false,
+      "needsExperience": true,
+      "briefFields": ["destination", "trip_duration", "best_moments", "challenge_or_surprise", "mood_vibe"],
+      "capabilities": {
+        "generate_full_script": false,
+        "invent_story": false,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": false,
+        "create_case_study": false
+      },
+      "redLines": [
+        "Never invent stories, meals, conversations, or feelings the creator had",
+        "Never fabricate specific prices, visa rules, or safety conditions without a [VERIFY] marker"
+      ],
+      "canGenerateFullScript": false,
+      "modeOverrides": {
+        "pre": {
+          "needsExperience": false,
+          "canGenerateFullScript": true,
+          "needsWeb": true,
+          "briefFields": ["destination", "duration", "travel_style", "audience_type"]
+        },
+        "edit": {
+          "needsExperience": true,
+          "canGenerateFullScript": false,
+          "needsWeb": false,
+          "briefFields": ["destination", "trip_duration", "best_moments", "challenge_or_surprise", "mood_vibe"]
+        }
+      }
+    },
+
+    "health": {
+      "mode": "pre",
+      "factSensitivity": "strict",
+      "verification": "required",
+      "risk": "health",
+      "needsWeb": false,
+      "needsExperience": false,
+      "briefFields": ["topic", "target_audience", "depth_level"],
+      "capabilities": {
+        "generate_full_script": true,
+        "invent_story": false,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": false,
+        "create_case_study": false
+      },
+      "redLines": [
+        "Never make specific medical claims or recommend dosages",
+        "Never state that something cures, treats, or prevents any condition",
+        "Replace any medical claim with [MEDICAL CLAIM: describe — creator should verify with a healthcare professional]"
+      ],
+      "canGenerateFullScript": true
+    },
+
+    "history": {
+      "mode": "pre",
+      "factSensitivity": "strict",
+      "verification": "cited",
+      "risk": "misinformation",
+      "needsWeb": true,
+      "needsExperience": false,
+      "briefFields": ["topic", "time_period", "narrative_angle"],
+      "capabilities": {
+        "generate_full_script": true,
+        "invent_story": false,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": false,
+        "create_case_study": false
+      },
+      "redLines": [
+        "Never invent historical quotes — only use documented quotes",
+        "Never fabricate events, dates, or outcomes",
+        "Dramatic narration and cinematic framing are allowed — invented facts are not",
+        "Replace any invented historical detail with [VERIFY: describe what fact is needed]"
+      ],
+      "canGenerateFullScript": true
+    },
+
+    "comedy": {
+      "mode": "pre",
+      "factSensitivity": "light",
+      "verification": "none",
+      "risk": "none",
+      "needsWeb": false,
+      "needsExperience": false,
+      "briefFields": ["premise", "tone"],
+      "capabilities": {
+        "generate_full_script": true,
+        "invent_story": true,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": true,
+        "create_case_study": true
+      },
+      "redLines": [],
+      "canGenerateFullScript": true
+    },
+
+    "general": {
+      "mode": "pre",
+      "factSensitivity": "moderate",
+      "verification": "optional",
+      "risk": "none",
+      "needsWeb": false,
+      "needsExperience": false,
+      "briefFields": ["topic", "angle"],
+      "capabilities": {
+        "generate_full_script": true,
+        "invent_story": false,
+        "rewrite_story": true,
+        "create_analogy": true,
+        "invent_examples": true,
+        "create_case_study": false
+      },
+      "redLines": [],
+      "canGenerateFullScript": true
+    },
+
+    "selfimprovement":      "general",
+    "tech_explainer":       "general",
+    "tech_review":          "general",
+    "fitness_educational":  "general",
+    "fitness_experiment":   "general",
+    "cars_explainer":       "general",
+    "cars_review":          "general",
+    "cooking_concept":      "general",
+    "cooking_cookalong":    "general",
+    "gaming":               "general",
+    "education":            "general",
+    "beauty_trend":         "general",
+    "beauty_haul":          "general",
+    "sports_analysis":      "general",
+    "sports_reaction":      "general",
+    "realestate":           "finance",
+    "news":                 "general",
+    "science":              "general",
+    "truecrime":            "general"
+  }
+}

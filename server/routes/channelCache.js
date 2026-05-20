@@ -267,6 +267,61 @@ router.get('/channel-cache/search', (req, res) => {
   }
 });
 
+// ── GET /api/channel-cache/browse?niches=finance,technology&limit=20 ──────────
+router.get('/channel-cache/browse', (req, res) => {
+  try {
+    const db     = getDb();
+    const niches = (req.query.niches || '').split(',').map(n => n.trim().toLowerCase()).filter(Boolean);
+    const limit  = Math.min(30, Math.max(1, parseInt(req.query.limit ?? '20', 10)));
+    if (!niches.length) return res.json({ results: [] });
+
+    const ph = niches.map(() => '?').join(',');
+
+    const ingested = db.all(
+      `SELECT ic.channel_id, ic.channel_name, ic.channel_subscribers AS subs,
+              ic.niche, ic.community_id, 'ingested' AS source,
+              COALESCE(ic.primary_language, cc.yt_default_language) AS language,
+              cc.thumbnail_url AS thumbnail
+       FROM ingested_channels ic
+       LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
+       WHERE ic.ingest_enabled = 1
+         AND lower(COALESCE(ic.niche,'')) IN (${ph})
+       ORDER BY ic.channel_subscribers DESC LIMIT ?`,
+      [...niches, limit],
+    );
+
+    const ingestedIds = new Set(ingested.map(r => r.channel_id));
+    const remaining   = limit - ingested.length;
+    let corpus = [];
+    if (remaining > 0) {
+      const rows = db.all(
+        `SELECT channel_id, title AS channel_name, subscriber_count AS subs,
+                niche, community_id, 'corpus' AS source, language, thumbnail_url AS thumbnail
+         FROM corpus_channels
+         WHERE lower(COALESCE(niche,'')) IN (${ph})
+         ORDER BY subscriber_count DESC LIMIT ?`,
+        [...niches, limit],
+      );
+      corpus = rows.filter(r => !ingestedIds.has(r.channel_id)).slice(0, remaining);
+    }
+
+    const results = [...ingested, ...corpus].map(r => ({
+      channel_id:   r.channel_id,
+      name:         r.channel_name || r.channel_id,
+      subs:         r.subs || 0,
+      niche:        r.niche || null,
+      community_id: r.community_id || null,
+      source:       r.source,
+      language:     r.language || 'en',
+      thumbnail:    r.thumbnail || null,
+    }));
+
+    res.json({ results });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // ── GET /api/channel-cache/search-youtube?q=&limit=5 ─────────────────────────
 // Live YouTube search — called by the frontend only when DB search has < 3 hits.
 // Returns same shape as /channel-cache/search so results can be merged directly.

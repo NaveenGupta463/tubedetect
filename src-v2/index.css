@@ -23,3 +23,38 @@ body {
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
 ::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.18); }
+
+/* ── Space animations ────────────────────────────────────────────────────── */
+
+@keyframes shoot {
+  0%   { opacity: 0;    transform: translateX(0);               }
+  5%   { opacity: 0.42;                                         }
+  88%  { opacity: 0.18;                                         }
+  100% { opacity: 0;    transform: translateX(var(--travel));   }
+}
+
+@keyframes twinkle-a {
+  0%, 100% { opacity: var(--op); }
+  50%      { opacity: calc(var(--op) * 0.18); }
+}
+
+@keyframes twinkle-b {
+  0%, 65%, 100% { opacity: var(--op); }
+  32%           { opacity: calc(var(--op) * 0.28); }
+}
+
+@keyframes twinkle-c {
+  0%, 100%  { opacity: var(--op); }
+  28%, 58%  { opacity: calc(var(--op) * 0.12); }
+  43%       { opacity: var(--op); }
+}
+
+@keyframes nebula-drift {
+  0%, 100% { transform: translate(0,    0)   scale(1);    opacity: 1;   }
+  33%      { transform: translate(2%, -1%)   scale(1.07); opacity: 0.65;}
+  66%      { transform: translate(-1%,  2%)  scale(0.95); opacity: 0.85;}
+}
+
+.nebula-blob {
+  animation: nebula-drift 48s ease-in-out infinite;
+}

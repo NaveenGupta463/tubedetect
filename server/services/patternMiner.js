@@ -40,75 +40,97 @@ function roundStat(v) {
 
 /**
  * Recompute niche_benchmarks for all (niche, bucket) pairs that meet MIN_SAMPLE.
- * Aggregates per duration_bucket (short/medium/long) with no cross-niche mixing.
- * Pure SQL reads + in-process percentile computation.
+ * Uses a single JOIN query and groups in-memory — avoids N×M round-trips to SQLite.
  */
 function runPatternMining(db) {
-  const combinations      = getAggregatableCombinations(db, MIN_SAMPLE);
   const snapshot_batch_id = crypto.randomUUID();
   const snapshot_at       = new Date().toISOString();
   let upserted = 0, skipped = 0;
 
-  for (const { niche, bucket } of combinations) {
-    const rows = getSnapshotRowsForAggregation(db, niche, bucket);
-    if (!rows.length) continue;
+  // Sample up to 2000 rows per (niche, bucket) — enough for accurate percentiles,
+  // avoids loading all 1.7M rows into memory at once.
+  const allRows = db.all(`
+    SELECT bucket, views, views_per_hour,
+           subscriber_adjusted_velocity,
+           views_to_subscriber_ratio,
+           velocity_acceleration,
+           duration_seconds, niche
+    FROM (
+      SELECT vgs.bucket, vgs.views, vgs.views_per_hour,
+             vgs.subscriber_adjusted_velocity,
+             vgs.views_to_subscriber_ratio,
+             vgs.velocity_acceleration,
+             iv.duration_seconds, iv.niche,
+             ROW_NUMBER() OVER (PARTITION BY iv.niche, vgs.bucket ORDER BY vgs.views DESC) AS rn
+      FROM video_growth_snapshots vgs
+      JOIN ingested_videos iv  ON iv.youtube_video_id = vgs.video_id
+      JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+      WHERE vgs.views IS NOT NULL
+        AND iv.niche IS NOT NULL
+        AND ic.ignore_from_benchmarks = 0
+    )
+    WHERE rn <= 2000
+  `);
 
-    // Split by duration bucket
-    const byDuration = { short: [], medium: [], long: [], unknown: [] };
-    for (const row of rows) {
-      const db_key = classifyDuration(row.duration_seconds) ?? 'unknown';
-      byDuration[db_key].push(row);
-    }
-
-    for (const [durBucket, subset] of Object.entries(byDuration)) {
-      if (subset.length < MIN_SAMPLE) { skipped++; continue; }
-
-      const views    = subset.map(r => r.views).filter(v => v != null);
-      const vphs     = subset.map(r => r.views_per_hour).filter(v => v != null);
-      const savs     = subset.map(r => r.subscriber_adjusted_velocity).filter(v => v != null);
-      const vsrs     = subset.map(r => r.views_to_subscriber_ratio).filter(v => v != null);
-      const accels   = subset.map(r => r.velocity_acceleration).filter(v => v != null);
-
-      const vPerc   = computePercentiles(views);
-      const vphPerc = computePercentiles(vphs);
-
-      const medSav = savs.length
-        ? savs.sort((a, b) => a - b)[Math.floor(savs.length * 0.5)]
-        : null;
-      const medVsr = vsrs.length
-        ? vsrs.sort((a, b) => a - b)[Math.floor(vsrs.length * 0.5)]
-        : null;
-      const medAccel = accels.length
-        ? accels.sort((a, b) => a - b)[Math.floor(accels.length * 0.5)]
-        : null;
-
-      const benchRow = {
-        niche,
-        bucket,
-        duration_bucket: durBucket,
-        sample_size:     subset.length,
-        median_views:    roundStat(vPerc.median),
-        p75_views:       roundStat(vPerc.p75),
-        p90_views:       roundStat(vPerc.p90),
-        median_vph:      roundStat(vphPerc.median),
-        p75_vph:         roundStat(vphPerc.p75),
-        p90_vph:         roundStat(vphPerc.p90),
-        median_sav:      roundStat(medSav),
-        median_vsr:      roundStat(medVsr),
-        median_accel:    roundStat(medAccel),
-      };
-      upsertNicheBenchmark(db, { id: crypto.randomUUID(), ...benchRow });
-      insertBenchmarkHistory(db, {
-        id:               crypto.randomUUID(),
-        snapshot_batch_id,
-        snapshot_at,
-        ...benchRow,
-      });
-      upserted++;
-    }
+  // Group by (niche, bucket, duration_bucket) in-memory
+  const groups = {};
+  for (const row of allRows) {
+    const durBucket = classifyDuration(row.duration_seconds) ?? 'unknown';
+    const key = `${row.niche}|||${row.bucket}|||${durBucket}`;
+    if (!groups[key]) groups[key] = { niche: row.niche, bucket: row.bucket, durBucket, rows: [] };
+    groups[key].rows.push(row);
   }
 
-  return { combinations: combinations.length, upserted, skipped, snapshot_batch_id };
+  const combinations = new Set(Object.values(groups).map(g => `${g.niche}|||${g.bucket}`)).size;
+
+  for (const { niche, bucket, durBucket, rows: subset } of Object.values(groups)) {
+    if (subset.length < MIN_SAMPLE) { skipped++; continue; }
+
+    const views  = subset.map(r => r.views).filter(v => v != null);
+    const vphs   = subset.map(r => r.views_per_hour).filter(v => v != null);
+    const savs   = subset.map(r => r.subscriber_adjusted_velocity).filter(v => v != null);
+    const vsrs   = subset.map(r => r.views_to_subscriber_ratio).filter(v => v != null);
+    const accels = subset.map(r => r.velocity_acceleration).filter(v => v != null);
+
+    const vPerc   = computePercentiles(views);
+    const vphPerc = computePercentiles(vphs);
+
+    const medSav = savs.length
+      ? savs.sort((a, b) => a - b)[Math.floor(savs.length * 0.5)]
+      : null;
+    const medVsr = vsrs.length
+      ? vsrs.sort((a, b) => a - b)[Math.floor(vsrs.length * 0.5)]
+      : null;
+    const medAccel = accels.length
+      ? accels.sort((a, b) => a - b)[Math.floor(accels.length * 0.5)]
+      : null;
+
+    const benchRow = {
+      niche,
+      bucket,
+      duration_bucket: durBucket,
+      sample_size:     subset.length,
+      median_views:    roundStat(vPerc.median),
+      p75_views:       roundStat(vPerc.p75),
+      p90_views:       roundStat(vPerc.p90),
+      median_vph:      roundStat(vphPerc.median),
+      p75_vph:         roundStat(vphPerc.p75),
+      p90_vph:         roundStat(vphPerc.p90),
+      median_sav:      roundStat(medSav),
+      median_vsr:      roundStat(medVsr),
+      median_accel:    roundStat(medAccel),
+    };
+    upsertNicheBenchmark(db, { id: crypto.randomUUID(), ...benchRow });
+    insertBenchmarkHistory(db, {
+      id:               crypto.randomUUID(),
+      snapshot_batch_id,
+      snapshot_at,
+      ...benchRow,
+    });
+    upserted++;
+  }
+
+  return { combinations, upserted, skipped, snapshot_batch_id };
 }
 
 /**

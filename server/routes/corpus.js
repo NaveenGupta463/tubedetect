@@ -521,7 +521,20 @@ router.get('/intel/community/infer', (req, res) => {
       );
     }
 
-    if (!row) return res.json({ ok: true, community_id: null, reason: 'no_match' });
+    if (!row) {
+      // No corpus community found — count ingested peers by niche as fallback
+      const ingestedPeers = db.get(
+        `SELECT COUNT(*) AS n FROM ingested_channels
+         WHERE niche = ? AND ingest_enabled = 1`,
+        [niche],
+      );
+      return res.json({
+        ok:          true,
+        community_id: null,
+        peer_count:  Math.max(0, (ingestedPeers?.n ?? 1) - 1), // exclude self
+        reason:      'inferred_from_ingested',
+      });
+    }
 
     // Peer stats for the matched community
     const peers = db.get(

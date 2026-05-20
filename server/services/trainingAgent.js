@@ -115,10 +115,40 @@ function runFullEvaluationPass(db, channels) {
   return results;
 }
 
+async function runFullEvaluationPassAsync(db, channels) {
+  const results = { promoted: 0, demoted: 0, unchanged: 0, errors: 0 };
+
+  for (let i = 0; i < channels.length; i++) {
+    const ch = channels[i];
+    try {
+      const qs          = evaluateChannelQuality(db, ch);
+      const wasEligible = ch.training_eligible === 1;
+      const nowEligible = qs.training_eligible;
+
+      if (!wasEligible && nowEligible) {
+        promoteCorpusChannelTraining(db, ch.channel_id);
+        results.promoted++;
+      } else if (wasEligible && !nowEligible) {
+        demoteCorpusChannelTraining(db, ch.channel_id);
+        results.demoted++;
+      } else {
+        results.unchanged++;
+      }
+    } catch (e) {
+      console.warn(`[trainingAgent] Error evaluating ${ch.channel_id}:`, e.message);
+      results.errors++;
+    }
+    if (i % 20 === 0) await new Promise(r => setImmediate(r));
+  }
+
+  return results;
+}
+
 module.exports = {
   promoteToTrainingCorpus,
   demoteTrainingCorpus,
   recalculateTrainingTrust,
   buildTrustedTrainingSet,
   runFullEvaluationPass,
+  runFullEvaluationPassAsync,
 };

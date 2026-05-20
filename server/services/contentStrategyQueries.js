@@ -36,7 +36,7 @@ function getTopTitlesByNiche(db, { niche, days = 90, limit = 30 } = {}) {
       ORDER BY iv.views DESC NULLS LAST
       LIMIT ?
     `, params);
-  }, 5 * 60 * 1000);
+  }, 20 * 60 * 1000);
 }
 
 function getBestPerformingDurations(db, niche) {
@@ -61,7 +61,7 @@ function getBestPerformingDurations(db, niche) {
       GROUP BY duration_bucket
       ORDER BY avg_views DESC
     `, params);
-  }, 5 * 60 * 1000);
+  }, 20 * 60 * 1000);
 }
 
 function getRisingFormats(db, niche) {
@@ -69,7 +69,7 @@ function getRisingFormats(db, niche) {
   return cache.wrap(key, () => {
     const conditions = [`ic.content_archetype IS NOT NULL`];
     const params = [];
-    if (niche) { conditions.push('ic.niche = ?'); params.push(niche); }
+    if (niche) { conditions.push('COALESCE(ic.primary_niche, ic.niche) = ?'); params.push(niche); }
 
     // Compare last 30d vs prior 30d for each archetype
     return db.all(`
@@ -90,7 +90,7 @@ function getRisingFormats(db, niche) {
       HAVING recent_count >= 2
       ORDER BY recent_count DESC
     `, params);
-  }, 5 * 60 * 1000);
+  }, 20 * 60 * 1000);
 }
 
 function getContentPatterns(db, niche) {
@@ -98,14 +98,14 @@ function getContentPatterns(db, niche) {
   return cache.wrap(key, () => {
     const conditions = ['iv.views IS NOT NULL', `iv.published_at >= datetime('now', '-90 days')`];
     const params = [];
-    if (niche) { conditions.push('iv.niche = ?'); params.push(niche); }
+    if (niche) { conditions.push('COALESCE(ic.primary_niche, ic.niche) = ?'); params.push(niche); }
 
     return db.all(`
       SELECT
         ic.content_archetype,
         ic.format_type,
         ic.behavior_tags,
-        ic.niche,
+        ic.primary_niche AS niche,
         COUNT(iv.youtube_video_id)                   AS video_count,
         CAST(AVG(iv.views) AS INTEGER)               AS avg_views,
         CAST(MAX(iv.views) AS INTEGER)               AS peak_views,
@@ -117,12 +117,12 @@ function getContentPatterns(db, niche) {
       LEFT JOIN video_growth_snapshots vgs
         ON vgs.video_id = iv.youtube_video_id AND vgs.bucket = '7d'
       WHERE ${conditions.join(' AND ')}
-      GROUP BY ic.content_archetype, ic.format_type, ic.niche
+      GROUP BY ic.content_archetype, ic.format_type, ic.primary_niche
       HAVING video_count >= 2
       ORDER BY avg_views DESC
       LIMIT 50
     `, params);
-  }, 5 * 60 * 1000);
+  }, 20 * 60 * 1000);
 }
 
 module.exports = {
