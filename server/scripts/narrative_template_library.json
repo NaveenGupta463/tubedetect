@@ -1,0 +1,192 @@
+{
+  "generated": "2026-06-14",
+  "gold_set_size": 2182,
+  "excellent_count": 4,
+  "good_count": 227,
+  "source_breakdown_excellent": {
+    "peer_video_signal": 4
+  },
+  "excellent_word_count": {
+    "avg": 11,
+    "min": 8,
+    "max": 15
+  },
+  "key_finding": "ALL Excellent titles come from peer_video_signal. Zero Excellent titles from dna_original_bets. Narrative templates cannot be reliably generated from DNA alone — they require surfacing real peer content with strong narrative hooks.",
+  "generation_strategy": {
+    "narrative_source": "peer_video_signal",
+    "narrative_filter": "surface peer titles with ASSUMPTION_REVERSAL, FORCED_CONFLICT, CONFLICT_EXPOSE, MEMORY_OBJECT patterns",
+    "dna_strategy": "Focus DNA bets on: mistake + instructional + challenge + comparison templates",
+    "peer_upgrade": "Rank peer signals with narrative hook patterns above non-narrative peer signals"
+  },
+  "structures": [
+    {
+      "id": "assumption_reversal",
+      "name": "Assumption Reversal",
+      "description": "Presents a widely-held belief and then subverts it with surprising evidence.",
+      "hook_trigger": "We Thought / Everyone Thinks / You Think",
+      "skeleton": "We Thought [ACCEPTED_BELIEF]. They Might [SURPRISING_TRUTH]",
+      "generation_requires": "peer signal + domain misconception",
+      "can_generate_from_dna": false,
+      "excellent_count": 2,
+      "good_count": 0,
+      "examples": [
+        {
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 15
+        },
+        {
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 15
+        }
+      ]
+    },
+    {
+      "id": "forced_conflict",
+      "name": "Forced Conflict",
+      "description": "A named entity is compelled to take an action against its natural state. Creates tension and sympathy.",
+      "hook_trigger": "Forced to / Made to / Had to",
+      "skeleton": "The [SPECIFIC_SUBJECT] That Was Forced to [UNNATURAL_ACTION] [OBJECT]",
+      "generation_requires": "peer signal + named subject + documented incident",
+      "can_generate_from_dna": false,
+      "excellent_count": 2,
+      "good_count": 0,
+      "examples": [
+        {
+          "title": "The Tiger That Was Forced to Hunt Humans",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 8
+        },
+        {
+          "title": "The Tiger That Was Forced to Hunt Humans",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 8
+        }
+      ]
+    },
+    {
+      "id": "conflict_expose",
+      "name": "Conflict Expose",
+      "description": "Named actor shown failing at their core function, with specific evidence named.",
+      "hook_trigger": "Can't / Won't / Couldn't + specific proof",
+      "skeleton": "[NAMED_ACTOR] Can't [CORE_FUNCTION], and the [SPECIFIC_EVIDENCE] Prove[s] It",
+      "generation_requires": "peer signal + named actor + verifiable evidence",
+      "can_generate_from_dna": false,
+      "excellent_count": 4,
+      "good_count": 0,
+      "examples": [
+        {
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 12
+        },
+        {
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 12
+        },
+        {
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 12
+        },
+        {
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 12
+        }
+      ]
+    },
+    {
+      "id": "memory_object",
+      "name": "Memory Object",
+      "description": "Ties a named physical object to a relationship and a time span. Creates immediate emotional resonance.",
+      "hook_trigger": "A [object], A [relationship], and N years",
+      "skeleton": "A [NAMED_OBJECT], A [RELATIONSHIP] and [N] Years of [EMOTION]",
+      "generation_requires": "peer signal + named object + relationship + time span",
+      "can_generate_from_dna": false,
+      "excellent_count": 2,
+      "good_count": 0,
+      "examples": [
+        {
+          "title": "A Santro, A Family and 20 Years of Memories",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 9
+        },
+        {
+          "title": "A Santro, A Family and 20 Years of Memories",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 9
+        }
+      ]
+    },
+    {
+      "id": "verdict_claim",
+      "name": "Verdict Claim",
+      "description": "States a sharp, opinionated verdict about a named subject. Polarizing but credibility-signalling.",
+      "hook_trigger": "Strong claim about named subject's character or capability",
+      "skeleton": "[NAMED_SUBJECT] [STRONG_VERDICT], and the [EVIDENCE] [PROVES_IT]",
+      "generation_requires": "peer signal + named subject + strong verdict + named evidence",
+      "can_generate_from_dna": false,
+      "excellent_count": 0,
+      "good_count": 0,
+      "examples": []
+    },
+    {
+      "id": "discovery_reveal",
+      "name": "Discovery Reveal",
+      "description": "An unexpected discovery about a familiar topic, where the discovery is named specifically.",
+      "hook_trigger": "They Might / It Could / New evidence shows",
+      "skeleton": "We Thought [X]. They Might [SURPRISING_ALTERNATIVE]",
+      "generation_requires": "peer signal + established belief + named alternative",
+      "can_generate_from_dna": false,
+      "excellent_count": 2,
+      "good_count": 0,
+      "examples": [
+        {
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 15
+        },
+        {
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "word_count": 15
+        }
+      ]
+    },
+    {
+      "id": "hidden_mechanism",
+      "name": "Hidden Mechanism",
+      "description": "Reveals the actual cause or mechanism behind a familiar phenomenon. \"What really happened\" structure.",
+      "hook_trigger": "The real reason / What really / The truth behind",
+      "skeleton": "The Real [MECHANISM] Behind [FAMILIAR_PHENOMENON]",
+      "generation_requires": "peer signal OR DNA bet with specific cause + familiar effect",
+      "can_generate_from_dna": true,
+      "excellent_count": 0,
+      "good_count": 0,
+      "examples": []
+    }
+  ],
+  "unclassified_excellent": [],
+  "peer_signal_curation_rules": [
+    "Include peer titles with word count >= 8 (narrative signals are long)",
+    "Boost peer titles matching ASSUMPTION_REVERSAL, FORCED_CONFLICT, CONFLICT_EXPOSE patterns",
+    "Include peer titles with named entities + claim verbs (proves, shows, reveals)",
+    "Exclude peer titles matching spam patterns (episode numbers, LIVE suffix, collab format)",
+    "Peer titles with named specific subject (The Tiger, Trump, Black Holes) rank above generic"
+  ]
+}

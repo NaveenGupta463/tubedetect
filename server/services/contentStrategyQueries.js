@@ -42,21 +42,17 @@ function getTopTitlesByNiche(db, { niche, days = 90, limit = 30 } = {}) {
 function getBestPerformingDurations(db, niche) {
   const key = `content:best_durations:${niche}`;
   return cache.wrap(key, () => {
-    const conditions = ['iv.duration_seconds IS NOT NULL'];
+    const conditions = ['iv.duration_seconds IS NOT NULL', 'iv.views IS NOT NULL'];
     const params = [];
     if (niche) { conditions.push('iv.niche = ?'); params.push(niche); }
 
     return db.all(`
       SELECT
-        (${DURATION_SQL})                          AS duration_bucket,
-        COUNT(*)                                   AS video_count,
-        CAST(AVG(iv.views) AS INTEGER)             AS avg_views,
-        CAST(MAX(iv.views) AS INTEGER)             AS peak_views,
-        ROUND(AVG(vgs.views_per_hour), 2)          AS avg_vph,
-        ROUND(AVG(vgs.subscriber_adjusted_velocity), 4) AS avg_sav
+        (${DURATION_SQL})              AS duration_bucket,
+        COUNT(*)                       AS video_count,
+        CAST(AVG(iv.views) AS INTEGER) AS avg_views,
+        CAST(MAX(iv.views) AS INTEGER) AS peak_views
       FROM ingested_videos iv
-      LEFT JOIN video_growth_snapshots vgs
-        ON vgs.video_id = iv.youtube_video_id AND vgs.bucket = '7d'
       WHERE ${conditions.join(' AND ')}
       GROUP BY duration_bucket
       ORDER BY avg_views DESC
@@ -96,28 +92,31 @@ function getRisingFormats(db, niche) {
 function getContentPatterns(db, niche) {
   const key = `content:patterns:${niche}`;
   return cache.wrap(key, () => {
-    const conditions = ['iv.views IS NOT NULL', `iv.published_at >= datetime('now', '-90 days')`];
-    const params = [];
-    if (niche) { conditions.push('COALESCE(ic.primary_niche, ic.niche) = ?'); params.push(niche); }
+    // Drive from ingested_channels (small set, idx_ic_primary_niche), then use
+    // idx_iv_channel_published per channel. VGS join removed — avg_vph not used
+    // by the dashboard. OR condition lets SQLite use idx_ic_primary_niche + idx_ic_niche.
+    const where = niche
+      ? `WHERE (ic.primary_niche = ? OR (ic.primary_niche IS NULL AND ic.niche = ?))`
+      : '';
+    const params = niche ? [niche, niche] : [];
 
     return db.all(`
       SELECT
         ic.content_archetype,
         ic.format_type,
         ic.behavior_tags,
-        ic.primary_niche AS niche,
-        COUNT(iv.youtube_video_id)                   AS video_count,
-        CAST(AVG(iv.views) AS INTEGER)               AS avg_views,
-        CAST(MAX(iv.views) AS INTEGER)               AS peak_views,
-        ROUND(AVG(vgs.views_per_hour), 2)            AS avg_vph,
-        ROUND(AVG(vgs.subscriber_adjusted_velocity), 4) AS avg_sav,
-        COUNT(DISTINCT ic.channel_id)                AS channel_count
-      FROM ingested_videos iv
-      JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
-      LEFT JOIN video_growth_snapshots vgs
-        ON vgs.video_id = iv.youtube_video_id AND vgs.bucket = '7d'
-      WHERE ${conditions.join(' AND ')}
-      GROUP BY ic.content_archetype, ic.format_type, ic.primary_niche
+        COALESCE(ic.primary_niche, ic.niche) AS niche,
+        COUNT(iv.youtube_video_id)         AS video_count,
+        CAST(AVG(iv.views) AS INTEGER)     AS avg_views,
+        CAST(MAX(iv.views) AS INTEGER)     AS peak_views,
+        COUNT(DISTINCT ic.channel_id)      AS channel_count
+      FROM ingested_channels ic
+      JOIN ingested_videos iv
+        ON iv.channel_id = ic.channel_id
+        AND iv.views IS NOT NULL
+        AND iv.published_at >= datetime('now', '-90 days')
+      ${where}
+      GROUP BY ic.content_archetype, ic.format_type, COALESCE(ic.primary_niche, ic.niche)
       HAVING video_count >= 2
       ORDER BY avg_views DESC
       LIMIT 50

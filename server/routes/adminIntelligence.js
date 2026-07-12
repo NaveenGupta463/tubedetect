@@ -25,14 +25,15 @@ const { runNewVideoSweep, getSweepStatus } = require('../jobs/newVideoSweep');
 const { runFullBatchDetection }    = require('../jobs/languageDetectionJob');
 const { runSnapshotCycle, runNeverRefreshedSnapshotCycle, isSnapshotRunning } = require('../jobs/snapshotCron');
 const { runPatternMining }         = require('../services/patternMiner');
-const { getLastRun }               = require('../services/jobState');
+const { getLastRun, setLastRun }   = require('../services/jobState');
 const { detectCommunities, summarizeCommunities } = require('../services/louvainClustering');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
+let historicalIngestManualRunning = false;
 
 async function ytFetchAdmin(url) {
   for (let attempt = 0; attempt < 12; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('lookup');
     if (!key) throw new Error('all_api_keys_exhausted');
     const sep = url.includes('?') ? '&' : '?';
     const res  = await fetch(`${url}${sep}key=${key}`);
@@ -65,7 +66,7 @@ async function resolveToChannelId(parsed) {
   if (parsed.type === 'channel_id') {
     return { channel_id: parsed.value, channel_name: null, resolved_via: 'direct' };
   }
-  if (!getApiKey()) throw new Error('No API keys available — cannot resolve handles');
+  if (!getApiKey('lookup')) throw new Error('No API keys available — cannot resolve handles');
 
   const param = parsed.value.startsWith('@')
     ? `forHandle=${encodeURIComponent(parsed.value)}`
@@ -94,6 +95,129 @@ function adminAuth(req, res, next) {
 }
 
 router.use(adminAuth);
+
+function _hoursSince(date) {
+  if (!date) return null;
+  return (Date.now() - new Date(date).getTime()) / 3_600_000;
+}
+
+function _iso(job) {
+  return getLastRun(job)?.toISOString() ?? null;
+}
+
+function _maintenanceItem({ key, label, last_run, due_after_hours, due = false, warning = false, reason = '', metrics = {} }) {
+  const age_hours = _hoursSince(last_run);
+  let status = 'ok';
+  if (!last_run || due || (due_after_hours && age_hours != null && age_hours > due_after_hours)) status = 'due';
+  else if (warning) status = 'warning';
+  return {
+    key,
+    label,
+    status,
+    last_run,
+    age_hours: age_hours == null ? null : Math.round(age_hours * 10) / 10,
+    due_after_hours,
+    reason,
+    metrics,
+  };
+}
+
+function buildMaintenanceStatus(db) {
+  const historicalLast = _iso('historical_ingest');
+  const snapshotLast   = _iso('snapshot_refresh');
+  const patternsLast   = _iso('recompute_patterns');
+  const calibrateLast  = _iso('auto_calibrate');
+  const louvainLast    = _iso('louvain_clustering');
+  const backfillLast   = _iso('community_backfill');
+
+  const patternRows = db.get(`SELECT COUNT(*) AS n FROM niche_benchmarks`)?.n ?? 0;
+  const corpus = db.get(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN community_id IS NULL THEN 1 ELSE 0 END) AS missing_community
+    FROM corpus_channels
+  `);
+  const ingested = db.get(`
+    SELECT
+      COUNT(*) AS total,
+      SUM(CASE WHEN ingest_enabled = 1 THEN 1 ELSE 0 END) AS enabled,
+      SUM(CASE WHEN ingest_enabled = 1 AND community_id IS NULL THEN 1 ELSE 0 END) AS enabled_missing_community
+    FROM ingested_channels
+  `);
+
+  const snapshotNewerThanPatterns =
+    snapshotLast && (!patternsLast || new Date(snapshotLast).getTime() > new Date(patternsLast).getTime());
+  const louvainMissing = corpus?.missing_community ?? 0;
+  const louvainTotal   = corpus?.total ?? 0;
+  const backfillMissing = ingested?.enabled_missing_community ?? 0;
+
+  const items = [
+    _maintenanceItem({
+      key: 'historical_ingest',
+      label: 'Historical ingest',
+      last_run: historicalLast,
+      due_after_hours: 30,
+      reason: 'Daily video ingest should run roughly once per day.',
+    }),
+    _maintenanceItem({
+      key: 'snapshot_refresh',
+      label: 'Snapshot refresh',
+      last_run: snapshotLast,
+      due_after_hours: 30,
+      reason: 'Refresh growth snapshots after new videos accumulate.',
+    }),
+    _maintenanceItem({
+      key: 'patterns',
+      label: 'Patterns',
+      last_run: patternsLast,
+      due_after_hours: 168,
+      due: patternRows === 0 || snapshotNewerThanPatterns,
+      reason: snapshotNewerThanPatterns
+        ? 'Snapshot refresh is newer than the last pattern recompute.'
+        : 'Recompute weekly or after a major snapshot refresh.',
+      metrics: { pattern_rows: patternRows },
+    }),
+    _maintenanceItem({
+      key: 'calibration',
+      label: 'Calibration',
+      last_run: calibrateLast,
+      due_after_hours: 168,
+      reason: 'Run weekly or after large corpus/scoring distribution changes.',
+    }),
+    _maintenanceItem({
+      key: 'louvain',
+      label: 'Louvain',
+      last_run: louvainLast,
+      due_after_hours: 720,
+      due: louvainTotal >= 5000 && louvainMissing > 1000,
+      warning: louvainTotal >= 5000 && louvainMissing > 250,
+      reason: 'Run only after major corpus growth or edge/community changes.',
+      metrics: { corpus_channels: louvainTotal, corpus_missing_community: louvainMissing },
+    }),
+    _maintenanceItem({
+      key: 'community_backfill',
+      label: 'Community backfill',
+      last_run: backfillLast,
+      due_after_hours: 720,
+      due: backfillMissing > 500,
+      warning: backfillMissing > 100,
+      reason: 'Backfill after Louvain so ingested channels receive community IDs.',
+      metrics: { ingested_enabled: ingested?.enabled ?? 0, ingested_missing_community: backfillMissing },
+    }),
+  ];
+
+  const summary = {
+    due: items.filter(i => i.status === 'due').length,
+    warning: items.filter(i => i.status === 'warning').length,
+    ok: items.filter(i => i.status === 'ok').length,
+  };
+
+  return {
+    summary,
+    items,
+    by_key: Object.fromEntries(items.map(i => [i.key, i])),
+  };
+}
 
 // ── Channel management ────────────────────────────────────────────────────────
 
@@ -311,8 +435,40 @@ router.post('/admin/intelligence/ingest/trigger', async (req, res) => {
     if (!quotaGuard.quotaAvailable()) {
       return res.status(429).json({ error: 'quota exhausted — try again after midnight Pacific' });
     }
-    const result = await runHistoricalIngestCycle();
-    res.json({ ok: true, result });
+    if (historicalIngestManualRunning) {
+      return res.status(409).json({ error: 'Historical ingest already running', running: true });
+    }
+    const quotaBudget = Math.max(1, parseInt(req.body?.quotaBudget ?? req.query?.quotaBudget ?? '2500', 10));
+    const maxChannels = Math.max(1, parseInt(req.body?.maxChannels ?? req.query?.maxChannels ?? '150', 10));
+    const maxVideosPerChannel = Math.max(1, parseInt(req.body?.maxVideosPerChannel ?? req.query?.maxVideosPerChannel ?? '100', 10));
+    const batchSize = Math.max(1, parseInt(req.body?.batchSize ?? req.query?.batchSize ?? '3', 10));
+    const maxRuntimeMs = Math.max(30_000, parseInt(req.body?.maxRuntimeMs ?? req.query?.maxRuntimeMs ?? '1500000', 10));
+    const newestFirst = String(req.body?.newestFirst ?? req.query?.newestFirst ?? '1') !== '0';
+
+    historicalIngestManualRunning = true;
+    setImmediate(async () => {
+      try {
+        await runHistoricalIngestCycle({
+          quotaBudget,
+          maxChannels,
+          maxVideosPerChannel,
+          batchSize,
+          newestFirst,
+          maxRuntimeMs,
+        });
+      } catch (e) {
+        console.error('[historical] Manual trigger error:', e.message);
+      } finally {
+        historicalIngestManualRunning = false;
+      }
+    });
+
+    res.json({
+      ok: true,
+      started: true,
+      message: 'Historical ingest running in background - check server logs for progress',
+      options: { quotaBudget, maxChannels, maxVideosPerChannel, batchSize, newestFirst, maxRuntimeMs },
+    });
   } catch (e) {
     res.status(500).json({ error: e.message });
   }
@@ -438,11 +594,14 @@ router.get('/admin/intelligence/status', (_req, res) => {
         by_bucket: getSnapshotCountByBucket(db),
       },
       job_last_run: {
-        historical_ingest:  getLastRun('historical_ingest')?.toISOString()  ?? null,
-        snapshot_refresh:   getLastRun('snapshot_refresh')?.toISOString()   ?? null,
-        recompute_patterns: getLastRun('recompute_patterns')?.toISOString() ?? null,
-        auto_calibrate:     getLastRun('auto_calibrate')?.toISOString()     ?? null,
+        historical_ingest:  _iso('historical_ingest'),
+        snapshot_refresh:   _iso('snapshot_refresh'),
+        recompute_patterns: _iso('recompute_patterns'),
+        auto_calibrate:     _iso('auto_calibrate'),
+        louvain_clustering: _iso('louvain_clustering'),
+        community_backfill: _iso('community_backfill'),
       },
+      maintenance: buildMaintenanceStatus(db),
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -651,18 +810,25 @@ router.post('/admin/intelligence/louvain/run', adminAuth, async (req, res) => {
     const db    = getDb();
     const start = Date.now();
 
-    // Load all channels (nodes)
-    const channels = db.all('SELECT channel_id, niche FROM corpus_channels');
-    const nodeIds  = channels.map(c => c.channel_id);
-    const nicheMap = new Map(channels.map(c => [c.channel_id, c.niche]));
+    // Load only ingested channels as nodes — avoids 65K+ depth-0 singletons
+    const channels = db.all(`
+      SELECT cc.channel_id, cc.niche
+      FROM corpus_channels cc
+      WHERE cc.channel_id IN (SELECT channel_id FROM ingested_channels)
+    `);
+    const nodeIds   = channels.map(c => c.channel_id);
+    const nicheMap  = new Map(channels.map(c => [c.channel_id, c.niche]));
+    const nodeSet   = new Set(nodeIds);
 
-    // Load all edges — use edge_strength as weight (falls back to confidence then 1.0)
-    const edges = db.all(`
+    // Load only edges where BOTH endpoints are ingested channels
+    const allEdges = db.all(`
       SELECT source_channel_id AS source,
              target_channel_id AS target,
              COALESCE(edge_strength, confidence, 1.0) AS weight
       FROM corpus_discovery_graph
+      WHERE (cross_country IS NULL OR cross_country = 0)
     `);
+    const edges = allEdges.filter(e => nodeSet.has(e.source) && nodeSet.has(e.target));
 
     console.log(`[louvain] Running on ${nodeIds.length} nodes, ${edges.length} edges`);
 
@@ -676,6 +842,7 @@ router.post('/admin/intelligence/louvain/run', adminAuth, async (req, res) => {
     try {
       for (const [channelId, commId] of assignments) {
         db.run('UPDATE corpus_channels SET community_id = ? WHERE channel_id = ?', [commId, channelId]);
+        db.run('UPDATE ingested_channels SET community_id = ? WHERE channel_id = ?', [commId, channelId]);
       }
       db.run('COMMIT');
     } catch (e) {
@@ -684,6 +851,7 @@ router.post('/admin/intelligence/louvain/run', adminAuth, async (req, res) => {
     }
 
     console.log(`[louvain] Done — ${summary.length} communities in ${elapsed}ms`);
+    setLastRun('louvain_clustering');
     res.json({
       ok:           true,
       channels:     nodeIds.length,
@@ -759,6 +927,7 @@ router.post('/admin/intelligence/community/backfill', (req, res) => {
     const afterFallback = db.get(`SELECT COUNT(*) AS n FROM ingested_channels WHERE community_id IS NULL`);
     const total         = db.get(`SELECT COUNT(*) AS n FROM ingested_channels`);
     const assigned      = db.get(`SELECT COUNT(*) AS n FROM ingested_channels WHERE community_id IS NOT NULL`);
+    setLastRun('community_backfill');
 
     res.json({
       ok:               true,
@@ -770,6 +939,18 @@ router.post('/admin/intelligence/community/backfill', (req, res) => {
     });
   } catch (e) {
     console.error('[community-backfill] Error:', e.message);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// POST /api/admin/intelligence/primary-language/backfill
+router.post('/admin/intelligence/primary-language/backfill', async (req, res) => {
+  try {
+    const { runPrimaryLanguageBackfill } = require('../jobs/primaryLanguageJob');
+    const result = await runPrimaryLanguageBackfill({ verbose: true });
+    res.json({ ok: true, ...result });
+  } catch (e) {
+    console.error('[primary-lang-backfill] Error:', e.message);
     res.status(500).json({ ok: false, error: e.message });
   }
 });

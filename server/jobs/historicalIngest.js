@@ -17,12 +17,11 @@ const {
   insertGrowthSnapshot,
   getPreviousBucketSnapshot,
 } = require('../db/queries');
+const { persistCreatorIdeaDnaForPipeline } = require('../services/creatorIdeaDnaPipeline');
 
-const VIDEOS_PER_CHANNEL = 500;
+const DEFAULT_VIDEOS_PER_CHANNEL = 500;
 
-// Ingest's own daily budget — prevents it from consuming snapshot's headroom.
-// Override via INGEST_QUOTA_BUDGET in .env.
-const INGEST_BUDGET = parseInt(process.env.INGEST_QUOTA_BUDGET || '30000', 10);
+// Ingest budget is set per-call via quotaBudget param (default: INGEST_QUOTA_BUDGET env or 30000)
 
 const BUCKET_THRESHOLDS = {
   '1d':   1,
@@ -84,7 +83,7 @@ function insertEligibleSnapshots(db, ytId, vdata, channelSubscribers) {
   return count;
 }
 
-async function ingestChannel(channel) {
+async function ingestChannel(channel, { maxVideos = DEFAULT_VIDEOS_PER_CHANNEL } = {}) {
   const db = getDb();
   let inserted = 0, skipped = 0, snapshots = 0;
 
@@ -128,7 +127,7 @@ async function ingestChannel(channel) {
 
   let videoIds = [];
   try {
-    const result = await fetchPlaylistItems(playlistId, null, VIDEOS_PER_CHANNEL);
+    const result = await fetchPlaylistItems(playlistId, null, maxVideos);
     videoIds = result.videoIds;
     quotaGuard.recordUsage(1, 'ingest');
   } catch (e) {
@@ -174,7 +173,7 @@ async function ingestChannel(channel) {
 
       // Retry with the fresh playlist ID
       try {
-        const result = await fetchPlaylistItems(freshPlaylistId, null, VIDEOS_PER_CHANNEL);
+        const result = await fetchPlaylistItems(freshPlaylistId, null, maxVideos);
         videoIds = result.videoIds;
         quotaGuard.recordUsage(1, 'ingest');
         playlistId = freshPlaylistId;
@@ -191,7 +190,10 @@ async function ingestChannel(channel) {
 
   if (!videoIds.length) {
     markChannelIngested(db, channel.channel_id);
-    return { inserted: 0, skipped: 0, snapshots: 0 };
+    const dna = persistCreatorIdeaDnaForPipeline(db, channel.channel_id, {
+      reason: 'historical_ingest_empty_uploads',
+    });
+    return { inserted: 0, skipped: 0, snapshots: 0, dna };
   }
 
   // 3. Batch-fetch full video data (snippet + statistics + contentDetails)
@@ -226,6 +228,14 @@ async function ingestChannel(channel) {
           published_at:        vdata.published_at,
           duration_seconds:    vdata.duration_seconds,
           category_id:         vdata.category_id,
+          thumbnail_url:       vdata.thumbnail_url,
+          thumbnail_width:     vdata.thumbnail_width,
+          thumbnail_height:    vdata.thumbnail_height,
+          thumbnail_aspect_ratio: vdata.thumbnail_aspect_ratio,
+          format_type:         vdata.format_type,
+          format_confidence:   vdata.format_confidence,
+          format_reason:       vdata.format_reason,
+          ingest_source:       'historical',
           views:               vdata.views,
           likes:               vdata.likes,
           comments:            vdata.comments,
@@ -248,11 +258,26 @@ async function ingestChannel(channel) {
   }
 
   markChannelIngested(db, channel.channel_id);
-  console.log(`[historical:${channel.channel_id}] niche=${channel.niche} inserted=${inserted} skipped=${skipped} snapshots=${snapshots}`);
-  return { inserted, skipped, snapshots };
+  const dna = persistCreatorIdeaDnaForPipeline(db, channel.channel_id, {
+    reason: 'historical_ingest_complete',
+  });
+  const dnaStatus = dna.ok && !dna.skipped
+    ? `dna=${dna.confidence}/${dna.sample_count}`
+    : `dna_skip=${dna.reason}`;
+  console.log(`[historical:${channel.channel_id}] niche=${channel.niche} inserted=${inserted} skipped=${skipped} snapshots=${snapshots} ${dnaStatus}`);
+  return { inserted, skipped, snapshots, dna };
 }
 
-async function runHistoricalIngestCycle({ batchSize = 5, batchGapMs = 200 } = {}) {
+async function runHistoricalIngestCycle({
+  batchSize = 3,
+  batchGapMs = 200,
+  quotaBudget,
+  maxChannels = null,
+  maxVideosPerChannel = DEFAULT_VIDEOS_PER_CHANNEL,
+  newestFirst = false,
+  maxRuntimeMs = null,
+} = {}) {
+  const INGEST_BUDGET = quotaBudget || parseInt(process.env.INGEST_QUOTA_BUDGET || '30000', 10);
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY) {
     console.warn('[historical] YT_API_KEY not set — skipping');
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
@@ -262,8 +287,25 @@ async function runHistoricalIngestCycle({ batchSize = 5, batchGapMs = 200 } = {}
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
   }
 
-  const db       = getDb();
-  const channels = getIngestableChannels(db);
+  const db = getDb();
+  const envMaxChannels = parseInt(process.env.HISTORICAL_INGEST_MAX_CHANNELS || '', 10);
+  const effectiveMaxChannels = Number.isFinite(maxChannels) && maxChannels > 0
+    ? maxChannels
+    : Number.isFinite(envMaxChannels) && envMaxChannels > 0
+      ? envMaxChannels
+      : null;
+  const effectiveMaxVideos = Math.max(1, parseInt(maxVideosPerChannel || DEFAULT_VIDEOS_PER_CHANNEL, 10));
+  const envMaxRuntime = parseInt(process.env.HISTORICAL_INGEST_MAX_RUNTIME_MS || '', 10);
+  const effectiveMaxRuntimeMs = Number.isFinite(maxRuntimeMs) && maxRuntimeMs > 0
+    ? maxRuntimeMs
+    : Number.isFinite(envMaxRuntime) && envMaxRuntime > 0
+      ? envMaxRuntime
+      : null;
+  const startMs = Date.now();
+  const channels = getIngestableChannels(db, {
+    limit: effectiveMaxChannels,
+    newestFirst,
+  });
   if (!channels.length) {
     console.log('[historical] No channels seeded — add channels via POST /api/admin/intelligence/channels');
     return { channels: 0, inserted: 0, skipped: 0, snapshots: 0 };
@@ -271,28 +313,43 @@ async function runHistoricalIngestCycle({ batchSize = 5, batchGapMs = 200 } = {}
 
   console.log(`[historical] Starting cycle — ${channels.length} channels, budget=${INGEST_BUDGET}, batchSize=${batchSize}`);
   let totalInserted = 0, totalSkipped = 0, totalSnapshots = 0, ingestUsed = 0;
+  let dnaBuilt = 0, dnaSkipped = 0;
 
   for (let i = 0; i < channels.length; i += batchSize) {
+    if (effectiveMaxRuntimeMs && Date.now() - startMs >= effectiveMaxRuntimeMs) {
+      console.warn(`[historical] Runtime cap (${effectiveMaxRuntimeMs}ms) reached - stopping cleanly`);
+      break;
+    }
     if (ingestUsed >= INGEST_BUDGET) {
       console.warn(`[historical] Ingest budget (${INGEST_BUDGET}) reached — stopping to preserve snapshot quota`);
       break;
     }
     const batch      = channels.slice(i, i + batchSize);
     const usedBefore = quotaGuard.getStats().used;
-    const results    = await Promise.all(batch.map(ch => ingestChannel(ch)));
+    const results    = await Promise.all(batch.map(ch => ingestChannel(ch, { maxVideos: effectiveMaxVideos })));
     ingestUsed      += (quotaGuard.getStats().used - usedBefore);
     for (const r of results) {
       totalInserted  += r.inserted;
       totalSkipped   += r.skipped;
       totalSnapshots += r.snapshots;
+      if (r.dna?.ok && !r.dna?.skipped) dnaBuilt++;
+      else if (r.dna) dnaSkipped++;
     }
     if (i + batchSize < channels.length) await sleep(batchGapMs);
   }
 
   const quota = quotaGuard.getStats();
-  console.log(`[historical] Cycle complete — inserted=${totalInserted} skipped=${totalSkipped} snapshots=${totalSnapshots} ingest_units=${ingestUsed}/${INGEST_BUDGET} total_quota=${quota.used}/${quota.cutoff}`);
+  console.log(`[historical] Cycle complete — inserted=${totalInserted} skipped=${totalSkipped} snapshots=${totalSnapshots} dna_built=${dnaBuilt} dna_skipped=${dnaSkipped} ingest_units=${ingestUsed}/${INGEST_BUDGET} total_quota=${quota.used}/${quota.cutoff}`);
   setLastRun('historical_ingest');
-  return { channels: channels.length, inserted: totalInserted, skipped: totalSkipped, snapshots: totalSnapshots };
+  return {
+    channels: channels.length,
+    inserted: totalInserted,
+    skipped: totalSkipped,
+    snapshots: totalSnapshots,
+    dna_built: dnaBuilt,
+    dna_skipped: dnaSkipped,
+    ingest_units: ingestUsed,
+  };
 }
 
 function startHistoricalIngestCron() {
@@ -301,12 +358,7 @@ function startHistoricalIngestCron() {
   });
   console.log('[Historical Ingest Cron] Scheduled — daily at 03:00 UTC');
 
-  if (hoursSinceLastRun('historical_ingest') > 23) {
-    console.log('[Historical Ingest Cron] Missed window detected — catch-up run in 15s');
-    setTimeout(() => {
-      withCronRetry(runHistoricalIngestCycle, 'historical-catchup', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
-    }, 15_000);
-  }
+  // No startup catch-up — run via: node pipeline.js
 }
 
 module.exports = { startHistoricalIngestCron, runHistoricalIngestCycle, ingestChannel };

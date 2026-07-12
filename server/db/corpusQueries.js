@@ -2,6 +2,81 @@
 
 const crypto = require('crypto');
 
+const GRAPH_DISCOVERY_SOURCES = [
+  'description_channel_id',
+  'description_handle_link',
+  'title_collab_handle',
+];
+
+const GRAPH_DISCOVERY_SQL_LIST = GRAPH_DISCOVERY_SOURCES.map(s => `'${s}'`).join(',');
+
+const INDIA_SEARCH_DISCOVERY_SOURCES = [
+  'video_search_IN',
+  'video_search_hi',
+  'video_search_pa',
+  'video_search_bn',
+  'video_search_kn',
+  'video_search_ml',
+  'video_search_ta',
+  'video_search_te',
+  'video_search_ar',
+  'hindi_keyword_search',
+  'punjabi_keyword_search',
+  'bengali_keyword_search',
+  'kannada_keyword_search',
+  'malayalam_keyword_search',
+  'tamil_keyword_search',
+  'telugu_keyword_search',
+  'arabic_keyword_search',
+  'keyword_search_IN',
+  'trending_IN',
+  'emerging_IN',
+];
+
+const INDIA_SEARCH_DISCOVERY_SQL_LIST = INDIA_SEARCH_DISCOVERY_SOURCES.map(s => `'${s}'`).join(',');
+// US/UK expansion: first-class discovery sources we now actively ingest.
+const USUK_SEARCH_DISCOVERY_SOURCES = [
+  'us_keyword_search',
+  'gb_keyword_search',
+  'trending_US',
+  'trending_GB',
+];
+const USUK_SEARCH_DISCOVERY_SQL_LIST = USUK_SEARCH_DISCOVERY_SOURCES.map(s => `'${s}'`).join(',');
+const FOREIGN_SEARCH_DISCOVERY_SQL_LIST = [
+  'video_search_es',
+  'video_search_pt',
+  'video_search_id',
+  'spanish_keyword_search',
+  'portuguese_keyword_search',
+  'indonesian_keyword_search',
+].map(s => `'${s}'`).join(',');
+
+const REFERENCE_LIKE_TITLE_SQL = [
+  "LOWER(cc.title) LIKE '%nursery rhyme%'",
+  "LOWER(cc.title) LIKE '%kids song%'",
+  "LOWER(cc.title) LIKE '%cosmetic%'",
+  "LOWER(cc.title) LIKE '%skincare%'",
+  "LOWER(cc.title) LIKE '%dot & key%'",
+  "LOWER(cc.title) LIKE '%maybelline%'",
+  "LOWER(cc.title) LIKE '%sephora%'",
+  "LOWER(cc.title) LIKE '%swiss beauty%'",
+  "LOWER(cc.title) LIKE '%nykaa%'",
+  "LOWER(cc.title) LIKE '%upgrad%'",
+  "LOWER(cc.title) LIKE '%lenovo%'",
+  "LOWER(cc.title) LIKE '%dji%'",
+  "LOWER(cc.title) LIKE '%minecraft%'",
+  "LOWER(cc.title) LIKE '%call of duty%'",
+  "LOWER(cc.title) LIKE '%cocomelon%'",
+  "LOWER(cc.title) LIKE '%shemaroo%'",
+  "LOWER(cc.title) LIKE '%yrf%'",
+  "LOWER(cc.title) LIKE '%set india%'",
+  "LOWER(cc.title) LIKE '%t-series%'",
+  "LOWER(cc.title) LIKE '%ultra bollywood%'",
+  "LOWER(cc.title) LIKE '%sony music%'",
+  "LOWER(cc.title) LIKE '%netflix%'",
+  "LOWER(cc.title) LIKE '%prime video%'",
+].join(' OR ');
+
 // ── corpus_channels ───────────────────────────────────────────────────────────
 
 function upsertCorpusChannel(db, ch) {
@@ -117,16 +192,143 @@ function countCorpusChannels(db) {
 
 function getCorpusChannelsForQualityEval(db, limit = 50) {
   return db.all(
-    `SELECT cc.* FROM corpus_channels cc
+    `SELECT cc.*,
+            CASE WHEN EXISTS (
+              SELECT 1 FROM corpus_videos cv WHERE cv.channel_id = cc.channel_id LIMIT 1
+            ) THEN 1 ELSE 0 END AS _has_videos,
+            CASE WHEN cc.discovery_source IN (${GRAPH_DISCOVERY_SQL_LIST}) THEN 1 ELSE 0 END AS _graph_source,
+            CASE WHEN cc.yt_country = 'IN' OR cc.country = 'IN' THEN 1 ELSE 0 END AS _is_indian,
+            CASE WHEN cc.subscriber_count >= 5000 AND cc.auto_promoted_at IS NULL THEN 1 ELSE 0 END AS _promotion_candidate
+     FROM corpus_channels cc
      LEFT JOIN corpus_quality_state cqs ON cqs.channel_id = cc.channel_id
      WHERE cqs.evaluated_at IS NULL
-        OR cqs.evaluated_at < datetime('now','-24 hours')
+        OR cqs.evaluated_at < datetime('now','-7 days')
         OR (cc.last_ingested_at IS NOT NULL AND (cqs.evaluated_at IS NULL OR cc.last_ingested_at > cqs.evaluated_at))
         OR ((cqs.sample_size IS NULL OR cqs.sample_size < 5)
             AND EXISTS (SELECT 1 FROM corpus_videos cv WHERE cv.channel_id = cc.channel_id LIMIT 1))
-     ORDER BY cc.priority_score DESC LIMIT ?`,
+     ORDER BY
+       _has_videos DESC,
+       _graph_source DESC,
+       _is_indian DESC,
+       _promotion_candidate DESC,
+       (cqs.evaluated_at IS NULL) DESC,
+       CASE WHEN cqs.evaluated_at IS NULL THEN COALESCE(cc.subscriber_count, 0) ELSE 0 END DESC,
+       cc.priority_score DESC
+     LIMIT ?`,
     [limit],
   );
+}
+
+function getCorpusChannelsForLightIngest(db, limit = 3000) {
+  return db.all(
+    `SELECT cc.*,
+            CASE WHEN cc.discovery_source IN (${GRAPH_DISCOVERY_SQL_LIST}) THEN 1 ELSE 0 END AS _graph_source,
+            CASE WHEN cc.created_at >= datetime('now','-2 hours') THEN 1 ELSE 0 END AS _fresh_discovery,
+            CASE
+              WHEN cc.discovery_source = 'title_collab_handle' THEN 3
+              WHEN cc.discovery_source = 'description_channel_id' THEN 2
+              WHEN cc.discovery_source = 'description_handle_link' THEN 1
+              ELSE 0
+            END AS _graph_source_rank,
+            CASE
+              WHEN cc.discovery_source = 'video_search_IN'
+                   AND COALESCE(cc.subscriber_count, 0) >= 500
+                   AND COALESCE(cc.video_count, 0) >= 5 THEN 9
+              WHEN cc.discovery_source IN (${INDIA_SEARCH_DISCOVERY_SQL_LIST})
+                   AND COALESCE(cc.subscriber_count, 0) >= 500
+                   AND COALESCE(cc.video_count, 0) >= 5 THEN 8
+              WHEN cc.discovery_source IN (${USUK_SEARCH_DISCOVERY_SQL_LIST})
+                   AND COALESCE(cc.subscriber_count, 0) >= 500
+                   AND COALESCE(cc.video_count, 0) >= 5 THEN 8
+              WHEN cc.discovery_source LIKE 'video_search%'
+                   AND (cc.yt_country = 'IN' OR cc.country = 'IN')
+                   AND COALESCE(cc.subscriber_count, 0) >= 500
+                   AND COALESCE(cc.video_count, 0) >= 5 THEN 6
+              WHEN cc.discovery_source LIKE '%keyword_search%'
+                   AND (cc.yt_country = 'IN' OR cc.country = 'IN')
+                   AND COALESCE(cc.subscriber_count, 0) >= 500
+                   AND COALESCE(cc.video_count, 0) >= 5 THEN 5
+              WHEN cc.discovery_source = 'title_collab_handle' THEN 4
+              WHEN cc.discovery_source = 'description_channel_id' THEN 3
+              WHEN cc.discovery_source = 'description_handle_link'
+                   AND COALESCE(cc.subscriber_count, 0) BETWEEN 1000 AND 10000000
+                   AND COALESCE(cc.video_count, 0) >= 5
+                   AND NOT (${REFERENCE_LIKE_TITLE_SQL}) THEN 2
+              WHEN cc.discovery_source = 'comment_harvest_IN'
+                   AND COALESCE(cc.subscriber_count, 0) >= 2000
+                   AND COALESCE(cc.video_count, 0) >= 10 THEN 1
+              ELSE 0
+            END AS _source_quality_rank,
+            CASE WHEN cc.yt_country = 'IN' OR cc.country = 'IN' THEN 1 ELSE 0 END AS _is_indian,
+            CASE WHEN cc.yt_country IN ('US','GB') OR cc.country IN ('US','GB') THEN 1 ELSE 0 END AS _is_target_foreign,
+            CASE WHEN cc.subscriber_count >= 5000 THEN 1 ELSE 0 END AS _has_promotable_size,
+            CASE
+              WHEN cc.subscriber_count BETWEEN 5000 AND 10000000 THEN 3
+              WHEN cc.subscriber_count BETWEEN 10000000 AND 50000000 THEN 2
+              WHEN cc.subscriber_count BETWEEN 1000 AND 5000 THEN 1
+              ELSE 0
+            END AS _creator_size_fit,
+            CASE WHEN (${REFERENCE_LIKE_TITLE_SQL}) THEN 1 ELSE 0 END AS _reference_like
+     FROM corpus_channels cc
+     WHERE cc.ingest_depth < 1
+       AND cc.is_spam = 0
+       AND (cc.discovery_source IS NULL OR cc.discovery_source != 'ingested_channels_sync')
+       AND NOT (
+         cc.discovery_source IN (${FOREIGN_SEARCH_DISCOVERY_SQL_LIST})
+         AND NOT (cc.yt_country = 'IN' OR cc.country = 'IN')
+       )
+       AND NOT (
+         (
+           cc.discovery_source LIKE 'video_search%'
+           OR cc.discovery_source LIKE '%keyword_search%'
+           OR cc.discovery_source IN ('trending_IN', 'emerging_IN')
+         )
+         AND COALESCE(cc.video_count, 0) < 5
+       )
+       AND NOT (
+         cc.discovery_source = 'description_handle_link'
+         AND (
+           (${REFERENCE_LIKE_TITLE_SQL})
+           OR COALESCE(cc.video_count, 0) < 5
+           OR COALESCE(cc.subscriber_count, 0) < 1000
+           OR COALESCE(cc.subscriber_count, 0) > 10000000
+         )
+       )
+       AND (
+         cc.discovery_source IS NULL
+         OR cc.discovery_source != 'comment_harvest_IN'
+         OR (
+           COALESCE(cc.subscriber_count, 0) >= 2000
+           AND COALESCE(cc.video_count, 0) >= 10
+         )
+       )
+     ORDER BY
+       _source_quality_rank DESC,
+       _fresh_discovery DESC,
+       _is_target_foreign DESC,
+       _is_indian DESC,
+       _graph_source DESC,
+       _graph_source_rank DESC,
+       _reference_like ASC,
+       _creator_size_fit DESC,
+       _has_promotable_size DESC,
+       COALESCE(cc.subscriber_count, 0) DESC,
+       cc.priority_score DESC
+     LIMIT ?`,
+    [limit],
+  );
+}
+
+function normalizeGraphDiscoveryAdmissionState(db) {
+  const info = db.run(
+    `UPDATE corpus_channels
+     SET last_ingested_at = NULL,
+         updated_at = datetime('now')
+     WHERE discovery_source IN (${GRAPH_DISCOVERY_SQL_LIST})
+       AND ingest_depth < 1
+       AND last_ingested_at IS NOT NULL`,
+  );
+  return { graph_channels_reset: info.changes ?? 0 };
 }
 
 // ── corpus_videos ─────────────────────────────────────────────────────────────
@@ -401,7 +603,10 @@ function getUnclassifiedCorpusChannels(db, limit = 100) {
   return db.all(
     `SELECT channel_id, title FROM corpus_channels
      WHERE niche IS NULL AND ingest_depth >= 1
-     ORDER BY subscriber_count DESC LIMIT ?`,
+     ORDER BY
+       CASE WHEN discovery_source IN (${GRAPH_DISCOVERY_SQL_LIST}) THEN 1 ELSE 0 END DESC,
+       subscriber_count DESC
+     LIMIT ?`,
     [limit],
   );
 }
@@ -523,7 +728,8 @@ module.exports = {
   updateCorpusChannelQuality, updateCorpusChannelSemanticStatus,
   updateCorpusChannelPriority, promoteCorpusChannelTraining,
   demoteCorpusChannelTraining, getAllCorpusChannels, countCorpusChannels,
-  getCorpusChannelsForQualityEval,
+  getCorpusChannelsForQualityEval, getCorpusChannelsForLightIngest,
+  normalizeGraphDiscoveryAdmissionState,
   upsertCorpusVideo, getCorpusVideosByChannel, getCorpusVideoCount,
   getCorpusVideosPendingEmbedding, updateCorpusVideoEmbeddingStatus,
   upsertCorpusQualityState, getCorpusQualityState,

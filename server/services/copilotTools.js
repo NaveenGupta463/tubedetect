@@ -516,17 +516,113 @@ function dispatch(db, toolName, input, contextChannelId, creatorFormat = 'long')
   };
 
   switch (toolName) {
-    case 'findChannels':    return findChannels(db, input);
-    case 'findPeers':       return withCtx(findPeers);
-    case 'findTopics':      return withCtx(findTopics);
-    case 'compareChannels': return compareChannels(db, input);
-    case 'findOpportunity': return withCtx(findOpportunity);
-    case 'trackNiche':      return trackNiche(db, input);
-    case 'draftOutline':    return withCtx(draftOutline);
-    case 'writeBody':       return withCtx(writeBody);
-    case 'writeEnding':     return withCtx(writeEnding);
-    default:                return { error: `Unknown tool: ${toolName}` };
+    case 'findChannels':        return findChannels(db, input);
+    case 'findPeers':           return withCtx(findPeers);
+    case 'findTopics':          return withCtx(findTopics);
+    case 'compareChannels':     return compareChannels(db, input);
+    case 'findOpportunity':     return withCtx(findOpportunity);
+    case 'trackNiche':          return trackNiche(db, input);
+    case 'draftOutline':        return withCtx(draftOutline);
+    case 'writeBody':           return withCtx(writeBody);
+    case 'writeEnding':         return withCtx(writeEnding);
+    case 'getChannelEvolution': return withCtx(getChannelEvolution);
+    case 'getTopicTrend':       return getTopicTrend(db, input);
+    default:                    return { error: `Unknown tool: ${toolName}` };
   }
 }
 
-module.exports = { dispatch, detectCreatorFormat, findChannels, findPeers, findTopics, compareChannels, findOpportunity, trackNiche, draftOutline, writeBody, writeEnding };
+// ── Intelligence Tools (V1.5) ─────────────────────────────────────────────────
+
+const NOISE_SUFFIXES = [' videos', ' vlogs', ' vlog', ' vlogging', ' content', ' channels', ' channel', ' clips'];
+function canonicalise(topic) {
+  if (!topic) return '';
+  let t = topic.toLowerCase().trim();
+  for (const s of NOISE_SUFFIXES) {
+    if (t.endsWith(s)) { t = t.slice(0, -s.length).trim(); break; }
+  }
+  return t || topic.toLowerCase().trim();
+}
+
+function isStaleRow(computed_at) {
+  return computed_at && (Date.now() - new Date(computed_at).getTime()) > 26 * 60 * 60 * 1000;
+}
+
+function getChannelEvolution(db, { channel_id, period = '30d' }) {
+  if (!channel_id) return { error: 'channel_id is required' };
+  const row = db.get(
+    'SELECT * FROM channel_evolution_summary WHERE channel_id = ? AND period = ?',
+    [channel_id, period],
+  );
+  if (!row) {
+    return { no_data: true, message: 'No evolution data yet — the nightly aggregation runs at 3am and populates this.' };
+  }
+
+  let topics = [];
+  let notable = null;
+  try { topics  = JSON.parse(row.topics_maintained || '[]'); } catch (_) {}
+  try { notable = row.notable_event ? JSON.parse(row.notable_event) : null; } catch (_) {}
+
+  const result = {
+    channel_id,
+    period,
+    view_change_pct:  row.view_change_pct,
+    upload_delta:     row.upload_delta,
+    avg_views:        row.avg_views,
+    peak_views:       row.peak_views,
+    video_count:      row.video_count,
+    topics:           topics.slice(0, 12),
+    notable_event:    notable,
+    data_freshness:   row.computed_at,
+  };
+  if (isStaleRow(row.computed_at)) result.data_stale = true;
+  return result;
+}
+
+function getTopicTrend(db, { topic, period = '30d' }) {
+  if (!topic) return { error: 'topic is required' };
+  const canonical = canonicalise(topic);
+
+  // Try exact match first, then canonical
+  const row = db.get(
+    `SELECT * FROM topic_community_stats
+     WHERE (topic = ? OR topic = ?) AND period = ?
+     ORDER BY channel_count DESC LIMIT 1`,
+    [topic.toLowerCase().trim(), canonical, period],
+  );
+
+  if (!row) {
+    // Try partial match on canonical
+    const fuzzy = db.get(
+      `SELECT * FROM topic_community_stats
+       WHERE topic LIKE ? AND period = ?
+       ORDER BY channel_count DESC LIMIT 1`,
+      [`%${canonical}%`, period],
+    );
+    if (!fuzzy) {
+      return {
+        no_data: true,
+        message: `No community data for "${topic}" — this topic either isn't tracked in your community yet or has fewer than 5 active channels. Try a broader term (e.g. "mindset" instead of "stoicism", "finance" instead of "personal finance tips").`,
+        canonical_tried: canonical,
+      };
+    }
+    return _formatTopicRow(fuzzy, period);
+  }
+  return _formatTopicRow(row, period);
+}
+
+function _formatTopicRow(row, period) {
+  const result = {
+    topic:          row.topic,
+    period,
+    channel_count:  row.channel_count,
+    avg_views:      row.avg_views,
+    total_views:    row.total_views,
+    velocity_trend: row.velocity_trend || 'stable',
+    velocity:       row.velocity,
+    data_freshness: row.computed_at,
+  };
+  if (isStaleRow(row.computed_at)) result.data_stale = true;
+  return result;
+}
+
+module.exports = { dispatch, detectCreatorFormat, findChannels, findPeers, findTopics, compareChannels, findOpportunity, trackNiche, draftOutline, writeBody, writeEnding, getChannelEvolution, getTopicTrend };

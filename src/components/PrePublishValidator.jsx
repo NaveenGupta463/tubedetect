@@ -466,6 +466,22 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
         }
       } catch {}
 
+      // Fetch relevant research papers (real academic sources shown as supporting context —
+      // never used to verify/contradict claims, just related-reading evidence)
+      let researchPapers = [];
+      try {
+        const ac2 = new AbortController();
+        const tid2 = setTimeout(() => ac2.abort(), 2000);
+        const resRes = await fetch(ROUTES.researchPapers, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ topic: form.title, category: form.category, text: contentDescription, limit: 5 }),
+          signal: ac2.signal,
+        });
+        clearTimeout(tid2);
+        if (resRes.ok) { const j = await resRes.json(); researchPapers = j.papers ?? []; }
+      } catch {}
+
       const data = await validateVideo({
         ...form,
         contentDescription,
@@ -473,10 +489,12 @@ export default function PrePublishValidator({ tier, canUseAI, consumeAICall, rem
         thumbDescription: thumbPreview ? '' : thumbDescription.trim(),
         thumbInputType,
         semanticNeighbors,
+        researchPapers,
       }, thumbPreview || null);
       timers.forEach(clearTimeout);
       setProgressStep(6);
       consumeAICall();
+      data.researchCitations = researchPapers; // code-assigned — never touched by Claude's JSON
       setResult(data);
       storage.setJSON(cacheKey, data);
       // Set semantic state for panels (Stage 3 & 4)

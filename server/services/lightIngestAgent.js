@@ -30,25 +30,41 @@ const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+function log(...args) {
+  if (process.env.CORPUS_QUIET_GROWTH !== '1') console.log(...args);
+}
 
 // ── YouTube helpers (quota-aware, key-rotating) ───────────────────────────────
 
-async function ytFetch(endpoint, params) {
+async function ytFetch(endpoint, params, timeoutMs = 25_000) {
   if (!quotaGuard.quotaAvailable(1)) throw new Error('quota_exhausted');
   for (let attempt = 0; attempt < 3; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('ingest');
     if (!key) throw new Error('all_api_keys_exhausted');
     const url = new URL(`${YT_BASE}/${endpoint}`);
     url.searchParams.set('key', key);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const resp = await fetch(url.toString());
-    const data = await resp.json();
-    if (!resp.ok) {
-      const msg = data?.error?.message || `YouTube ${resp.status}`;
-      if (isQuotaError(msg)) { markExhausted(key); continue; }
-      throw new Error(msg);
+    const ac    = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url.toString(), { signal: ac.signal });
+      const data = await resp.json();
+      clearTimeout(timer);
+      if (!resp.ok) {
+        const msg = data?.error?.message || `YouTube ${resp.status}`;
+        if (isQuotaError(msg)) { markExhausted(key); continue; }
+        throw new Error(msg);
+      }
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        console.warn(`[lightIngest] ytFetch timeout (${timeoutMs}ms) for ${endpoint}, attempt ${attempt + 1}`);
+        if (attempt < 2) continue;
+        throw new Error(`ytFetch_timeout:${endpoint}`);
+      }
+      throw e;
     }
-    return data;
   }
   throw new Error('all_api_keys_exhausted');
 }
@@ -56,7 +72,7 @@ async function ytFetch(endpoint, params) {
 // ── Channel light-ingest ──────────────────────────────────────────────────────
 
 async function lightIngestChannel(db, channelId, { discoverySource = 'manual' } = {}) {
-  if (!getApiKey()) {
+  if (!getApiKey('ingest')) {
     console.warn('[lightIngest] No API key — cannot ingest', channelId);
     return { ok: false, reason: 'no_api_key' };
   }
@@ -113,7 +129,7 @@ async function lightIngestChannel(db, channelId, { discoverySource = 'manual' } 
     // Queue channel title for embedding
     enqueueForEmbedding(db, { entity_type: 'channel', entity_id: channelId, priority: 6 });
 
-    console.log(`[lightIngest] channel stored: ${item.id} (${snippet.title})`);
+    log(`[lightIngest] channel stored: ${item.id} (${snippet.title})`);
     return { ok: true, channel_id: item.id, title: snippet.title };
   } catch (e) {
     if (e.message === 'quota_exhausted') return { ok: false, reason: 'quota_exhausted' };
@@ -192,7 +208,7 @@ async function lightIngestVideoBatch(db, channelId, videoIds) {
     logChannelEvent(db, channelId, 'title_snapshot', { videos: snapshotItems });
   }
 
-  console.log(`[lightIngest] videos stored: ${results.stored} for channel ${channelId}`);
+  log(`[lightIngest] videos stored: ${results.stored} for channel ${channelId}`);
   return results;
 }
 

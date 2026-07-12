@@ -1,6 +1,7 @@
 .env
 node_modules
 dist
+dist-v2
 electron-dist
 .claude/
 .continue/
@@ -10,5 +11,9 @@ backend/tubeintel.sqlite
 backend/cache.json
 server/.env
 server/*.sqlite
+server/data/
 *.sqlite
 *.log
+# Temp corpus export files (Windows AppData temp path)
+*corpus.json
+test-results/

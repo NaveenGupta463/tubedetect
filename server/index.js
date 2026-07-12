@@ -26,6 +26,21 @@ try {
   const logger  = require('./utils/logger');
   const express = require('express');
   const cors    = require('cors');
+  const API_SLOW_MS = Math.max(0, parseInt(process.env.API_SLOW_MS || '1000', 10));
+  const API_TIMING_DEBUG = process.env.API_TIMING_DEBUG === '1';
+  const API_TIMING_ALWAYS = new Set([
+    '/api/intel/what-to-post',
+    '/api/intel/community-hot',
+    '/api/intel/adjacent-ideas',
+    '/api/intel/foreign-signal',
+    '/api/intel/trending-topics',
+  ]);
+
+  function routeForTiming(req) {
+    return String(req.originalUrl || req.url || req.path || '')
+      .replace(/\?.*$/, '')
+      .slice(0, 180);
+  }
 
   logger.info('STARTUP', `TubeIntel Scoring Server — Node ${process.version} — PID ${process.pid}`);
   logger.info('STARTUP', `OPENAI_API_KEY   : ${process.env.OPENAI_API_KEY    ? '✓ loaded' : '✗ missing — embeddings disabled'}`);
@@ -66,36 +81,46 @@ try {
   const creditsRoute                     = require('./routes/credits');
   const draftsRoute                      = require('./routes/drafts');
   const { router: channelSignalsRoute }  = require('./routes/channelSignals');
-  const { startLanguageDetectionCron }   = require('./jobs/languageDetectionJob');
   const intelligenceRoute       = require('./routes/intelligence');
   const semanticRoute           = require('./routes/semantic');
+  const researchRoute           = require('./routes/research');
   const strategyRoute           = require('./routes/strategy');
   const channelCacheRoute       = require('./routes/channelCache');
   const corpusRoute             = require('./routes/corpus');
   const governanceRoute         = require('./routes/governance');
-  const { startCron }                    = require('./jobs/feedbackCron');
-  const { startIngestCron }              = require('./jobs/youtubeIngest');
-  const { startRefreshCron }             = require('./jobs/refreshCron');
-  const { startOutcomeRefreshJob }       = require('./jobs/outcomeRefreshJob');
-  const { startHistoricalIngestCron }    = require('./jobs/historicalIngest');
-  const { startSnapshotCron }            = require('./jobs/snapshotCron');
-  const { startNewVideoSweepCron }       = require('./jobs/newVideoSweep');
-  const { startSyntheticCalibrationCron } = require('./jobs/syntheticCalibration');
-  const { startLearningSnapshotCron }     = require('./jobs/learningSnapshotCron');
-  const { startLearningConfidenceCron }   = require('./jobs/learningConfidenceCron');
-  const { startHookAggregationCron }      = require('./jobs/aggregateHookPerformance');
-  const { startLearningCohortCron }       = require('./jobs/learningCohortCron');
-  const { startEmbeddingIngestCron }      = require('./jobs/embeddingIngestJob');
-  const { startSemanticClusteringCron }   = require('./jobs/semanticClusteringJob');
-  const { startCorpusScheduler }          = require('./services/corpusScheduler');
-  const { startCrawlerCron }             = require('./jobs/indiaCrawlerJob');
-  const { startPromotionCron }           = require('./jobs/corpusPromotionJob');
-  const { startBackupCron }              = require('./jobs/backupJob');
-
+  const videoRepairRoute              = require('./routes/videoRepair');
+  const prepublishIntelligenceRoute   = require('./routes/prepublishIntelligence');
+  const wtpOutcomesRoute              = require('./routes/wtpOutcomes');
+  const wtpAttributionRoute           = require('./routes/wtpAttribution');
   const app = express();
 
   app.use(cors());
   app.use(express.json());
+
+  app.use((req, res, next) => {
+    const started = Date.now();
+    const route = routeForTiming(req);
+    res.on('finish', () => {
+      const ms = Date.now() - started;
+      const always = API_TIMING_ALWAYS.has(route);
+      if (!API_TIMING_DEBUG && !always && (API_SLOW_MS <= 0 || ms < API_SLOW_MS)) return;
+      const level = API_SLOW_MS > 0 && ms >= API_SLOW_MS ? 'warn' : 'info';
+      logger[level]('API_TIMING', `${req.method} ${route} status=${res.statusCode} ms=${ms}`);
+    });
+    next();
+  });
+
+  // Kill requests that hang longer than their allowed time.
+  // Copilot/AI routes get 90s (Claude streaming can take 40-60s).
+  // All other routes get 20s.
+  app.use((req, res, next) => {
+    const isAiRoute = req.path.startsWith('/api/copilot') || req.path.match(/\/api\/repair\/[^/]+\/ai$/);
+    const timeout = isAiRoute ? 90000 : 20000;
+    res.setTimeout(timeout, () => {
+      if (!res.headersSent) res.status(503).json({ error: 'Request timed out' });
+    });
+    next();
+  });
 
   getDb();
 
@@ -120,10 +145,15 @@ try {
   app.use('/api', channelSignalsRoute);
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
+  app.use('/api', researchRoute);
   app.use('/api', strategyRoute);
   app.use('/api', channelCacheRoute);
   app.use('/api', corpusRoute);
   app.use('/api', governanceRoute);
+  app.use('/api', videoRepairRoute);
+  app.use('/api/intel', prepublishIntelligenceRoute);
+  app.use('/api/intel', wtpOutcomesRoute);
+  app.use('/api/intel', wtpAttributionRoute);
 
   // ── Admin routes (token-protected) ───────────────────────────────────────────
   app.use('/api', adminRoute);
@@ -139,28 +169,21 @@ try {
   });
 
   const BASE_PORT = parseInt(process.env.PORT || '3002', 10);
+  const legacyCronBlock = process.env.E2E_NO_CRONS === '1' || process.env.DISABLE_STARTUP_CRONS === '1';
+  const apiCronsEnabled = process.env.ENABLE_API_CRONS === '1' && !legacyCronBlock;
 
   const server = app.listen(BASE_PORT, () => {
     logger.info('STARTUP', `Scoring Server listening on port ${BASE_PORT}`);
-    startCron();
-    startIngestCron();
-    startRefreshCron();
-    startOutcomeRefreshJob();
-    startHistoricalIngestCron();
-    startSnapshotCron();
-    startNewVideoSweepCron();
-    startSyntheticCalibrationCron();
-    startLearningSnapshotCron();
-    startLearningConfidenceCron();
-    startHookAggregationCron();
-    startLearningCohortCron();
-    startEmbeddingIngestCron();
-    startSemanticClusteringCron();
-    startCorpusScheduler();
-    startLanguageDetectionCron();
-    startCrawlerCron();
-    startPromotionCron();
-    startBackupCron();
+    if (legacyCronBlock) {
+      logger.warn('STARTUP', 'Startup crons disabled by E2E_NO_CRONS/DISABLE_STARTUP_CRONS');
+      return;
+    }
+    if (!apiCronsEnabled) {
+      logger.warn('STARTUP', 'API process running without background crons. Start server/worker.js for jobs, or set ENABLE_API_CRONS=1 for legacy single-process behavior.');
+      return;
+    }
+    const { startBackgroundJobs } = require('./jobs/backgroundJobs');
+    startBackgroundJobs({ logger, source: 'api_legacy' });
   });
 
   server.on('error', (err) => {

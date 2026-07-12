@@ -49,10 +49,19 @@ const IconTrend = ({ size = 13 }) => (
 
 const STARTERS = [
   "What should I post this week?",
-  "Draft a video outline for my best opportunity",
+  "How has my channel changed in the last 30 days?",
   "What topics am I missing?",
   "Who are my top peers?",
 ];
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+function fmtViews(n) {
+  if (!n && n !== 0) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${Math.round(n / 1_000)}K`;
+  return String(n);
+}
 
 // ── Card renderers ────────────────────────────────────────────────────────────
 
@@ -453,6 +462,109 @@ function ComparisonCard({ data }) {
   );
 }
 
+function EvolutionCard({ data, onAction }) {
+  const pct     = data.view_change_pct;
+  const isUp    = pct > 0;
+  const isDown  = pct < 0;
+  const pctColor = isUp ? T.success : isDown ? '#f87171' : T.muted;
+  const pctLabel = pct == null ? 'No prior baseline'
+    : `${isUp ? '+' : ''}${pct}% views vs prior period`;
+  const uploadLabel = data.upload_delta == null ? null
+    : data.upload_delta > 0 ? `+${data.upload_delta} uploads/wk`
+    : data.upload_delta < 0 ? `${data.upload_delta} uploads/wk`
+    : 'Same upload pace';
+
+  return (
+    <div style={{
+      padding: '12px 14px', borderRadius: 10, marginBottom: 6,
+      background: 'rgba(124,58,237,0.08)',
+      border: `1px solid ${T.accentBorder}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 8 }}>
+        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: T.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Channel Evolution · {data.period}
+        </span>
+        {data.data_stale && (
+          <span style={{ fontSize: '0.65rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '1px 6px', borderRadius: 4 }}>stale data</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap', marginBottom: 6 }}>
+        <div>
+          <div style={{ fontSize: '1.1rem', fontWeight: 700, color: pctColor }}>{pctLabel}</div>
+          <div style={{ fontSize: '0.68rem', color: T.muted }}>avg {fmtViews(data.avg_views)} views · {data.video_count} videos</div>
+        </div>
+        {uploadLabel && (
+          <div>
+            <div style={{ fontSize: '0.82rem', fontWeight: 600, color: T.text }}>{uploadLabel}</div>
+            <div style={{ fontSize: '0.68rem', color: T.muted }}>upload frequency</div>
+          </div>
+        )}
+      </div>
+      {data.notable_event && (
+        <div style={{ marginBottom: 6, padding: '4px 8px', borderRadius: 6, background: 'rgba(245,158,11,0.12)', display: 'inline-flex', alignItems: 'center', gap: 5 }}>
+          <span style={{ fontSize: '0.75rem' }}>⚡</span>
+          <span style={{ fontSize: '0.72rem', color: '#fbbf24', fontWeight: 600 }}>
+            Viral spike — {data.notable_event.magnitude}× normal views
+          </span>
+        </div>
+      )}
+      {data.topics?.length > 0 && (
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 4, marginBottom: 8 }}>
+          {data.topics.slice(0, 8).map((t, i) => (
+            <span key={i} style={{ fontSize: '0.65rem', color: T.muted, background: 'rgba(255,255,255,0.05)', padding: '2px 7px', borderRadius: 4 }}>{t}</span>
+          ))}
+        </div>
+      )}
+      {onAction && (
+        <button
+          onClick={() => onAction({ type: 'find_opportunity', label: 'Find content opportunities', payload: {} })}
+          style={{
+            marginTop: 4, padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
+            background: 'rgba(157,111,255,0.15)', border: `1px solid ${T.accentBorder}`,
+            color: T.accent, fontSize: '0.73rem', fontWeight: 600,
+          }}
+        >
+          Find content opportunities
+        </button>
+      )}
+    </div>
+  );
+}
+
+function TopicDriftCard({ data }) {
+  const trend = data.velocity_trend || 'stable';
+  const trendColor = trend === 'rising' ? T.success : trend === 'falling' ? '#f87171' : T.muted;
+  const trendLabel = trend === 'rising' ? 'Rising ↑' : trend === 'falling' ? 'Falling ↓' : 'Stable →';
+
+  return (
+    <div style={{
+      padding: '12px 14px', borderRadius: 10, marginBottom: 6,
+      background: trend === 'rising' ? 'rgba(18,217,138,0.07)' : 'rgba(255,255,255,0.03)',
+      border: `1px solid ${trend === 'rising' ? 'rgba(18,217,138,0.25)' : T.border}`,
+    }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 6 }}>
+        <span style={{ fontSize: '0.7rem', fontWeight: 700, color: T.accent, textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+          Community Topic
+        </span>
+        {data.data_stale && (
+          <span style={{ fontSize: '0.65rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '1px 6px', borderRadius: 4 }}>stale data</span>
+        )}
+      </div>
+      <div style={{ display: 'flex', alignItems: 'baseline', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: '0.92rem', fontWeight: 700, color: T.text }}>{data.topic}</span>
+        <span style={{ fontSize: '0.75rem', fontWeight: 600, color: trendColor }}>{trendLabel}</span>
+      </div>
+      <div style={{ display: 'flex', gap: 16, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: '0.72rem', color: T.muted }}>{data.channel_count} channels posting</span>
+        {data.avg_views > 0 && (
+          <span style={{ fontSize: '0.72rem', color: T.success }}>{fmtViews(data.avg_views)} avg views</span>
+        )}
+        <span style={{ fontSize: '0.65rem', color: T.muted }}>· {data.period} window</span>
+      </div>
+    </div>
+  );
+}
+
 function renderCard(card, idx, onAction, placeholders) {
   if (card.type === 'script') {
     const count = (placeholders || []).filter(p => p.type === 'override').length;
@@ -463,9 +575,11 @@ function renderCard(card, idx, onAction, placeholders) {
     case 'channel':    return <ChannelCard     key={idx} data={card.data} />;
     case 'opportunity':return <OpportunityCard key={idx} data={card.data} onAction={onAction} />;
     case 'video':      return <VideoCard       key={idx} data={card.data} />;
-    case 'comparison': return <ComparisonCard  key={idx} data={card.data} />;
-    case 'outline':    return <OutlineCard     key={idx} data={card.data} placeholders={placeholders} />;
-    default:           return null;
+    case 'comparison':  return <ComparisonCard  key={idx} data={card.data} />;
+    case 'outline':     return <OutlineCard     key={idx} data={card.data} placeholders={placeholders} />;
+    case 'evolution':   return <EvolutionCard   key={idx} data={card.data} onAction={onAction} />;
+    case 'topic_drift': return <TopicDriftCard  key={idx} data={card.data} />;
+    default:            return null;
   }
 }
 
@@ -494,6 +608,10 @@ function ActionButtons({ actions, onAction }) {
           {a.type === 'write_hook'        && <IconSend    size={11} />}
           {a.type === 'write_body'        && <IconSend    size={11} />}
           {a.type === 'write_ending'      && <IconSend    size={11} />}
+          {a.type === 'podcast_episode_plan' && <IconSparkle size={11} />}
+          {a.type === 'podcast_questions'    && <IconSend    size={11} />}
+          {a.type === 'podcast_pushback'     && <IconSparkle size={11} />}
+          {a.type === 'podcast_clips'        && <IconSend    size={11} />}
           {a.type === 'new_draft'         && <IconSparkle size={11} />}
           {a.type === 'regenerate_ideas'  && <IconSparkle size={11} />}
           {a.label}
@@ -517,6 +635,190 @@ function getMsgPartKeys(msg) {
   return (msg.cards || [])
     .filter(c => c.type === 'outline' || c.type === 'script')
     .map(c => c.type === 'script' ? `script:${c.data?.part || 'body'}` : 'outline');
+}
+
+function podcastThemeLine(payload = {}) {
+  const title = payload.title || payload.theme || 'this podcast episode';
+  const guest = payload.guest || 'a credible guest';
+  const evidence = payload.evidence ? `Peer evidence: ${payload.evidence}. ` : '';
+  const angle = payload.angle ? `Angle: ${payload.angle}` : '';
+  const text = `${title} ${guest} ${payload.evidence || ''} ${payload.angle || ''}`.toLowerCase();
+  const themeKind = /\b(money|wealth|finance|financial|invest|saving|income|salary|real estate|stock|market|economy|inflation|petrol|diesel|oil)\b/.test(text)
+    ? 'finance'
+    : 'general';
+  return { title, guest, context: `${evidence}${angle}`.trim(), themeKind };
+}
+
+function buildPodcastActionMessage(type, payload = {}) {
+  const { title, guest, context, themeKind } = podcastThemeLine(payload);
+  const ctx = context ? `\n\n${context}` : '';
+
+  if (type === 'podcast_episode_plan') {
+    if (themeKind !== 'finance') {
+      return `Episode arc for "${title}"${ctx}
+
+1. Cold open: Start with the most relatable contradiction in the theme. Make the viewer feel the topic affects their life, work, family, or future.
+2. Guest credibility: Establish why the ${guest} has first-hand or expert pattern recognition.
+3. Stakes: Translate the theme into consequences for the viewer. What changes if they ignore it?
+4. Friction: Bring in the uncomfortable tradeoff, disagreement, or misconception.
+5. Story layer: Ask for one real case, failure, turning point, or behind-the-scenes moment.
+6. Practical reset: Convert the discussion into 3 decisions, signals, or questions the viewer can use.
+7. Ending: Close with one memorable rule, warning, or question the audience can repeat.
+
+Host stance: Be curious but not passive. Keep asking "what does this mean for the viewer tomorrow?"`;
+    }
+    return `Episode arc for "${title}"${ctx}
+
+1. Cold open: Start with the uncomfortable contradiction behind the topic. Make the viewer feel, "This is about me, not just finance."
+2. Guest credibility: Establish why the ${guest} has seen this pattern repeatedly.
+3. Personal mirror: Move from advice to behavior. Ask why smart people still make poor money decisions.
+4. Status pressure: Bring in family, lifestyle inflation, social comparison, and the need to look successful.
+5. Practical reset: Turn the debate into 3-4 decisions viewers can actually make this month.
+6. Climax question: "Is wealth mostly about earning more, or about escaping the pressure to spend more?"
+7. Ending: Close with one memorable rule the audience can repeat, then ask viewers which money behavior they are trying to fix.
+
+Host stance: Be empathetic but skeptical. Don't let the conversation become generic motivation; keep pulling it back to real Indian household choices.`;
+  }
+
+  if (type === 'podcast_questions') {
+    if (themeKind !== 'finance') {
+      return `Questions for "${title}"${ctx}
+
+1. What is the most misunderstood part of this topic?
+2. What changed recently that makes this worth discussing now?
+3. Who is most affected by this, and who is pretending it does not matter?
+4. What is one story that captures the whole issue?
+5. What do outsiders get wrong when they talk about it?
+6. Where do you disagree with the popular narrative?
+7. What should viewers stop assuming?
+8. What signal should people watch over the next 6-12 months?
+9. What is the uncomfortable tradeoff nobody wants to say out loud?
+10. If you had to simplify this for a 20-year-old viewer, what would you say?
+11. What is one practical decision this should change?
+12. What is the one question viewers should ask themselves after this episode?
+
+Follow-up style: After every broad answer, ask for a real example. After every expert answer, ask what it means for ordinary viewers.`;
+    }
+    return `Questions for "${title}"${ctx}
+
+1. What money belief did you have to unlearn personally?
+2. Why do people who earn well still feel financially insecure?
+3. Where does status pressure quietly enter money decisions?
+4. What is one common money habit that looks responsible but is actually harmful?
+5. How should a young Indian decide between saving, investing, and upgrading lifestyle?
+6. What do most people misunderstand about becoming wealthy?
+7. When does ambition become financial self-sabotage?
+8. What role does family expectation play in money anxiety?
+9. What is the most overrated piece of finance advice online?
+10. If someone has only 10 minutes this week, what should they check in their finances?
+11. What would you tell someone earning more but saving less than before?
+12. What is one rule you wish every viewer would follow for the next 12 months?
+
+Follow-up style: Ask "why does this happen?" after every advice answer, and "what does this look like in real life?" after every abstract answer.`;
+  }
+
+  if (type === 'podcast_pushback') {
+    if (themeKind !== 'finance') {
+      return `Tension map for "${title}"${ctx}
+
+Central debate: Is the mainstream explanation of this issue too simple, or is the real problem hidden in incentives, tradeoffs, and human behavior?
+
+Pushback points:
+1. What is the strongest argument against your view?
+2. Who benefits if viewers misunderstand this?
+3. Are we overreacting, or underreacting?
+4. What does the popular narrative leave out?
+5. What would make your prediction wrong?
+6. What should ordinary people do differently after hearing this?
+
+Where to challenge the guest:
+- When they make a big claim, ask for the mechanism.
+- When they use expert language, ask for a viewer-level example.
+- When they blame one side, ask what the other side gets right.
+
+Tone: Respectful pressure. The host should make the guest clarify, not just agree.`;
+    }
+    return `Tension map for "${title}"${ctx}
+
+Central debate: Is financial growth mainly about better knowledge, or better behavior under social pressure?
+
+Pushback points:
+1. If the advice is so simple, why do educated people still fail at it?
+2. Are finance creators underestimating how much family pressure shapes spending?
+3. Is "invest early" useless advice for people with unstable income?
+4. Does personal finance advice blame individuals for structural problems?
+5. When does saving become fear instead of discipline?
+6. Are people chasing wealth, or just trying not to feel behind?
+
+Where to challenge the guest:
+- When they give a rule, ask for the exception.
+- When they blame mindset, ask what role income and family obligations play.
+- When they suggest investing, ask what the viewer should stop doing first.
+
+Tone: Sharp, not hostile. The host should protect the viewer from oversimplified advice.`;
+  }
+
+  if (type === 'podcast_clips') {
+    if (themeKind !== 'finance') {
+      return `Shorts/Reels plan for "${title}"${ctx}
+
+1. Hook: "Most people are looking at this the wrong way." Payoff: reveal the hidden frame.
+2. Hook: "This is not just a headline. It affects you because..." Payoff: personal consequence.
+3. Hook: "The expert disagrees with the popular narrative." Payoff: contrarian moment.
+4. Hook: "Here is the one signal to watch next." Payoff: future-facing takeaway.
+5. Hook: "Nobody talks about this tradeoff." Payoff: uncomfortable truth.
+6. Hook: "If you are young in India, this matters because..." Payoff: youth relevance.
+7. Hook: "The biggest myth about this topic is..." Payoff: myth-busting answer.
+8. Hook: "This one question changed the whole conversation." Payoff: best host challenge.
+
+Clip style: Open with tension, cut to the guest's clearest answer, then end with the host reframing the takeaway.`;
+    }
+    return `Shorts/Reels plan for "${title}"${ctx}
+
+1. Hook: "Why do people earn more but stay broke?" Payoff: lifestyle inflation.
+2. Hook: "The biggest money trap is not spending. It is proving." Payoff: status pressure.
+3. Hook: "Your salary is not your wealth." Payoff: income vs retained money.
+4. Hook: "Middle-class families don't teach finance, they teach fear." Payoff: inherited money behavior.
+5. Hook: "This one habit quietly kills wealth." Payoff: upgrading every time income rises.
+6. Hook: "Should you invest or fix your spending first?" Payoff: order of operations.
+7. Hook: "The finance advice nobody gives beginners." Payoff: build margin before chasing returns.
+8. Hook: "Why rich-looking people are often financially fragile." Payoff: visible success vs actual security.
+
+Clip style: Use guest's strongest one-line answer first, then cut to the host reframing it in plain language.`;
+  }
+
+  return null;
+}
+
+function normalizeDraftTopic(topic) {
+  return String(topic || 'untitled')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim()
+    .replace(/\s+/g, '-')
+    .slice(0, 120) || 'untitled';
+}
+
+function isDraftableMessage(msg) {
+  if (!msg || msg.role === 'user' || msg.saved) return false;
+  if (msg.draftable) return true;
+  if (msg.cards?.some(c => ['outline', 'script', 'note'].includes(c.type))) return true;
+  const text = String(msg.content || '').toLowerCase();
+  return /\b(outline|script|episode arc|questions for|tension map|shorts\/reels plan|content plan|calendar|brief|hook ideas|title options|thumbnail ideas)\b/.test(text);
+}
+
+function noteSectionFromMessage(msg) {
+  if (msg.draft_section) return msg.draft_section;
+  const first = String(msg.content || '').split('\n')[0].toLowerCase();
+  if (first.includes('episode arc')) return 'Episode Arc';
+  if (first.includes('questions')) return 'Questions';
+  if (first.includes('tension')) return 'Tension';
+  if (first.includes('shorts') || first.includes('reels') || first.includes('clips')) return 'Clips';
+  if (first.includes('title')) return 'Titles';
+  if (first.includes('thumbnail')) return 'Thumbnail Ideas';
+  if (first.includes('calendar')) return 'Calendar';
+  if (first.includes('brief')) return 'Brief';
+  return 'Note';
 }
 
 function MessageBubble({ msg, onAction, onSave, onSelectVersion }) {
@@ -598,9 +900,9 @@ function MessageBubble({ msg, onAction, onSave, onSelectVersion }) {
         )}
 
         {/* Version selector + Save */}
-        {!msg.saved && msg.cards?.some(c => ['outline', 'script'].includes(c.type)) && (
+        {isDraftableMessage(msg) && (
           <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 8, flexWrap: 'wrap' }}>
-            {onSelectVersion && (
+            {onSelectVersion && msg.cards?.some(c => ['outline', 'script'].includes(c.type)) && (
               <motion.button
                 whileHover={{ scale: 1.04 }} whileTap={{ scale: 0.97 }}
                 onClick={() => onSelectVersion(msg)}
@@ -628,7 +930,7 @@ function MessageBubble({ msg, onAction, onSave, onSelectVersion }) {
                 }}
               >
                 <IconSave size={12} />
-                Save Full Draft to Hub
+                Save to Draft
               </motion.button>
             )}
           </div>
@@ -1211,6 +1513,7 @@ export default function CopilotPanel({ channel }) {
   const [pendingMessage, setPendingMessage] = useState(null); // message to resend after brief
   const scrollRef = useRef(null);
   const inputRef  = useRef(null);
+  const sendRef   = useRef(null);
 
   const channelId  = channel?.channel_id || null;
   const activeLang = lang || channel?.language || 'en';
@@ -1227,7 +1530,8 @@ export default function CopilotPanel({ channel }) {
       .catch(() => setVoiceProfile(null));
   }, [channelId]);
 
-  const storageKey = `copilot_draft_${channelId || 'none'}`;
+  const storageKey  = `copilot_draft_${channelId || 'none'}`;
+  const langPrefKey = `copilot_lang_pref_${channelId || 'none'}`;
 
   const greeting = {
     role: 'assistant',
@@ -1237,8 +1541,14 @@ export default function CopilotPanel({ channel }) {
     cards: [], actions: [], placeholders: [],
   };
 
-  // Load draft from localStorage when channel changes
+  // Load draft from localStorage when channel changes; auto-load evolution snapshot on fresh start
   useEffect(() => {
+    // Restore lang preference from its own key first (survives draft resets/expiry)
+    try {
+      const savedLang = localStorage.getItem(langPrefKey);
+      if (savedLang === 'en' || savedLang === 'hi') setLang(savedLang);
+    } catch (_) {}
+
     try {
       const raw = localStorage.getItem(storageKey);
       if (raw) {
@@ -1247,14 +1557,60 @@ export default function CopilotPanel({ channel }) {
         if (age < 7 * 24 * 60 * 60 * 1000 && Array.isArray(saved.messages) && saved.messages.length > 1) {
           setMessages(saved.messages);
           if (saved.threadState) setThreadState(saved.threadState);
-          if (saved.lang) setLang(saved.lang);
+          if (saved.lang) setLang(saved.lang); // draft lang overrides pref if explicitly set
           return;
         }
       }
     } catch (_) {}
+
+    // Fresh conversation — show greeting then auto-inject evolution snapshot if data exists
+    if (!channelId) {
+      setMessages([greeting]);
+      setThreadState(null);
+      return;
+    }
     setMessages([greeting]);
     setThreadState(null);
+    fetch(`${API}/api/intel/evolution/${channelId}?period=30d`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.ok || data.no_data) return;
+        setMessages(prev => {
+          if (prev.length > 1) return prev; // user already started typing — don't inject
+          const evoMsg = {
+            role: 'assistant',
+            content: buildEvoSummary(data),
+            cards: [{ type: 'evolution', data }],
+            actions: [],
+            placeholders: [],
+          };
+          return [...prev, evoMsg];
+        });
+      })
+      .catch(() => {});
   }, [channelId]);
+
+  function buildEvoSummary(d) {
+    const parts = [];
+    if (d.view_change_pct != null) {
+      parts.push(d.view_change_pct > 0
+        ? `Your views are up ${d.view_change_pct}% vs the prior 30 days.`
+        : d.view_change_pct < 0
+        ? `Your views are down ${Math.abs(d.view_change_pct)}% vs the prior 30 days.`
+        : 'Your view count is holding steady.');
+    }
+    if (d.notable_event) parts.push(`You had a viral spike — one video hit ${d.notable_event.magnitude}× your normal views.`);
+    if (d.upload_delta > 0.5) parts.push(`You're uploading more frequently than usual.`);
+    else if (d.upload_delta < -0.5) parts.push(`Your upload pace has slowed.`);
+    parts.push('Here\'s your 30-day snapshot. Ask me anything.');
+    return parts.join(' ');
+  }
+
+  // Persist lang preference to its own key so it survives draft resets
+  useEffect(() => {
+    if (lang === null) return;
+    try { localStorage.setItem(langPrefKey, lang); } catch (_) {}
+  }, [lang, langPrefKey]);
 
   // Save draft + language preference to localStorage whenever messages change
   useEffect(() => {
@@ -1283,6 +1639,74 @@ export default function CopilotPanel({ channel }) {
     if (open) setTimeout(() => inputRef.current?.focus(), 100);
   }, [open]);
 
+  useEffect(() => {
+    const handler = (e) => {
+      const { prompt, idea, podcastTheme } = e.detail || {};
+      setOpen(true);
+
+      if (podcastTheme) {
+        const title = podcastTheme.title || 'this podcast theme';
+        const ctxParts = [];
+        if (podcastTheme.evidence) ctxParts.push(`peer evidence: ${podcastTheme.evidence}`);
+        if (podcastTheme.guest) ctxParts.push(`guest type: ${podcastTheme.guest}`);
+        if (podcastTheme.peer_count) ctxParts.push(`${podcastTheme.peer_count} peer${podcastTheme.peer_count === 1 ? '' : 's'}`);
+        if (podcastTheme.avg_views > 0) ctxParts.push(`${podcastTheme.avg_views >= 1000 ? `${(podcastTheme.avg_views / 1000).toFixed(0)}K` : podcastTheme.avg_views} avg views`);
+        const ctxLine = ctxParts.length ? `\n\nContext: ${ctxParts.join(' · ')}.` : '';
+        const angleLine = podcastTheme.angle ? `\n\nCurrent angle: ${podcastTheme.angle}` : '';
+
+        const userMsg = { role: 'user', content: `I want to build a podcast episode around "${title}".` };
+        const assistantMsg = {
+          role: 'assistant',
+          content: `Good theme. I can help shape this into a watchable conversation instead of just a topic.${ctxLine}${angleLine}\n\nWhat should we build first?`,
+          draftable: false,
+          draft_topic: title,
+          cards: [],
+          actions: [
+            { type: 'podcast_episode_plan', label: 'Build episode arc', payload: podcastTheme },
+            { type: 'podcast_questions',    label: 'Draft questions',   payload: podcastTheme },
+            { type: 'podcast_pushback',     label: 'Find tension',      payload: podcastTheme },
+            { type: 'podcast_clips',        label: 'Plan clips',        payload: podcastTheme },
+          ],
+          placeholders: [],
+        };
+        setMessages(prev => [...prev, userMsg, assistantMsg]);
+        return;
+      }
+
+      if (idea) {
+        // Inject user message + instant assistant reply with action buttons (no API call)
+        const topic = idea.topic;
+        const ctxParts = [];
+        if (idea.avg_views > 0) ctxParts.push(`averages ${idea.avg_views >= 1000 ? `${(idea.avg_views / 1000).toFixed(0)}K` : idea.avg_views} views in your community`);
+        if (idea.format_winner) ctxParts.push(`${idea.format_winner.label} format wins at ${idea.format_winner.pct}%`);
+        if (idea.score >= 80) ctxParts.push(`opportunity score ${idea.score}/100`);
+        const ctxLine = ctxParts.length ? ` This topic ${ctxParts.join(', ')}.` : '';
+
+        const userMsg = { role: 'user', content: `I want to create a video on "${topic}".` };
+        const assistantMsg = {
+          role: 'assistant',
+          content: `Good choice.${ctxLine} What do you want to build first?`,
+          cards: [],
+          actions: [
+            { type: 'draft_outline', label: 'Draft outline',      payload: { topic } },
+            { type: 'write_hook',    label: 'Write hook script',  payload: { topic } },
+            { type: 'write_body',    label: 'Write body script',  payload: { topic } },
+            { type: 'write_ending',  label: 'Write ending & CTA', payload: { topic } },
+          ],
+          placeholders: [],
+        };
+        setMessages(prev => [...prev, userMsg, assistantMsg]);
+        return;
+      }
+
+      if (prompt) {
+        setTimeout(() => sendRef.current?.(prompt), 320);
+      }
+    };
+    window.addEventListener('copilot:open', handler);
+    return () => window.removeEventListener('copilot:open', handler);
+  }, []);
+
   const handleSave = async (msg) => {
     // Preferred version wins per part; if none marked, latest wins
     const partMap = new Map(); // key → { card, msgIndex, preferred }
@@ -1302,7 +1726,36 @@ export default function CopilotPanel({ channel }) {
       }
     }
     const allCards = [...partMap.values()].sort((a, b) => a.msgIndex - b.msgIndex).map(v => v.card);
-    const topic = allCards.find(c => c.data?.topic)?.data?.topic || null;
+    const msgHasScriptDraftCards = msg.cards?.some(c => ['outline', 'script'].includes(c.type));
+    let cardsToSave = msgHasScriptDraftCards && allCards.length > 0 ? allCards : (msg.cards || []);
+    const topic = msg.draft_topic
+      || cardsToSave.find(c => c.data?.topic)?.data?.topic
+      || cardsToSave.find(c => c.data?.title)?.data?.title
+      || threadState?.topic
+      || null;
+
+    if (cardsToSave.length === 0 && msg.content) {
+      cardsToSave = [{
+        type: 'note',
+        data: {
+          topic,
+          title: topic || noteSectionFromMessage(msg),
+          section: noteSectionFromMessage(msg),
+          content: msg.content,
+          saved_at: new Date().toISOString(),
+        },
+      }];
+    }
+
+    if (!cardsToSave.length) return;
+
+    const draftKey = [
+      getClientId(),
+      channelId || 'no-channel',
+      normalizeDraftTopic(topic),
+      threadIdRef.current || 'default',
+    ].join(':');
+
     try {
       await fetch(`${API}/api/drafts`, {
         method: 'POST',
@@ -1311,12 +1764,17 @@ export default function CopilotPanel({ channel }) {
           client_id:  getClientId(),
           channel_id: channelId,
           topic,
-          cards: allCards.length > 0 ? allCards : msg.cards,
+          thread_id:  threadIdRef.current,
+          draft_key:  draftKey,
+          cards:      cardsToSave,
         }),
       });
-      // Mark all messages that have script/outline cards as saved
+      // Mark this saved; for full scripts/outlines, mark related card versions too.
       setMessages(prev => prev.map(m =>
-        m.cards?.some(c => ['outline', 'script'].includes(c.type)) ? { ...m, saved: true } : m
+        m === msg ? { ...m, saved: true }
+          : (m.cards?.some(c => ['outline', 'script'].includes(c.type)) && cardsToSave.some(c => ['outline', 'script'].includes(c.type)))
+            ? { ...m, saved: true }
+            : m
       ));
     } catch (_) {}
   };
@@ -1410,6 +1868,35 @@ export default function CopilotPanel({ channel }) {
   const executeAction = (action) => {
     const t = action.payload?.topic || '';
     const n = action.payload?.niche  || '';
+    if (action.type?.startsWith('podcast_')) {
+      const answer = buildPodcastActionMessage(action.type, action.payload);
+      if (answer) {
+        setMessages(prev => [
+          ...prev,
+          { role: 'user', content: action.label || 'Build this podcast idea' },
+          {
+            role: 'assistant',
+            content: answer,
+            draftable: true,
+            draft_topic: action.payload?.title || action.payload?.theme || null,
+            draft_section: noteSectionFromMessage({ content: answer }),
+            cards: [],
+            actions: [
+              { type: 'podcast_episode_plan', label: 'Build episode arc', payload: action.payload },
+              { type: 'podcast_questions',    label: 'Draft questions',   payload: action.payload },
+              { type: 'podcast_pushback',     label: 'Find tension',      payload: action.payload },
+              { type: 'podcast_clips',        label: 'Plan clips',        payload: action.payload },
+            ].filter(a => a.type !== action.type),
+            placeholders: [],
+          },
+        ]);
+        return;
+      }
+    }
+    const podcastTitle = action.payload?.title || action.payload?.theme || 'this podcast episode';
+    const podcastGuest = action.payload?.guest ? ` Guest type: ${action.payload.guest}.` : '';
+    const podcastEvidence = action.payload?.evidence ? ` Peer evidence: ${action.payload.evidence}.` : '';
+    const podcastAngle = action.payload?.angle ? ` Current angle: ${action.payload.angle}` : '';
     switch (action.type) {
       case 'track_niche':      return send(`Track the "${n}" topic for me`);
       case 'compare_channel':  return send(`Compare me with channel ${action.payload?.channel_id}`);
@@ -1418,8 +1905,17 @@ export default function CopilotPanel({ channel }) {
       case 'write_hook':       return send(`Write the opening 60-second script for "${t}"`);
       case 'write_body':       return send(`Write the full detailed body script for "${t}"`);
       case 'write_ending':     return send(`Write the ending and CTA for "${t}"`);
+      case 'podcast_episode_plan':
+        return send(`Build a strong podcast episode arc for "${podcastTitle}".${podcastGuest}${podcastEvidence}${podcastAngle} Give me: opening hook, central tension, 5-part conversation structure, climax, ending, and the exact host stance.`);
+      case 'podcast_questions':
+        return send(`Draft the first 12 podcast questions for "${podcastTitle}".${podcastGuest}${podcastEvidence}${podcastAngle} Make them conversational, increasingly deep, and include follow-up probes.`);
+      case 'podcast_pushback':
+        return send(`Find the strongest debate tension for a podcast episode on "${podcastTitle}".${podcastGuest}${podcastEvidence}${podcastAngle} Give me disagreement points, where the host should challenge the guest, and how to keep it respectful but sharp.`);
+      case 'podcast_clips':
+        return send(`Plan 8 Shorts/Reels clips from a podcast episode on "${podcastTitle}".${podcastGuest}${podcastEvidence}${podcastAngle} For each clip give hook, setup, payoff, and title.`);
       case 'new_draft':        return send(`Give me a different angle for the "${t}" video outline`);
-      case 'regenerate_ideas': return send('Show me different content opportunities');
+      case 'regenerate_ideas':  return send('Show me different content opportunities');
+      case 'find_opportunity':  return send('What content opportunities am I missing? Find the content gaps I can fill to recover and grow my views.');
     }
   };
 
@@ -1491,6 +1987,8 @@ export default function CopilotPanel({ channel }) {
     setVoiceProfile(null);
     setShowVoiceManage(false);
   };
+
+  sendRef.current = send;
 
   return (
     <>

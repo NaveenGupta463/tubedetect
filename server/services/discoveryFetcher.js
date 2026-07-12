@@ -5,7 +5,7 @@ const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
 async function ytGet(path, params) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('discovery');
     if (!key) throw new Error('all_api_keys_exhausted');
     const qs  = new URLSearchParams({ ...params, key }).toString();
     const res = await fetch(`${YT_BASE}/${path}?${qs}`);

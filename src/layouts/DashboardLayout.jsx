@@ -67,7 +67,7 @@ export default function DashboardLayout({ aiProps, channel, videos, activeTab = 
           style={{ paddingTop: 28 }}
         >
           {activeTab === 'analyze'    && <AnalyzeInput onNavigate={onTabChange} />}
-          {activeTab === 'whatToPost' && <WhatToPost />}
+          {activeTab === 'whatToPost' && <WhatToPost channel={channel} />}
           {activeTab === 'validator'  && <Validator  {...aiProps} channel={channel} videos={videos} />}
         </motion.div>
       </AnimatePresence>

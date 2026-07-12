@@ -14,7 +14,7 @@ function getTopChannelsByNiche(db, { niche, language, community_id, limit = 20 }
   return cache.wrap(key, () => {
     // Step 1: get top channels by subscribers — cheap index scan, no video join.
     // Fetch 3× limit so we have candidates to re-rank by avg_views in step 2.
-    const conditions = [];
+    const conditions = ['(ic.ignore_from_benchmarks IS NULL OR ic.ignore_from_benchmarks = 0)'];
     const params = [];
     if (niche) { conditions.push('COALESCE(ic.primary_niche, ic.niche) = ?'); params.push(niche); }
     if (community_id) {
@@ -25,7 +25,7 @@ function getTopChannelsByNiche(db, { niche, language, community_id, limit = 20 }
       params.push(language);
     }
     const where = conditions.length ? `WHERE ${conditions.join(' AND ')}` : '';
-    const candidateLimit = Math.min(limit * 3, 300);
+    const candidateLimit = Math.min(limit * 3, 600);
     params.push(candidateLimit);
 
     const candidates = db.all(`
@@ -47,11 +47,12 @@ function getTopChannelsByNiche(db, { niche, language, community_id, limit = 20 }
     const ph  = ids.map(() => '?').join(',');
     const statsRows = db.all(`
       SELECT channel_id,
-             COUNT(youtube_video_id)     AS video_count,
-             MAX(views)                 AS peak_views,
-             CAST(AVG(views) AS INTEGER) AS avg_views,
-             CAST(AVG(likes) AS INTEGER) AS avg_likes,
-             MAX(published_at)          AS latest_video_at
+             COUNT(youtube_video_id)        AS video_count,
+             MAX(views)                     AS peak_views,
+             CAST(AVG(views) AS INTEGER)    AS avg_views,
+             CAST(AVG(likes) AS INTEGER)    AS avg_likes,
+             CAST(AVG(comments) AS INTEGER) AS avg_comments,
+             MAX(published_at)              AS latest_video_at
       FROM ingested_videos
       WHERE channel_id IN (${ph})
       GROUP BY channel_id
@@ -62,10 +63,11 @@ function getTopChannelsByNiche(db, { niche, language, community_id, limit = 20 }
 
     const merged = candidates.map(c => ({
       ...c,
-      video_count:     statsMap[c.channel_id]?.video_count    ?? 0,
-      peak_views:      statsMap[c.channel_id]?.peak_views     ?? null,
-      avg_views:       statsMap[c.channel_id]?.avg_views      ?? null,
-      avg_likes:       statsMap[c.channel_id]?.avg_likes      ?? null,
+      video_count:     statsMap[c.channel_id]?.video_count     ?? 0,
+      peak_views:      statsMap[c.channel_id]?.peak_views      ?? null,
+      avg_views:       statsMap[c.channel_id]?.avg_views       ?? null,
+      avg_likes:       statsMap[c.channel_id]?.avg_likes       ?? null,
+      avg_comments:    statsMap[c.channel_id]?.avg_comments    ?? null,
       latest_video_at: statsMap[c.channel_id]?.latest_video_at ?? null,
     }));
 

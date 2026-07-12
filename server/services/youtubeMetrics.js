@@ -1,6 +1,7 @@
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
 
 const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
+const { classifyVideoFormat, pickBestThumbnail } = require('./videoFormatClassifier');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
@@ -8,17 +9,23 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 // Retries transient network and 5xx errors up to 3 times per key before giving up.
 async function ytFetch(url) {
   for (let keyAttempt = 0; keyAttempt < 12; keyAttempt++) {
-    const key = getApiKey();
+    const key = getApiKey('refresh');
     if (!key) throw new Error('all_api_keys_exhausted');
     const sep  = url.includes('?') ? '&' : '?';
     const full = `${url}${sep}key=${key}`;
 
     for (let t = 1; t <= 3; t++) {
       let res, data;
+      const ac    = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 25_000);
       try {
-        res  = await fetch(full);
+        res  = await fetch(full, { signal: ac.signal });
         data = await res.json();
-      } catch (_) {
+        clearTimeout(timer);
+      } catch (e) {
+        clearTimeout(timer);
+        const isTimeout = e.name === 'AbortError';
+        if (isTimeout) console.warn(`[youtubeMetrics] ytFetch timeout (25s), attempt ${t}`);
         if (t < 3) { await sleep(2000 * t); continue; }
         throw new Error('network_error_after_retries');
       }
@@ -158,6 +165,14 @@ async function fetchVideoFullBatch(videoIds) {
     const duration_seconds = m
       ? (parseInt(m[1] ?? 0) * 3600 + parseInt(m[2] ?? 0) * 60 + parseInt(m[3] ?? 0))
       : null;
+    const thumb = pickBestThumbnail(item.snippet?.thumbnails);
+    const format = classifyVideoFormat({
+      title: item.snippet?.title ?? '',
+      description: item.snippet?.description ?? '',
+      duration_seconds,
+      thumbnail_width: thumb.thumbnail_width,
+      thumbnail_height: thumb.thumbnail_height,
+    });
     map.set(item.id, {
       title:           item.snippet?.title          ?? '',
       description:     item.snippet?.description    ?? '',
@@ -165,6 +180,8 @@ async function fetchVideoFullBatch(videoIds) {
       channel_id:      item.snippet?.channelId      ?? '',
       category_id:     item.snippet?.categoryId     ?? null,
       duration_seconds,
+      ...thumb,
+      ...format,
       views:           parseInt(item.statistics?.viewCount    ?? '0', 10),
       likes:           parseInt(item.statistics?.likeCount    ?? '0', 10),
       comments:        parseInt(item.statistics?.commentCount ?? '0', 10),

@@ -1,0 +1,512 @@
+{
+  "sampled": 500,
+  "window_days": 30,
+  "dominant_failure_mode": "BAD_SUBJECT",
+  "failure_modes": {
+    "BAD_SUBJECT": {
+      "count": 296,
+      "pct": 59.2,
+      "examples": [
+        {
+          "id": 1223,
+          "raw_subject": "missing usa",
+          "concept_id": null,
+          "family": "explainer_case",
+          "generated_title": "What people get wrong about missing usa",
+          "sub_type": "no_domain_signal",
+          "specificity": 0.6
+        },
+        {
+          "id": 189,
+          "raw_subject": "chashmah jun teaser",
+          "concept_id": null,
+          "family": "comedy_sketch",
+          "generated_title": "If chashmah jun teaser had an honest conversation",
+          "sub_type": "no_domain_signal",
+          "specificity": 0.74
+        },
+        {
+          "id": 2262,
+          "raw_subject": "anaya doctor dekho",
+          "concept_id": null,
+          "family": "comedy_sketch",
+          "generated_title": "If anaya doctor dekho had an honest conversation",
+          "sub_type": "hindi_imperative_fragment",
+          "specificity": 0.74
+        },
+        {
+          "id": 1846,
+          "raw_subject": "papa gareebi",
+          "concept_id": null,
+          "family": "comedy_sketch",
+          "generated_title": "If papa gareebi had an honest conversation",
+          "sub_type": "no_domain_signal",
+          "specificity": 0.74
+        },
+        {
+          "id": 2336,
+          "raw_subject": "kar diya day",
+          "concept_id": null,
+          "family": "comedy_sketch",
+          "generated_title": "If kar diya day had an honest conversation",
+          "sub_type": "no_domain_signal",
+          "specificity": 0.74
+        }
+      ]
+    },
+    "BAD_OUTPUT": {
+      "count": 57,
+      "pct": 11.4,
+      "examples": [
+        {
+          "id": 539,
+          "raw_subject": "startup policy",
+          "concept_id": "business_startup",
+          "family": "conversation_business",
+          "generated_title": "The hidden cost of startup policy",
+          "sub_type": "weak_specificity",
+          "specificity": 0.6
+        },
+        {
+          "id": 2050,
+          "raw_subject": "recipe cooking",
+          "concept_id": "cooking_recipe",
+          "family": "cooking_food",
+          "generated_title": "recipe cooking: the budget version vs the restaurant version",
+          "sub_type": "weak_specificity",
+          "specificity": 0.6
+        },
+        {
+          "id": 2368,
+          "raw_subject": "election result",
+          "concept_id": "news_current_events",
+          "family": "news_event",
+          "generated_title": "election result: the timeline viewers need",
+          "sub_type": "weak_specificity",
+          "specificity": 0.6
+        },
+        {
+          "id": 848,
+          "raw_subject": "nuclear war",
+          "concept_id": "news_current_events",
+          "family": "news_event",
+          "generated_title": "nuclear war: the timeline viewers need",
+          "sub_type": "weak_specificity",
+          "specificity": 0.6
+        },
+        {
+          "id": 2027,
+          "raw_subject": "stock market",
+          "concept_id": "finance_investing",
+          "family": "finance_education",
+          "generated_title": "How stock market can change your next money decision",
+          "sub_type": "weak_specificity",
+          "specificity": 0.6
+        }
+      ]
+    },
+    "BAD_TEMPLATE": {
+      "count": 12,
+      "pct": 2.4,
+      "examples": [
+        {
+          "id": 1794,
+          "raw_subject": "Daily Startup",
+          "concept_id": "business_startup",
+          "family": "travel_lifestyle",
+          "generated_title": "Daily Startup: worth it or overhyped?",
+          "sub_type": "generic_template_output",
+          "specificity": 0.74
+        },
+        {
+          "id": 106,
+          "raw_subject": "AI tools",
+          "concept_id": "ai_technology",
+          "family": "generic",
+          "generated_title": "The practical story behind AI tools",
+          "sub_type": "generic_template_output",
+          "specificity": 0.88
+        },
+        {
+          "id": 1148,
+          "raw_subject": "Pakistan Stock Market Dividend Announcement",
+          "concept_id": "finance_investing",
+          "family": "news_event",
+          "generated_title": "The local impact of Pakistan Stock Market Dividend Announcement, explained",
+          "sub_type": "family_domain_mismatch:news_event_vs_finance_education",
+          "specificity": 0.74
+        },
+        {
+          "id": 1139,
+          "raw_subject": "stock market",
+          "concept_id": "finance_investing",
+          "family": "news_event",
+          "generated_title": "What happens next after stock market",
+          "sub_type": "family_domain_mismatch:news_event_vs_finance_education",
+          "specificity": 0.6
+        },
+        {
+          "id": 350,
+          "raw_subject": "bangla food vlog",
+          "concept_id": "lifestyle_vlog",
+          "family": "travel_lifestyle",
+          "generated_title": "The overlooked detail in bangla food vlog",
+          "sub_type": "family_domain_mismatch:travel_lifestyle_vs_cooking_food",
+          "specificity": 0.6
+        }
+      ]
+    },
+    "BAD_CONCEPT": {
+      "count": 135,
+      "pct": 27,
+      "examples": [
+        {
+          "id": 921,
+          "raw_subject": "india's big",
+          "concept_id": null,
+          "family": "finance_education",
+          "generated_title": "india's big: risk, returns, and timing explained simply",
+          "sub_type": "no_concept_assigned",
+          "specificity": 0.74
+        },
+        {
+          "id": 1875,
+          "raw_subject": "Indian startups",
+          "concept_id": null,
+          "family": "explainer_case",
+          "generated_title": "The business model behind Indian startups",
+          "sub_type": "no_concept_assigned",
+          "specificity": 0.74
+        },
+        {
+          "id": 2146,
+          "raw_subject": "movie action",
+          "concept_id": null,
+          "family": "comedy_sketch",
+          "generated_title": "If movie action had an honest conversation",
+          "sub_type": "no_concept_assigned",
+          "specificity": 0.74
+        },
+        {
+          "id": 687,
+          "raw_subject": "fii market",
+          "concept_id": null,
+          "family": "finance_education",
+          "generated_title": "Before you trust fii market, check this",
+          "sub_type": "no_concept_assigned",
+          "specificity": 0.6
+        },
+        {
+          "id": 1628,
+          "raw_subject": "college students",
+          "concept_id": null,
+          "family": "finance_education",
+          "generated_title": "How college students can change your next money decision",
+          "sub_type": "no_concept_assigned",
+          "specificity": 0.6
+        }
+      ]
+    }
+  },
+  "sub_types": {
+    "no_domain_signal": {
+      "count": 277,
+      "pct": 55.4
+    },
+    "no_concept_assigned": {
+      "count": 135,
+      "pct": 27
+    },
+    "weak_specificity": {
+      "count": 57,
+      "pct": 11.4
+    },
+    "generic_template_output": {
+      "count": 8,
+      "pct": 1.6
+    },
+    "repeated_word_artifact": {
+      "count": 8,
+      "pct": 1.6
+    },
+    "null_or_empty_subject": {
+      "count": 7,
+      "pct": 1.4
+    },
+    "alphanumeric_id_artifact": {
+      "count": 2,
+      "pct": 0.4
+    },
+    "family_domain_mismatch:news_event_vs_finance_education": {
+      "count": 2,
+      "pct": 0.4
+    },
+    "hindi_imperative_fragment": {
+      "count": 1,
+      "pct": 0.2
+    },
+    "tv_channel_brand_leak": {
+      "count": 1,
+      "pct": 0.2
+    },
+    "family_domain_mismatch:travel_lifestyle_vs_cooking_food": {
+      "count": 1,
+      "pct": 0.2
+    },
+    "family_domain_mismatch:travel_lifestyle_vs_finance_education": {
+      "count": 1,
+      "pct": 0.2
+    }
+  },
+  "by_family": {
+    "explainer_case": {
+      "total": 58,
+      "BAD_SUBJECT": 37,
+      "BAD_CONCEPT": 18,
+      "BAD_OUTPUT": 3
+    },
+    "comedy_sketch": {
+      "total": 154,
+      "BAD_SUBJECT": 118,
+      "BAD_CONCEPT": 35,
+      "BAD_OUTPUT": 1
+    },
+    "conversation_business": {
+      "total": 6,
+      "BAD_OUTPUT": 3,
+      "BAD_CONCEPT": 3
+    },
+    "travel_lifestyle": {
+      "total": 12,
+      "BAD_TEMPLATE": 6,
+      "BAD_SUBJECT": 1,
+      "BAD_OUTPUT": 3,
+      "BAD_CONCEPT": 2
+    },
+    "finance_education": {
+      "total": 71,
+      "BAD_CONCEPT": 23,
+      "BAD_SUBJECT": 34,
+      "BAD_OUTPUT": 14
+    },
+    "cooking_food": {
+      "total": 46,
+      "BAD_OUTPUT": 8,
+      "BAD_CONCEPT": 29,
+      "BAD_SUBJECT": 9
+    },
+    "general_education": {
+      "total": 39,
+      "BAD_SUBJECT": 37,
+      "BAD_CONCEPT": 2
+    },
+    "news_event": {
+      "total": 47,
+      "BAD_OUTPUT": 13,
+      "BAD_SUBJECT": 29,
+      "BAD_TEMPLATE": 2,
+      "BAD_CONCEPT": 3
+    },
+    "generic": {
+      "total": 22,
+      "BAD_SUBJECT": 9,
+      "BAD_TEMPLATE": 4,
+      "BAD_OUTPUT": 3,
+      "BAD_CONCEPT": 6
+    },
+    "tech_review": {
+      "total": 18,
+      "BAD_SUBJECT": 8,
+      "BAD_OUTPUT": 3,
+      "BAD_CONCEPT": 7
+    },
+    "fitness_practice": {
+      "total": 13,
+      "BAD_OUTPUT": 6,
+      "BAD_SUBJECT": 5,
+      "BAD_CONCEPT": 2
+    },
+    "exam_education": {
+      "total": 8,
+      "BAD_CONCEPT": 3,
+      "BAD_SUBJECT": 5
+    },
+    "wellness_teaching": {
+      "total": 3,
+      "BAD_SUBJECT": 2,
+      "BAD_CONCEPT": 1
+    },
+    "conversation_finance": {
+      "total": 3,
+      "BAD_CONCEPT": 1,
+      "BAD_SUBJECT": 2
+    }
+  },
+  "taxonomy_gap_analysis": {
+    "bad_concept_count": 135,
+    "top_missing_subject_themes": [
+      [
+        "food",
+        7
+      ],
+      [
+        "street",
+        6
+      ],
+      [
+        "indian",
+        5
+      ],
+      [
+        "market",
+        5
+      ],
+      [
+        "movie",
+        4
+      ],
+      [
+        "startup",
+        4
+      ],
+      [
+        "tools",
+        4
+      ],
+      [
+        "salary",
+        3
+      ],
+      [
+        "rajkot",
+        3
+      ],
+      [
+        "nifty",
+        3
+      ],
+      [
+        "money",
+        3
+      ],
+      [
+        "app",
+        2
+      ],
+      [
+        "challenge",
+        2
+      ],
+      [
+        "upsc",
+        2
+      ],
+      [
+        "cheapest",
+        2
+      ],
+      [
+        "phone",
+        2
+      ],
+      [
+        "pro",
+        2
+      ],
+      [
+        "packaged",
+        2
+      ],
+      [
+        "monday",
+        2
+      ],
+      [
+        "air",
+        2
+      ],
+      [
+        "vijayawada",
+        2
+      ],
+      [
+        "india's",
+        1
+      ],
+      [
+        "fii",
+        1
+      ],
+      [
+        "college",
+        1
+      ],
+      [
+        "shake",
+        1
+      ],
+      [
+        "standup",
+        1
+      ],
+      [
+        "earth",
+        1
+      ],
+      [
+        "pre",
+        1
+      ],
+      [
+        "backrooms",
+        1
+      ],
+      [
+        "course",
+        1
+      ]
+    ],
+    "sample_missing_subjects": [
+      "india's big",
+      "Indian startups",
+      "movie action",
+      "fii market",
+      "college students",
+      "shake street food",
+      "standup comedy crowd",
+      "earth science",
+      "app use",
+      "pre market report",
+      "backrooms extended show",
+      "challenge crazy show",
+      "course quick",
+      "market outlook",
+      "Today Market Prediction",
+      "salary growth",
+      "startup jobs",
+      "food cart",
+      "ultimate sibling",
+      "AI tools",
+      "upsc exam strategy",
+      "rajkot market yard",
+      "missile test",
+      "eating food",
+      "salary growth",
+      "movie dubbed",
+      "burger jagiya family",
+      "AI tools",
+      "Rajkot",
+      "Indian Street Food",
+      "app withdrawal",
+      "rajkot food",
+      "street food tour",
+      "MARKET BIG MOVE TOMORROW Iran",
+      "comedy chotu",
+      "ramba dance",
+      "dadlani mumbai home",
+      "science experiments",
+      "cheapest market",
+      "phone into slime"
+    ]
+  }
+}

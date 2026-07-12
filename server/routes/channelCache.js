@@ -13,14 +13,33 @@ const {
   upsertVideoCache,
   updateVideoCacheStats,
 } = require('../db/queries');
+const {
+  readChannelRuntimeSummary,
+  buildAndSaveChannelRuntimeSummary,
+  summaryToSyntheticChannel,
+} = require('../services/channelRuntimeSummary');
 const { getApiKey, markExhausted, isQuotaError } = require('../services/apiKeyManager');
 
 const YT_BASE = 'https://www.googleapis.com/youtube/v3';
+const YT_SEARCH_TIMEOUT_MS = 7000;
+const LIVE_SEARCH_ROUTE_TIMEOUT_MS = 4500;
+
+async function fetchJsonWithTimeout(url, timeoutMs = YT_SEARCH_TIMEOUT_MS) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  try {
+    const res = await fetch(url, { signal: ctrl.signal });
+    const data = await res.json().catch(() => null);
+    return { res, data };
+  } finally {
+    clearTimeout(timer);
+  }
+}
 
 // Quota-aware YouTube GET — rotates through all configured API keys
 async function ytGet(path, params) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('lookup');
     if (!key) return null;
     const url = new URL(`${YT_BASE}/${path}`);
     url.searchParams.set('key', key);
@@ -185,8 +204,84 @@ function guessNiche(title, description) {
   return best;
 }
 
+// ── In-memory search cache (5-minute TTL) ────────────────────────────────────
+const searchCache = new Map(); // key → { results, expiresAt }
+const SEARCH_CACHE_TTL = 5 * 60 * 1000;
+
+function getFrontendSearchKey() {
+  return process.env.YT_API_KEY_7 || process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
+}
+
+function youtubeChannelItemToResult(item, fallbackThumbnail = null) {
+  return {
+    channel_id:   item.id,
+    name:         item.snippet?.title || item.id,
+    subs:         parseInt(item.statistics?.subscriberCount || '0', 10),
+    niche:        guessNiche(item.snippet?.title || '', item.snippet?.description || ''),
+    community_id: null,
+    source:       'youtube',
+    language:     item.snippet?.defaultLanguage || null,
+    thumbnail:    item.snippet?.thumbnails?.medium?.url ||
+                  item.snippet?.thumbnails?.default?.url ||
+                  fallbackThumbnail || null,
+  };
+}
+
+async function liveYoutubeChannelSearch(q, limit = 5) {
+  const searchKey = getFrontendSearchKey();
+  if (!searchKey || !q) return { results: [], live_unavailable: true, reason: 'youtube_search_key_missing' };
+
+  async function searchYtGet(path, params) {
+    const url = new URL(`${YT_BASE}/${path}`);
+    url.searchParams.set('key', searchKey);
+    for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
+    const { res, data } = await fetchJsonWithTimeout(url.toString(), LIVE_SEARCH_ROUTE_TIMEOUT_MS);
+    return res.ok ? data : null;
+  }
+
+  const handle = q.match(/^@([A-Za-z0-9._-]{3,})$/)?.[1] || null;
+  if (handle) {
+    const handleData = await searchYtGet('channels', {
+      part: 'snippet,statistics',
+      forHandle: `@${handle}`,
+    });
+    const item = handleData?.items?.[0];
+    return item ? { items: [item], results: [youtubeChannelItemToResult(item)] } : { results: [] };
+  }
+
+  const searchData = await searchYtGet('search', {
+    part: 'snippet', type: 'channel', q, maxResults: limit,
+  });
+  if (!searchData) return { results: [], live_unavailable: true, reason: 'youtube_search_failed' };
+
+  const searchThumbMap = {};
+  const ids = [];
+  for (const item of (searchData.items || [])) {
+    const id = item.id?.channelId || item.snippet?.channelId;
+    if (!id) continue;
+    ids.push(id);
+    searchThumbMap[id] =
+      item.snippet?.thumbnails?.medium?.url ||
+      item.snippet?.thumbnails?.default?.url || null;
+  }
+  if (!ids.length) return { results: [] };
+
+  const detailData = await searchYtGet('channels', {
+    part: 'snippet,statistics', id: ids.join(','),
+  });
+  if (!detailData) return { results: [], live_unavailable: true, reason: 'youtube_channel_detail_failed' };
+
+  const items = detailData.items || [];
+  return {
+    items,
+    results: items.map(item => youtubeChannelItemToResult(item, searchThumbMap[item.id])),
+  };
+}
+
 // ── GET /api/channel-cache/search?q=&limit=10 ─────────────────────────────────
-router.get('/channel-cache/search', (req, res) => {
+router.get('/channel-cache/search', async (req, res) => {
+  const t0    = Date.now();
+  const debug = process.env.DEBUG_SEARCH === '1';
   try {
     const db    = getDb();
     const q     = (req.query.q || '').trim();
@@ -194,73 +289,165 @@ router.get('/channel-cache/search', (req, res) => {
 
     if (!q) return res.json({ results: [] });
 
-    const like = `%${q}%`;
-
-    const ingested = db.all(
-      `SELECT ic.channel_id, ic.channel_name, ic.channel_subscribers AS subs,
-              ic.niche AS niche,
-              ic.community_id, 'ingested' AS source,
-              COALESCE(ic.primary_language, cc.yt_default_language) AS language,
-              cc.thumbnail_url AS thumbnail
-       FROM ingested_channels ic
-       LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
-       WHERE ic.ingest_enabled = 1
-         AND (lower(ic.channel_name) LIKE lower(?) OR ic.channel_id LIKE ?)
-       ORDER BY ic.channel_subscribers DESC
-       LIMIT ?`,
-      [like, like, limit]
-    );
-
-    const ingestedIds = new Set(ingested.map(r => r.channel_id));
-    const remaining   = limit - ingested.length;
-
-    let corpus = [];
-    if (remaining > 0) {
-      const rows = db.all(
-        `SELECT channel_id, title AS channel_name, subscriber_count AS subs,
-                niche, community_id, 'corpus' AS source, language, thumbnail_url AS thumbnail
-         FROM corpus_channels
-         WHERE (lower(title) LIKE lower(?) OR channel_id LIKE ?)
-         ORDER BY subscriber_count DESC
-         LIMIT ?`,
-        [like, like, limit]
-      );
-      corpus = rows.filter(r => !ingestedIds.has(r.channel_id)).slice(0, remaining);
+    // In-memory cache hit
+    const cacheKey = `${q.toLowerCase()}:${limit}`;
+    const cached = searchCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now()) {
+      if (debug) console.log(`[search] cache_hit q="${q}" ms=${Date.now() - t0}`);
+      if ((cached.results || []).length > 0) return res.json({ results: cached.results });
+      searchCache.delete(cacheKey);
     }
 
-    const allRows = [...ingested, ...corpus];
+    const qLower = q.toLowerCase();
+    let allRows  = [];
 
-    // Fill missing thumbnails from channel_cache (JS-side JSON parse — no json_extract needed)
-    const missingIds = allRows.filter(r => !r.thumbnail).map(r => r.channel_id);
-    const cacheThumbMap = {};
-    if (missingIds.length > 0) {
-      const ph = missingIds.map(() => '?').join(',');
-      const cacheRows = db.all(
-        `SELECT channel_id, raw_json FROM channel_cache WHERE channel_id IN (${ph}) AND raw_json IS NOT NULL`,
-        missingIds,
+    // ── Ranked query against channel_search_index ────────────────────────────
+    const t1 = Date.now();
+    try {
+      const indexRows = db.all(
+        `SELECT channel_id, name, source, subs, niche, community_id, language, thumbnail,
+                CASE
+                  WHEN lower(name) = ?           THEN 0
+                  WHEN lower(name) LIKE ? || '%' THEN 1
+                  ELSE                                2
+                END AS match_rank
+         FROM channel_search_index
+         WHERE lower(name) LIKE '%' || ? || '%'
+            OR channel_id  LIKE '%' || ? || '%'
+         ORDER BY match_rank ASC, subs DESC
+         LIMIT ?`,
+        [qLower, qLower, qLower, qLower, limit],
       );
-      for (const { channel_id, raw_json } of cacheRows) {
+      if (indexRows.length > 0) {
+        allRows = indexRows;
+        if (debug) console.log(`[search] index_ms=${Date.now() - t1} rows=${allRows.length}`);
+      }
+    } catch { /* index not yet populated — fall through */ }
+
+    // ── Fallback to direct table queries if index returned nothing ────────────
+    if (!allRows.length) {
+      const like = `%${q}%`;
+      const t2   = Date.now();
+
+      const ingested = db.all(
+        `SELECT ic.channel_id, ic.channel_name AS name, 'ingested' AS source,
+                ic.channel_subscribers AS subs, ic.niche, ic.community_id,
+                COALESCE(ic.primary_language, cc.yt_default_language) AS language,
+                cc.thumbnail_url AS thumbnail
+         FROM ingested_channels ic
+         LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
+         WHERE ic.ingest_enabled = 1
+           AND (lower(ic.channel_name) LIKE lower(?) OR ic.channel_id LIKE ?)
+         ORDER BY ic.channel_subscribers DESC
+         LIMIT ?`,
+        [like, like, limit],
+      );
+
+      const ingestedIds = new Set(ingested.map(r => r.channel_id));
+      const remaining   = limit - ingested.length;
+      let corpus = [];
+      if (remaining > 0) {
+        const rows = db.all(
+          `SELECT channel_id, title AS name, 'corpus' AS source,
+                  subscriber_count AS subs, niche, community_id, language,
+                  thumbnail_url AS thumbnail
+           FROM corpus_channels
+           WHERE (lower(title) LIKE lower(?) OR channel_id LIKE ?)
+           ORDER BY subscriber_count DESC
+           LIMIT ?`,
+          [like, like, limit],
+        );
+        corpus = rows.filter(r => !ingestedIds.has(r.channel_id)).slice(0, remaining);
+      }
+      const knownIds = new Set([...ingested, ...corpus].map(r => r.channel_id));
+      const cacheRemaining = limit - ingested.length - corpus.length;
+      let cachedChannels = [];
+      if (cacheRemaining > 0) {
         try {
-          const parsed = JSON.parse(raw_json);
-          const url = parsed?.snippet?.thumbnails?.medium?.url
-                   || parsed?.snippet?.thumbnails?.default?.url
-                   || null;
-          if (url) cacheThumbMap[channel_id] = url;
+          const cacheRows = db.all(
+            `SELECT channel_id, title AS name, 'youtube' AS source,
+                    subscriber_count AS subs, NULL AS niche, NULL AS community_id,
+                    NULL AS language, raw_json
+             FROM channel_cache
+             WHERE lower(title) LIKE lower(?)
+                OR lower(replace(coalesce(handle,''),'@','')) LIKE lower(?)
+                OR channel_id LIKE ?
+             ORDER BY subscriber_count DESC
+             LIMIT ?`,
+            [like, like.replace(/[%\s]/g, ''), like, limit],
+          );
+          cachedChannels = cacheRows
+            .filter(r => !knownIds.has(r.channel_id))
+            .slice(0, cacheRemaining)
+            .map(r => {
+              let thumbnail = null;
+              let language = r.language;
+              try {
+                const parsed = JSON.parse(r.raw_json || '{}');
+                thumbnail = parsed?.snippet?.thumbnails?.medium?.url ||
+                            parsed?.snippet?.thumbnails?.default?.url || null;
+                language = parsed?.snippet?.defaultLanguage || language;
+              } catch (_) {}
+              return { ...r, thumbnail, language };
+            });
         } catch (_) {}
       }
+      allRows = [...ingested, ...corpus, ...cachedChannels];
+      if (debug) console.log(`[search] fallback_ms=${Date.now() - t2} rows=${allRows.length}`);
     }
 
-    const results = allRows.map(r => ({
+    // ── Fetch thumbnails only for rows that still need them ───────────────────
+    const t3         = Date.now();
+    const missingIds = allRows.filter(r => !r.thumbnail).map(r => r.channel_id);
+    const thumbMap   = {};
+    if (missingIds.length > 0) {
+      try {
+        const ph       = missingIds.map(() => '?').join(',');
+        const cacheRows = db.all(
+          `SELECT channel_id, raw_json FROM channel_cache WHERE channel_id IN (${ph}) AND raw_json IS NOT NULL`,
+          missingIds,
+        );
+        for (const { channel_id, raw_json } of cacheRows) {
+          try {
+            const parsed = JSON.parse(raw_json);
+            const url = parsed?.snippet?.thumbnails?.medium?.url
+                     || parsed?.snippet?.thumbnails?.default?.url || null;
+            if (url) thumbMap[channel_id] = url;
+          } catch (_) {}
+        }
+      } catch (_) {}
+    }
+    if (debug) console.log(`[search] thumb_ms=${Date.now() - t3}`);
+
+    let results = allRows.map(r => ({
       channel_id:   r.channel_id,
-      name:         r.channel_name || r.channel_id,
+      name:         r.name || r.channel_id,
       subs:         r.subs || 0,
       niche:        r.niche || null,
       community_id: r.community_id || null,
-      source:       r.source,
+      source:       r.source || 'corpus',
       language:     r.language || 'en',
-      thumbnail:    r.thumbnail || cacheThumbMap[r.channel_id] || null,
+      thumbnail:    r.thumbnail || thumbMap[r.channel_id] || null,
     }));
 
+    if (results.length === 0 && q.length >= 3) {
+      try {
+        const live = await liveYoutubeChannelSearch(q, limit);
+        if (live.results?.length) {
+          for (const item of (live.items || [])) upsertChannelCache(db, item);
+          results = live.results;
+        }
+      } catch (_) {}
+    }
+
+    // Cache result; evict expired entries every 200 inserts
+    if (results.length > 0) searchCache.set(cacheKey, { results, expiresAt: Date.now() + SEARCH_CACHE_TTL });
+    if (searchCache.size % 200 === 0) {
+      const now = Date.now();
+      for (const [k, v] of searchCache) if (v.expiresAt < now) searchCache.delete(k);
+    }
+
+    if (debug) console.log(`[search] total_ms=${Date.now() - t0} q="${q}" rows=${results.length}`);
     res.json({ results });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -285,9 +472,15 @@ router.get('/channel-cache/browse', (req, res) => {
        FROM ingested_channels ic
        LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
        WHERE ic.ingest_enabled = 1
-         AND lower(COALESCE(ic.niche,'')) IN (${ph})
+         AND (
+           lower(COALESCE(ic.niche,'')) IN (${ph})
+           OR EXISTS (
+             SELECT 1 FROM channel_topics ct
+             WHERE ct.channel_id = ic.channel_id AND ct.niche IN (${ph})
+           )
+         )
        ORDER BY ic.channel_subscribers DESC LIMIT ?`,
-      [...niches, limit],
+      [...niches, ...niches, limit],
     );
 
     const ingestedIds = new Set(ingested.map(r => r.channel_id));
@@ -295,12 +488,18 @@ router.get('/channel-cache/browse', (req, res) => {
     let corpus = [];
     if (remaining > 0) {
       const rows = db.all(
-        `SELECT channel_id, title AS channel_name, subscriber_count AS subs,
-                niche, community_id, 'corpus' AS source, language, thumbnail_url AS thumbnail
-         FROM corpus_channels
-         WHERE lower(COALESCE(niche,'')) IN (${ph})
-         ORDER BY subscriber_count DESC LIMIT ?`,
-        [...niches, limit],
+        `SELECT cc.channel_id, cc.title AS channel_name, cc.subscriber_count AS subs,
+                cc.niche, cc.community_id, 'corpus' AS source, cc.language, cc.thumbnail_url AS thumbnail
+         FROM corpus_channels cc
+         WHERE (
+           lower(COALESCE(cc.niche,'')) IN (${ph})
+           OR EXISTS (
+             SELECT 1 FROM channel_topics ct
+             WHERE ct.channel_id = cc.channel_id AND ct.niche IN (${ph})
+           )
+         )
+         ORDER BY cc.subscriber_count DESC LIMIT ?`,
+        [...niches, ...niches, limit],
       );
       corpus = rows.filter(r => !ingestedIds.has(r.channel_id)).slice(0, remaining);
     }
@@ -328,8 +527,8 @@ router.get('/channel-cache/browse', (req, res) => {
 
 router.get('/channel-cache/search-youtube', async (req, res) => {
   // Uses YT_API_KEY_7 exclusively — reserved for frontend search, never touched by backend jobs.
-  const searchKey = process.env.YT_API_KEY_7;
-  if (!searchKey) return res.json({ results: [] });
+  const searchKey = process.env.YT_API_KEY_7 || process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
+  if (!searchKey) return res.json({ results: [], live_unavailable: true, reason: 'youtube_search_key_missing' });
 
   const q     = (req.query.q || '').trim();
   const limit = Math.min(8, Math.max(1, parseInt(req.query.limit ?? '5', 10)));
@@ -339,17 +538,44 @@ router.get('/channel-cache/search-youtube', async (req, res) => {
     const url = new URL(`${YT_BASE}/${path}`);
     url.searchParams.set('key', searchKey);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, String(v));
-    const res  = await fetch(url.toString());
-    const data = await res.json();
+    const { res, data } = await fetchJsonWithTimeout(url.toString());
     return res.ok ? data : null;
   }
 
   try {
     // Step 1: search.list — channel IDs + search-snippet thumbnails
+    const handle = q.match(/^@([A-Za-z0-9._-]{3,})$/)?.[1] || null;
+    if (handle) {
+      const handleData = await searchYtGet('channels', {
+        part: 'snippet,statistics',
+        forHandle: `@${handle}`,
+      });
+      const item = handleData?.items?.[0];
+      if (item) {
+        try {
+          const db = getDb();
+          upsertChannelCache(db, item);
+        } catch (_) {}
+        return res.json({
+          results: [{
+            channel_id:   item.id,
+            name:         item.snippet?.title || item.id,
+            subs:         parseInt(item.statistics?.subscriberCount || '0', 10),
+            niche:        guessNiche(item.snippet?.title || '', item.snippet?.description || ''),
+            community_id: null,
+            source:       'youtube',
+            language:     item.snippet?.defaultLanguage || null,
+            thumbnail:    item.snippet?.thumbnails?.medium?.url ||
+                          item.snippet?.thumbnails?.default?.url || null,
+          }],
+        });
+      }
+    }
+
     const searchData = await searchYtGet('search', {
       part: 'snippet', type: 'channel', q, maxResults: limit,
     });
-    if (!searchData) return res.json({ results: [] });
+    if (!searchData) return res.json({ results: [], live_unavailable: true, reason: 'youtube_search_failed' });
 
     const searchThumbMap = {};
     const ids = [];
@@ -367,7 +593,7 @@ router.get('/channel-cache/search-youtube', async (req, res) => {
     const detailData = await searchYtGet('channels', {
       part: 'snippet,statistics', id: ids.join(','),
     });
-    if (!detailData) return res.json({ results: [] });
+    if (!detailData) return res.json({ results: [], live_unavailable: true, reason: 'youtube_channel_detail_failed' });
 
     const results = (detailData.items || []).map(item => ({
       channel_id:   item.id,
@@ -381,10 +607,14 @@ router.get('/channel-cache/search-youtube', async (req, res) => {
                     item.snippet?.thumbnails?.default?.url ||
                     searchThumbMap[item.id] || null,
     }));
+    try {
+      const db = getDb();
+      for (const item of (detailData.items || [])) upsertChannelCache(db, item);
+    } catch (_) {}
 
     res.json({ results });
   } catch (e) {
-    res.json({ results: [] });
+    res.json({ results: [], live_unavailable: true, reason: e.name === 'AbortError' ? 'youtube_search_timeout' : 'youtube_search_error' });
   }
 });
 
@@ -405,6 +635,15 @@ router.get('/channel-cache/channel', async (req, res) => {
 
     // 2. Fallback: check ingested_channels by channel_id
     if (id) {
+      const summary = readChannelRuntimeSummary(db, id);
+      if (summary) {
+        return res.json({
+          hit: true,
+          channel: summaryToSyntheticChannel(summary),
+          summary,
+          cache_source: 'channel_runtime_summary',
+        });
+      }
       const ic = db.get('SELECT * FROM ingested_channels WHERE channel_id = ?', [id]);
       if (ic) {
         const synthetic = buildSyntheticChannel(ic);
@@ -440,6 +679,23 @@ router.get('/channel-cache/channel', async (req, res) => {
     res.status(404).json({ hit: false });
   } catch (e) {
     res.status(500).json({ error: e.message });
+  }
+});
+
+router.get('/channel-cache/summary/:channelId', (req, res) => {
+  try {
+    const db = getDb();
+    const channelId = req.params.channelId;
+    let summary = readChannelRuntimeSummary(db, channelId);
+    let cacheSource = 'channel_runtime_summary';
+    if (!summary && req.query.compute === '1') {
+      summary = buildAndSaveChannelRuntimeSummary(db, channelId);
+      cacheSource = 'computed';
+    }
+    if (!summary) return res.status(404).json({ ok: false, hit: false, channel_id: channelId });
+    res.json({ ok: true, hit: true, channel_id: channelId, summary, cache_source: cacheSource });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
   }
 });
 

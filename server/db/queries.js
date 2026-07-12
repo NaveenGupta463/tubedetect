@@ -1,5 +1,6 @@
 // Centralized SQL queries — all raw SQL lives here, not in routes or services.
 // Functions accept a `db` handle (from getDb()) and return the result directly.
+const { classifyVideoFormat } = require('../services/videoFormatClassifier');
 
 // ── Videos ────────────────────────────────────────────────────────────────────
 
@@ -792,10 +793,14 @@ function getChannelViewHistory(db, niche) {
 
 // ── Ingested channels ─────────────────────────────────────────────────────────
 
-function getIngestableChannels(db) {
+function getIngestableChannels(db, { limit = null, newestFirst = false } = {}) {
+  const order = newestFirst ? 'added_at DESC' : 'added_at ASC';
+  const limitSql = Number.isFinite(limit) && limit > 0 ? ' LIMIT ?' : '';
+  const params = limitSql ? [limit] : [];
   return db.all(
     `SELECT * FROM ingested_channels WHERE ingest_enabled = 1 AND last_ingested_at IS NULL
-     ORDER BY added_at ASC`,
+     ORDER BY ${order}${limitSql}`,
+    params,
   );
 }
 
@@ -850,23 +855,52 @@ function upsertIngestedVideo(db, {
   youtube_video_id, channel_id, niche, title, description,
   published_at, duration_seconds, category_id,
   views, likes, comments, channel_subscribers,
+  thumbnail_url, thumbnail_width, thumbnail_height, thumbnail_aspect_ratio,
+  format_type, format_confidence, format_reason, ingest_source,
 }) {
   const is_short = duration_seconds != null && duration_seconds <= 60 ? 1 : 0;
+  const derived = classifyVideoFormat({
+    title,
+    description,
+    duration_seconds,
+    thumbnail_width,
+    thumbnail_height,
+  });
+  const finalAspect = thumbnail_aspect_ratio ?? (
+    thumbnail_width && thumbnail_height ? Number((thumbnail_width / thumbnail_height).toFixed(4)) : null
+  );
+  const finalFormatType = format_type || derived.format_type;
+  const finalFormatConfidence = format_confidence || derived.format_confidence;
+  const finalFormatReason = format_reason || derived.format_reason;
+
   db.run(
     `INSERT INTO ingested_videos
        (youtube_video_id, channel_id, niche, title, description, published_at,
-        duration_seconds, category_id, views, likes, comments, channel_subscribers, is_short)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        duration_seconds, category_id, views, likes, comments, channel_subscribers,
+        is_short, thumbnail_url, thumbnail_width, thumbnail_height, thumbnail_aspect_ratio,
+        format_type, format_confidence, format_reason, ingest_source)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
      ON CONFLICT(youtube_video_id) DO UPDATE SET
        views             = excluded.views,
        likes             = excluded.likes,
        comments          = excluded.comments,
        is_short          = excluded.is_short,
+       thumbnail_url     = COALESCE(excluded.thumbnail_url, thumbnail_url),
+       thumbnail_width   = COALESCE(excluded.thumbnail_width, thumbnail_width),
+       thumbnail_height  = COALESCE(excluded.thumbnail_height, thumbnail_height),
+       thumbnail_aspect_ratio = COALESCE(excluded.thumbnail_aspect_ratio, thumbnail_aspect_ratio),
+       format_type       = excluded.format_type,
+       format_confidence = excluded.format_confidence,
+       format_reason     = excluded.format_reason,
+       ingest_source     = COALESCE(excluded.ingest_source, ingest_source),
        last_refreshed_at = datetime('now')`,
     [
       youtube_video_id, channel_id, niche, title, description ?? null,
       published_at ?? null, duration_seconds ?? null, category_id ?? null,
-      views ?? 0, likes ?? 0, comments ?? 0, channel_subscribers ?? null, is_short,
+      views ?? 0, likes ?? 0, comments ?? 0, channel_subscribers ?? null,
+      is_short, thumbnail_url ?? null, thumbnail_width ?? null, thumbnail_height ?? null,
+      finalAspect, finalFormatType, finalFormatConfidence, finalFormatReason,
+      ingest_source ?? null,
     ],
   );
 }
@@ -921,8 +955,9 @@ function getSnapshotCountByBucket(db) {
   );
 }
 
-// Returns all ingested videos joined with their channel subscriber count,
-// used by snapshot cron to determine newly eligible buckets and refresh stats.
+// Returns only videos with at least one missing growth bucket that is already due.
+// This keeps snapshot refresh from calling YouTube for every recently refreshed
+// video just to discover, after the API call, that no new bucket can be written.
 function getAllIngestedVideosForSnapshot(db) {
   return db.all(`
     SELECT iv.youtube_video_id, iv.channel_id, iv.niche, iv.published_at,
@@ -930,7 +965,41 @@ function getAllIngestedVideosForSnapshot(db) {
            ic.channel_subscribers
     FROM ingested_videos iv
     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
-    WHERE iv.published_at >= datetime('now', '-60 days')
+    WHERE iv.published_at IS NOT NULL
+      AND iv.published_at >= datetime('now', '-60 days')
+      AND (iv.last_refreshed_at IS NULL
+           OR iv.last_refreshed_at < datetime('now', '-20 hours'))
+      AND (
+        (iv.published_at <= datetime('now', '-1 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '1d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-3 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '3d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-7 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '7d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-14 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '14d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-30 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '30d'
+         ))
+      )
     ORDER BY iv.published_at DESC
   `);
 }
@@ -944,6 +1013,49 @@ function getNeverRefreshedVideosForSnapshot(db) {
     JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
     WHERE iv.published_at IS NOT NULL
       AND iv.last_refreshed_at IS NULL
+      AND (
+        (iv.published_at <= datetime('now', '-1 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '1d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-3 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '3d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-7 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '7d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-14 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '14d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-30 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '30d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-90 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '90d'
+         ))
+        OR
+        (iv.published_at <= datetime('now', '-365 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '365d'
+         ))
+      )
     ORDER BY iv.ingested_at DESC
   `);
 }
@@ -962,10 +1074,19 @@ function getStaleOlderVideosForSnapshot(db) {
       AND (
         (iv.published_at <  datetime('now', '-60 days')
          AND iv.published_at >= datetime('now', '-365 days')
-         AND iv.last_refreshed_at < datetime('now', '-60 days'))
+         AND iv.published_at <= datetime('now', '-90 days')
+         AND iv.last_refreshed_at < datetime('now', '-60 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '90d'
+         ))
         OR
         (iv.published_at < datetime('now', '-365 days')
-         AND iv.last_refreshed_at < datetime('now', '-180 days'))
+         AND iv.last_refreshed_at < datetime('now', '-180 days')
+         AND NOT EXISTS (
+           SELECT 1 FROM video_growth_snapshots s
+           WHERE s.video_id = iv.youtube_video_id AND s.bucket = '365d'
+         ))
       )
     ORDER BY iv.last_refreshed_at ASC
   `);
@@ -2490,4 +2611,3 @@ function updateVideoCacheStats(db, videoId, statistics) {
     [JSON.stringify(item), parseInt(statistics.viewCount ?? '0', 10) || 0, videoId]
   );
 }
-

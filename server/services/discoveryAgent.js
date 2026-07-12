@@ -14,6 +14,7 @@
  */
 
 const crypto = require('crypto');
+const { pickAIKeyword } = require('./keywordGenerator');
 const {
   upsertCorpusChannel,
   upsertDiscoveryEdge,
@@ -31,23 +32,60 @@ const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-async function ytFetch(endpoint, params) {
+async function ytFetch(endpoint, params, timeoutMs = 25_000) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('discovery');
     if (!key) throw new Error('all_api_keys_exhausted');
     const url = new URL(`${YT_BASE}/${endpoint}`);
     url.searchParams.set('key', key);
     for (const [k, v] of Object.entries(params)) url.searchParams.set(k, v);
-    const resp = await fetch(url.toString());
-    const data = await resp.json();
-    if (!resp.ok) {
-      const msg = data?.error?.message || `YouTube ${resp.status}`;
-      if (isQuotaError(msg)) { markExhausted(key); continue; }
-      throw new Error(msg);
+    const ac    = new AbortController();
+    const timer = setTimeout(() => ac.abort(), timeoutMs);
+    try {
+      const resp = await fetch(url.toString(), { signal: ac.signal });
+      const data = await resp.json();
+      clearTimeout(timer);
+      if (!resp.ok) {
+        const msg = data?.error?.message || `YouTube ${resp.status}`;
+        if (isQuotaError(msg)) { markExhausted(key); continue; }
+        throw new Error(msg);
+      }
+      return data;
+    } catch (e) {
+      clearTimeout(timer);
+      if (e.name === 'AbortError') {
+        console.warn(`[discoveryAgent] ytFetch timeout (${timeoutMs}ms) for ${endpoint}, attempt ${attempt + 1}`);
+        if (attempt < 2) continue;
+        throw new Error(`ytFetch_timeout:${endpoint}`);
+      }
+      throw e;
     }
-    return data;
   }
   throw new Error('all_api_keys_exhausted');
+}
+
+// ── Country gate: only connect channels that share the same country ───────────
+// Prevents US/UK channels from polluting Indian clusters via co-occurrence edges.
+// Returns a map of channelId → country (or null if unknown).
+function resolveCountries(db, channelIds) {
+  if (!channelIds.length) return {};
+  const placeholders = channelIds.map(() => '?').join(',');
+  const rows = db.all(
+    `SELECT channel_id, COALESCE(yt_country, country) AS country
+     FROM corpus_channels WHERE channel_id IN (${placeholders})`,
+    channelIds,
+  );
+  const map = {};
+  for (const r of rows) map[r.channel_id] = r.country ?? null;
+  return map;
+}
+
+function sameCountry(countryMap, idA, idB) {
+  const a = countryMap[idA];
+  const b = countryMap[idB];
+  // if either side has no country data, allow the edge (conservative)
+  if (!a || !b) return true;
+  return a === b;
 }
 
 // ── Zero-quota: niche gap detection ──────────────────────────────────────────
@@ -402,13 +440,17 @@ const LANG_KEYWORD_BANKS = {
   id: INDONESIAN_NICHE_KEYWORDS,
   ar: ARABIC_NICHE_KEYWORDS,
   pa: PUNJABI_NICHE_KEYWORDS,
+  us: NICHE_KEYWORDS,   // US English — reuses the English keyword bank, regionCode=US
+  gb: NICHE_KEYWORDS,   // UK English — reuses the English keyword bank, regionCode=GB
 };
 
-// Language → regionCode for non-English searches
+// Language → regionCode for non-English searches. us/gb are English-language but
+// region-targeted (relevanceLanguage forced to 'en' in discoverByNicheKeyword).
 const LANG_REGION = {
   hi: 'IN', ta: 'IN', te: 'IN', bn: 'IN',
   kn: 'IN', ml: 'IN', pa: 'IN',
   es: 'MX', pt: 'BR', id: 'ID', ar: 'SA',
+  us: 'US', gb: 'GB',
 };
 
 const LANG_DISCOVERY_SOURCE = {
@@ -424,7 +466,15 @@ const LANG_DISCOVERY_SOURCE = {
   id: 'indonesian_keyword_search',
   ar: 'arabic_keyword_search',
   pa: 'punjabi_keyword_search',
+  us: 'us_keyword_search',
+  gb: 'gb_keyword_search',
 };
+
+const GROWTH_BLOCKED_VIDEO_LANGS = new Set(['es', 'pt', 'id']);
+
+function shouldSkipVideoSearchAdmission(lang) {
+  return process.env.CORPUS_GROWTH_ONLY === '1' && GROWTH_BLOCKED_VIDEO_LANGS.has(lang);
+}
 
 // Channels per niche above this count → skip English search
 const NICHE_SATURATION_THRESHOLD = 300;
@@ -462,28 +512,31 @@ function isNicheSaturated(db, niche, lang) {
   return (row?.n ?? 0) >= NICHE_SATURATION_THRESHOLD;
 }
 
-async function discoverByNicheKeyword(db, niche, lang = 'en') {
-  if (!quotaGuard.quotaAvailable(100)) {
+async function discoverByNicheKeyword(db, niche, lang = 'en', opts = {}) {
+  const { keywordOverride = null, ignoreCooldown = false, orderOverride = null, minSubs = null, minVideos = null } = opts;
+  if (!quotaGuard.quotaAvailable(101)) {
     console.warn('[discovery] Skipping keyword search — insufficient quota (needs 100 units)');
     return [];
   }
 
-  // Skip saturated niches — paying 100 units for 0-1 new channels is wasteful
-  if (isNicheSaturated(db, niche, lang)) {
+  // Skip saturated niches — paying 100 units for 0-1 new channels is wasteful.
+  // Bulk-expansion callers (ignoreCooldown) opt out of the steady-state cap.
+  if (!ignoreCooldown && isNicheSaturated(db, niche, lang)) {
     console.log(`[discovery] Niche "${niche}" (${lang}) saturated — skipping search`);
     return [];
   }
 
-  const keywords = LANG_KEYWORD_BANKS[lang]?.[niche] ?? NICHE_KEYWORDS[niche];
-  if (!keywords?.length) return [];
-
-  // Rotate keyword by search-count-within-day so consecutive runs use different terms
-  const dayOffset  = Math.floor(Date.now() / 86_400_000);
+  // Prefer AI-generated keywords (fresh, long-tail, rotated by used_count)
+  // Fall back to static bank when AI bank is empty for this niche×lang pair
+  const aiKeyword  = keywordOverride ? null : pickAIKeyword(db, niche, lang);
+  const keywords   = LANG_KEYWORD_BANKS[lang]?.[niche] ?? NICHE_KEYWORDS[niche];
   const hourOffset = Math.floor(Date.now() / 3_600_000);
-  const keyword    = keywords[hourOffset % keywords.length];
+  const keyword    = keywordOverride ?? aiKeyword ?? keywords?.[hourOffset % (keywords?.length || 1)];
+  if (!keyword) return [];
 
   // Alternate order daily: relevance finds popular channels, date finds newer ones
-  const order = dayOffset % 2 === 0 ? 'relevance' : 'date';
+  const dayOffset = Math.floor(Date.now() / 86_400_000);
+  const order = orderOverride ?? (dayOffset % 2 === 0 ? 'relevance' : 'date');
 
   const searchParams = {
     part:       'snippet',
@@ -493,7 +546,8 @@ async function discoverByNicheKeyword(db, niche, lang = 'en') {
     order,
   };
   if (lang !== 'en') {
-    searchParams.relevanceLanguage = lang;
+    // us/gb reuse the English keyword bank but target US/GB regions; other langs use their own.
+    searchParams.relevanceLanguage = (lang === 'us' || lang === 'gb') ? 'en' : lang;
     const region = LANG_REGION[lang];
     if (region) searchParams.regionCode = region;
   }
@@ -518,12 +572,30 @@ async function discoverByNicheKeyword(db, niche, lang = 'en') {
       if (!getCorpusChannel(db, channelId)) newFound.push({ channelId, item });
     }
 
+    let metadataItems = [];
+    const novelIds = [...new Set(newFound.map(r => r.channelId))].slice(0, 50);
+    if (novelIds.length) {
+      quotaGuard.recordUsage(1, 'corpus');
+      const channelData = await ytFetch('channels', {
+        part: 'snippet,statistics',
+        id:   novelIds.join(','),
+      });
+      metadataItems = (channelData.items ?? []).filter(it => passesSearchAdmissionGate(
+        it,
+        minSubs   != null ? minSubs   : SEARCH_MIN_SUBS,
+        minVideos != null ? minVideos : SEARCH_MIN_VIDEOS,
+      ));
+    }
+
     db.run('BEGIN');
     try {
-      for (const { channelId, item } of newFound) {
+      for (const item of metadataItems) {
+        const channelId = item.id;
         upsertCorpusChannel(db, {
           channel_id:       channelId,
-          title:            item.snippet.channelTitle ?? item.snippet.title,
+          title:            item.snippet?.title ?? channelId,
+          subscriber_count: parseInt(item.statistics?.subscriberCount ?? '0', 10),
+          video_count:      parseInt(item.statistics?.videoCount ?? '0', 10),
           niche,
           discovery_source: discoverySource,
         });
@@ -546,9 +618,11 @@ async function discoverByNicheKeyword(db, niche, lang = 'en') {
         });
       }
 
-      // Co-occurrence edges: channels appearing together in the same search are adjacent
+      // Co-occurrence edges: only between channels that share the same country
+      const kwCountryMap = resolveCountries(db, allIds);
       for (let i = 0; i < allIds.length; i++) {
         for (let j = i + 1; j < allIds.length; j++) {
+          if (!sameCountry(kwCountryMap, allIds[i], allIds[j])) continue;
           upsertDiscoveryEdge(db, {
             source_channel_id: allIds[i],
             target_channel_id: allIds[j],
@@ -564,11 +638,58 @@ async function discoverByNicheKeyword(db, niche, lang = 'en') {
       throw inner;
     }
 
-    console.log(`[discovery] Keyword search "${niche}" (${lang}) order=${order}: found ${newFound.length} new / ${allIds.length} total`);
-    return newFound.map(r => r.channelId);
+    console.log(`[discovery] Keyword search "${niche}" (${lang}) order=${order}: admitted ${metadataItems.length} new / ${newFound.length} novel after gate`);
+    return metadataItems.map(r => r.id);
   } catch (e) {
     console.warn('[discovery] Keyword search error:', e.message);
     return [];
+  }
+}
+
+// ── Bulk region mining (foreign expansion at scale) ──────────────────────────
+// Drives discoverByNicheKeyword across the FULL keyword bank × both search orders,
+// bypassing the steady-state per-niche cooldown, with a relaxed admission gate.
+// Built for aggressive US/UK expansion runs that should spend real quota — unlike
+// runLangSearches, which is tuned for gentle daily top-ups.
+async function bulkMineRegion(db, region = 'us', opts = {}) {
+  const {
+    target          = Infinity,
+    maxSearches     = Infinity,
+    quotaCap        = Infinity,   // stop once this many units have been spent this call
+    minSubs         = 100,
+    minVideos       = 3,
+    orders          = ['relevance', 'date'],
+  } = opts;
+
+  const niches = Object.keys(NICHE_KEYWORDS);
+  const startUsed = quotaGuard.getStats().used;
+  let admitted = 0, searches = 0, consecutiveEmpty = 0;
+
+  for (const order of orders) {
+    for (const niche of niches) {
+      for (const kw of (NICHE_KEYWORDS[niche] || [])) {
+        if (admitted >= target)                                return finish('target');
+        if (searches >= maxSearches)                           return finish('max_searches');
+        if ((quotaGuard.getStats().used - startUsed) >= quotaCap) return finish('quota_cap');
+        if (!quotaGuard.quotaAvailable(101))                   return finish('quota_budget');
+        if (consecutiveEmpty >= 12)                            return finish('keys_exhausted');
+
+        const found = await discoverByNicheKeyword(db, niche, region, {
+          keywordOverride: kw, ignoreCooldown: true, orderOverride: order, minSubs, minVideos,
+        });
+        searches++;
+        admitted += found.length;
+        consecutiveEmpty = found.length > 0 ? 0 : consecutiveEmpty + 1;
+        if (found.length > 0) await sleep(200);
+      }
+    }
+  }
+  return finish('keywords_exhausted');
+
+  function finish(stopped) {
+    const used = quotaGuard.getStats().used - startUsed;
+    console.log(`[discovery] bulkMineRegion(${region}) — admitted=${admitted} searches=${searches} quota=${used} stop=${stopped}`);
+    return { region, admitted, searches, quota_used: used, stopped };
   }
 }
 
@@ -577,6 +698,11 @@ async function discoverByNicheKeyword(db, niche, lang = 'en') {
 // Returns up to 50 unique new channel IDs per call — broader coverage than channel search.
 
 async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') {
+  if (shouldSkipVideoSearchAdmission(lang)) {
+    console.log(`[discovery] Video search "${keyword}" (${lang}) skipped in growth mode`);
+    return [];
+  }
+
   if (!quotaGuard.quotaAvailable(101)) {
     console.warn('[discovery] Skipping video search — insufficient quota (needs 101 units)');
     return [];
@@ -593,7 +719,8 @@ async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') 
     order:      videoOrder,
   };
   if (lang !== 'en') {
-    searchParams.relevanceLanguage = lang;
+    // us/gb reuse the English keyword bank but target US/GB regions; other langs use their own.
+    searchParams.relevanceLanguage = (lang === 'us' || lang === 'gb') ? 'en' : lang;
     const region = LANG_REGION[lang];
     if (region) searchParams.regionCode = region;
   }
@@ -618,7 +745,7 @@ async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') 
         id:   newIds.join(','),
       });
 
-      const batchItems = channelData.items ?? [];
+      const batchItems = (channelData.items ?? []).filter(passesSearchAdmissionGate);
       db.run('BEGIN');
       try {
         for (const item of batchItems) {
@@ -628,6 +755,10 @@ async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') 
             channel_id:       channelId,
             title:            item.snippet?.title,
             subscriber_count: parseInt(item.statistics?.subscriberCount ?? '0', 10),
+            video_count:      parseInt(item.statistics?.videoCount ?? '0', 10),
+            country:          item.snippet?.country ?? null,
+            yt_country:       item.snippet?.country ?? null,
+            yt_default_language: item.snippet?.defaultLanguage ?? item.snippet?.defaultAudioLanguage ?? null,
             niche,
             discovery_source: discoverySource,
           });
@@ -651,9 +782,11 @@ async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') 
           newFound.push(channelId);
         }
 
-        // Co-occurrence edges for all channels in this search result
+        // Co-occurrence edges — country-gated to prevent cross-region cluster bleed
+        const vsCountryMap = resolveCountries(db, channelIds);
         for (let i = 0; i < channelIds.length; i++) {
           for (let j = i + 1; j < channelIds.length; j++) {
+            if (!sameCountry(vsCountryMap, channelIds[i], channelIds[j])) continue;
             upsertDiscoveryEdge(db, {
               source_channel_id: channelIds[i],
               target_channel_id: channelIds[j],
@@ -672,8 +805,10 @@ async function discoverByVideoSearch(db, keyword, lang = 'en', niche = 'other') 
       // No new channels but still write co-occurrence edges for existing ones
       db.run('BEGIN');
       try {
+        const vsCountryMap2 = resolveCountries(db, channelIds);
         for (let i = 0; i < channelIds.length; i++) {
           for (let j = i + 1; j < channelIds.length; j++) {
+            if (!sameCountry(vsCountryMap2, channelIds[i], channelIds[j])) continue;
             upsertDiscoveryEdge(db, {
               source_channel_id: channelIds[i],
               target_channel_id: channelIds[j],
@@ -864,6 +999,15 @@ function buildRelatedGraph(db) {
 
 // All supported language codes for iteration
 const ALL_LANG_CODES = Object.keys(LANG_KEYWORD_BANKS);
+const SEARCH_MIN_SUBS = parseInt(process.env.DISCOVERY_SEARCH_MIN_SUBS ?? '500', 10);
+const SEARCH_MIN_VIDEOS = parseInt(process.env.DISCOVERY_SEARCH_MIN_VIDEOS ?? '5', 10);
+
+function passesSearchAdmissionGate(item, minSubs = SEARCH_MIN_SUBS, minVideos = SEARCH_MIN_VIDEOS) {
+  const stats = item?.statistics ?? {};
+  const subs = parseInt(stats.subscriberCount ?? '0', 10);
+  const videos = parseInt(stats.videoCount ?? '0', 10);
+  return subs >= minSubs && videos >= minVideos;
+}
 
 async function runDiscoveryCycle(db, {
   allowSearch = false,        maxSearches = 5,
@@ -878,6 +1022,8 @@ async function runDiscoveryCycle(db, {
   allowIndonesianSearch = false, maxIndonesianSearches = 3,
   allowArabicSearch = false,  maxArabicSearches = 3,
   allowPunjabiSearch = false, maxPunjabiSearches = 3,
+  allowUsSearch = false,      maxUsSearches = 8,
+  allowGbSearch = false,      maxGbSearches = 5,
   allowVideoSearch = false,   maxVideoSearches = 5,
 } = {}) {
   const results = {
@@ -895,6 +1041,8 @@ async function runDiscoveryCycle(db, {
     indonesian_discovered: 0, indonesian_searches_run: 0,
     arabic_discovered: 0,     arabic_searches_run: 0,
     punjabi_discovered: 0,    punjabi_searches_run: 0,
+    us_discovered: 0,         us_searches_run: 0,
+    gb_discovered: 0,         gb_searches_run: 0,
     video_discovered: 0,      video_searches_run: 0,
   };
 
@@ -910,13 +1058,13 @@ async function runDiscoveryCycle(db, {
 
   // Helper: run N searches for a given language using keyword rotation
   async function runLangSearches(langCode, maxCount, discoveredKey, runsKey) {
-    if (!maxCount || !quotaGuard.quotaAvailable(100)) return;
+    if (!maxCount || !quotaGuard.quotaAvailable(101)) return;
     const bank   = LANG_KEYWORD_BANKS[langCode];
     if (!bank) return;
     const niches = Object.keys(bank);
     const offset = Math.floor(Date.now() / 86_400_000);
     for (let i = 0; i < maxCount; i++) {
-      if (!quotaGuard.quotaAvailable(100)) break;
+      if (!quotaGuard.quotaAvailable(101)) break;
       const niche = niches[(offset + i) % niches.length];
       const found = await discoverByNicheKeyword(database, niche, langCode);
       results[runsKey]++;
@@ -929,7 +1077,7 @@ async function runDiscoveryCycle(db, {
   if (allowSearch && results.niche_gaps.length > 0) {
     for (const gap of results.niche_gaps) {
       if (results.searches_run >= maxSearches) break;
-      if (!quotaGuard.quotaAvailable(100)) break;
+      if (!quotaGuard.quotaAvailable(101)) break;
       const found = await discoverByNicheKeyword(database, gap.niche, 'en');
       results.searches_run++;
       results.search_discovered += found.length;
@@ -949,6 +1097,8 @@ async function runDiscoveryCycle(db, {
   if (allowIndonesianSearch) await runLangSearches('id', maxIndonesianSearches, 'indonesian_discovered', 'indonesian_searches_run');
   if (allowArabicSearch)     await runLangSearches('ar', maxArabicSearches,     'arabic_discovered',     'arabic_searches_run');
   if (allowPunjabiSearch)    await runLangSearches('pa', maxPunjabiSearches,    'punjabi_discovered',    'punjabi_searches_run');
+  if (allowUsSearch)         await runLangSearches('us', maxUsSearches,         'us_discovered',         'us_searches_run');
+  if (allowGbSearch)         await runLangSearches('gb', maxGbSearches,         'gb_discovered',         'gb_searches_run');
 
   // 4. Video search — broader net, surfaces creators channel search misses
   if (allowVideoSearch && maxVideoSearches > 0) {
@@ -993,4 +1143,6 @@ module.exports = {
   discoverByNicheKeyword,
   discoverByVideoSearch,
   buildRelatedGraph,
+  bulkMineRegion,
+  NICHE_KEYWORDS,
 };

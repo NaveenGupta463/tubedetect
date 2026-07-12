@@ -5,7 +5,11 @@
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
+    "start:api": "node index.js",
+    "start:worker": "node worker.js",
     "dev": "nodemon --ignore data/ --ignore ml/ --ext js index.js",
+    "dev:api": "nodemon --ignore data/ --ignore ml/ --ext js index.js",
+    "dev:worker": "nodemon --ignore data/ --ignore ml/ --ext js worker.js",
     "pipeline": "node pipeline.js",
     "seed": "node scripts/seedTestData.js",
     "backfill": "node scripts/backfillEmbeddings.js",

@@ -4,11 +4,17 @@ const quotaGuard = require('../services/quotaGuard');
 const { withCronRetry } = require('../utils/cronRetry');
 const { fetchVideoFullBatch } = require('../services/youtubeMetrics');
 const { upsertIngestedVideo } = require('../db/queries');
+const { setLastRun } = require('../services/jobState');
+const { recordPipelineHealth, checkpointWalPassive } = require('../services/pipelineHealth');
+const { isShortSignal } = require('../services/videoFormatClassifier');
 
 // RSS fetches are free — no quota cost. Sweep everything every run.
 // Only YouTube API quota is spent when genuinely new video IDs are found.
 const CONCURRENCY    = parseInt(process.env.RSS_SWEEP_CONCURRENCY || '50', 10);
 const FETCH_TIMEOUT_MS = 8000;
+const CATCHUP_AFTER_HOURS = parseFloat(process.env.RSS_SWEEP_CATCHUP_HOURS || '7');
+const STARTUP_CATCHUP_DELAY_MS = parseInt(process.env.RSS_SWEEP_STARTUP_DELAY_MS || '90000', 10);
+const SHORT_FORM_CAP_PER_CHANNEL = parseInt(process.env.RSS_SHORT_FORM_CAP_PER_CHANNEL || '5', 10);
 
 // Niche leaders: channels above this sub count get swept on every run,
 // regardless of when they were last scanned.
@@ -22,6 +28,7 @@ const _state = {
   total:            0,
   checked:          0,
   new_videos:       0,
+  skipped_short_form: 0,
   started_at:       null,
   last_completed_at: null,
 };
@@ -84,11 +91,21 @@ async function sweepChannel(db, channel) {
   }
 
   let inserted = 0;
+  let shortFormInserted = 0;
+  let skippedShortForm = 0;
   try {
     const videoMap = await fetchVideoFullBatch(newIds);
     quotaGuard.recordUsage(1, 'rss-sweep');
 
     for (const [ytId, vdata] of videoMap) {
+      if (
+        SHORT_FORM_CAP_PER_CHANNEL >= 0 &&
+        isShortSignal(vdata.format_type) &&
+        shortFormInserted >= SHORT_FORM_CAP_PER_CHANNEL
+      ) {
+        skippedShortForm++;
+        continue;
+      }
       try {
         upsertIngestedVideo(db, {
           youtube_video_id:    ytId,
@@ -99,12 +116,21 @@ async function sweepChannel(db, channel) {
           published_at:        vdata.published_at,
           duration_seconds:    vdata.duration_seconds,
           category_id:         vdata.category_id,
+          thumbnail_url:       vdata.thumbnail_url,
+          thumbnail_width:     vdata.thumbnail_width,
+          thumbnail_height:    vdata.thumbnail_height,
+          thumbnail_aspect_ratio: vdata.thumbnail_aspect_ratio,
+          format_type:         vdata.format_type,
+          format_confidence:   vdata.format_confidence,
+          format_reason:       vdata.format_reason,
+          ingest_source:       'rss',
           views:               vdata.views,
           likes:               vdata.likes,
           comments:            vdata.comments,
           channel_subscribers: channel.channel_subscribers ?? 0,
         });
         inserted++;
+        if (isShortSignal(vdata.format_type)) shortFormInserted++;
       } catch (e) {
         if (!e.message?.includes('UNIQUE')) {
           console.warn(`[rss-sweep] upsert failed (${ytId}):`, e.message);
@@ -115,7 +141,7 @@ async function sweepChannel(db, channel) {
     console.warn(`[rss-sweep] videos.list failed for ${channel.channel_id}:`, e.message);
   }
 
-  return { new: inserted };
+  return { new: inserted, skipped_short_form: skippedShortForm };
 }
 
 function stampChannel(db, channelId) {
@@ -143,7 +169,43 @@ function getChannelsForSweep(db) {
   );
 }
 
+function parseSqliteUtc(value) {
+  if (!value) return null;
+  const dt = new Date(String(value).replace(' ', 'T') + 'Z');
+  return Number.isNaN(dt.getTime()) ? null : dt;
+}
+
+function getRssLagHours(db) {
+  const row = db.get(
+    `SELECT MAX(last_rss_scan_at) AS last_scan_at
+     FROM ingested_channels
+     WHERE ingest_enabled = 1`,
+  );
+  const last = parseSqliteUtc(row?.last_scan_at);
+  if (!last) return Infinity;
+  return (Date.now() - last.getTime()) / 3_600_000;
+}
+
+function scheduleStartupCatchup() {
+  const timer = setTimeout(() => {
+    try {
+      const db = getDb();
+      const lagHours = getRssLagHours(db);
+      if (lagHours < CATCHUP_AFTER_HOURS) {
+        console.log(`[RSS Sweep Cron] Startup catch-up not needed — last scan ${lagHours.toFixed(1)}h ago`);
+        return;
+      }
+      console.log(`[RSS Sweep Cron] Startup catch-up due — last scan ${Number.isFinite(lagHours) ? lagHours.toFixed(1) : 'never'}h ago`);
+      withCronRetry(runNewVideoSweep, 'rss-sweep-startup', { maxAttempts: 1 });
+    } catch (e) {
+      console.warn('[RSS Sweep Cron] Startup catch-up check failed:', e.message);
+    }
+  }, STARTUP_CATCHUP_DELAY_MS);
+  timer.unref?.();
+}
+
 async function runNewVideoSweep() {
+  const startedAt = new Date();
   if (!process.env.YT_API_KEY && !process.env.YOUTUBE_API_KEY) {
     console.warn('[rss-sweep] YT_API_KEY not set — skipping');
     return;
@@ -165,6 +227,7 @@ async function runNewVideoSweep() {
     total:      channels.length,
     checked:    0,
     new_videos: 0,
+    skipped_short_form: 0,
     started_at: new Date().toISOString(),
   });
 
@@ -177,6 +240,7 @@ async function runNewVideoSweep() {
       const results = await Promise.all(batch.map(ch => sweepChannel(db, ch)));
       _state.checked    += batch.length;
       _state.new_videos += results.reduce((s, r) => s + r.new, 0);
+      _state.skipped_short_form += results.reduce((s, r) => s + (r.skipped_short_form || 0), 0);
 
       if (i % (CONCURRENCY * 10) === 0 && i > 0) {
         console.log(`[rss-sweep] ${_state.checked}/${_state.total} checked — ${_state.new_videos} new videos`);
@@ -187,6 +251,24 @@ async function runNewVideoSweep() {
   } finally {
     const quota = quotaGuard.getStats();
     console.log(`[rss-sweep] Done — checked=${_state.checked} new_videos=${_state.new_videos} quota=${quota.used}/${quota.cutoff}`);
+    setLastRun('rss_sweep');
+    recordPipelineHealth(db, {
+      job_name:    'rss_sweep',
+      status:      'ok',
+      started_at:  startedAt.toISOString(),
+      duration_ms: Date.now() - startedAt.getTime(),
+      metrics: {
+        checked:      _state.checked,
+        total:        _state.total,
+        new_videos:   _state.new_videos,
+        skipped_short_form: _state.skipped_short_form,
+        short_form_cap_per_channel: SHORT_FORM_CAP_PER_CHANNEL,
+        quota_used:   quota.used,
+        quota_cutoff: quota.cutoff,
+        concurrency:  CONCURRENCY,
+      },
+    });
+    checkpointWalPassive(db, 'rss-sweep');
     _state.running           = false;
     _state.last_completed_at = new Date().toISOString();
   }
@@ -198,13 +280,9 @@ function startNewVideoSweepCron() {
   cron.schedule('0 */6 * * *', () => {
     withCronRetry(runNewVideoSweep, 'rss-sweep', { maxAttempts: 2, retryDelayMs: 15 * 60 * 1000 });
   });
+  scheduleStartupCatchup();
   console.log('[RSS Sweep Cron] Scheduled — every 6 hours (00:00, 06:00, 12:00, 18:00 UTC)');
-
-  // Startup sweep after 60s so DB migrations are done and server is warm
-  setTimeout(() => {
-    console.log('[RSS Sweep Cron] Startup sweep firing');
-    withCronRetry(runNewVideoSweep, 'rss-sweep-startup', { maxAttempts: 1, retryDelayMs: 0 });
-  }, 60_000);
+  // Startup catch-up prevents missed cron boundaries after server restarts.
 }
 
 module.exports = { startNewVideoSweepCron, runNewVideoSweep, getSweepStatus };

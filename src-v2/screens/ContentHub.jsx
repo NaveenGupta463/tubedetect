@@ -20,6 +20,7 @@ function fmtDate(iso) {
 const CARD_BADGE = {
   outline: { label: 'Outline',  bg: 'rgba(157,111,255,0.12)', border: 'rgba(157,111,255,0.3)', color: '#9D6FFF' },
   script:  { label: 'Script',   bg: 'rgba(79,130,255,0.12)',  border: 'rgba(79,130,255,0.3)',  color: '#5B9AFF' },
+  note:    { label: 'Draft',    bg: 'rgba(18,217,138,0.10)',  border: 'rgba(18,217,138,0.25)', color: '#12D98A' },
 };
 
 function CardBadge({ type, part }) {
@@ -44,8 +45,30 @@ function DraftViewer({ cards }) {
       {cards.map((card, i) => {
         if (card.type === 'outline') return <OutlineView key={i} data={card.data} />;
         if (card.type === 'script')  return <ScriptView  key={i} data={card.data} />;
+        if (card.type === 'note')    return <NoteView    key={i} data={card.data} />;
         return null;
       })}
+    </div>
+  );
+}
+
+function NoteView({ data }) {
+  return (
+    <div style={{
+      padding: '14px 16px', borderRadius: 12, marginBottom: 10,
+      background: 'linear-gradient(160deg, rgba(18,217,138,0.06) 0%, rgba(14,14,16,0.4))',
+      border: '1px solid rgba(18,217,138,0.2)',
+    }}>
+      <div style={{ fontSize: '0.72rem', fontWeight: 700, color: T.success, letterSpacing: '0.06em', marginBottom: 8, textTransform: 'uppercase' }}>
+        {data.section || data.title || 'Draft Note'}
+      </div>
+      <div style={{
+        fontSize: '0.78rem', color: T.text, lineHeight: 1.65, whiteSpace: 'pre-wrap',
+        padding: '10px 12px', borderRadius: 8,
+        background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}`,
+      }}>
+        {data.content}
+      </div>
     </div>
   );
 }
@@ -151,6 +174,7 @@ function DraftCard({ draft, onDelete }) {
 
   const cardTypes = draft.cards?.map(c => c.type) || [];
   const hasOutline = cardTypes.includes('outline');
+  const noteCards  = draft.cards?.filter(c => c.type === 'note') || [];
   const bodyCard   = draft.cards?.find(c => c.type === 'script' && c.data?.part !== 'ending');
   const endCard    = draft.cards?.find(c => c.type === 'script' && c.data?.part === 'ending');
 
@@ -191,6 +215,7 @@ function DraftCard({ draft, onDelete }) {
               {hasOutline && <CardBadge type="outline" />}
               {bodyCard   && <CardBadge type="script" part="body" />}
               {endCard    && <CardBadge type="script" part="ending" />}
+              {noteCards.length > 0 && <CardBadge type="note" />}
             </div>
           </div>
         </div>
@@ -250,7 +275,7 @@ function DraftCard({ draft, onDelete }) {
 export default function ContentHub() {
   const [drafts,  setDrafts]  = useState([]);
   const [loading, setLoading] = useState(true);
-  const [filter,  setFilter]  = useState('all'); // 'all' | 'outline' | 'script'
+  const [filter,  setFilter]  = useState('all'); // 'all' | 'outline' | 'script' | 'note'
 
   useEffect(() => {
     const cid = getClientId();
@@ -271,6 +296,7 @@ export default function ContentHub() {
     all:     drafts.length,
     outline: drafts.filter(d => d.cards?.some(c => c.type === 'outline')).length,
     script:  drafts.filter(d => d.cards?.some(c => c.type === 'script')).length,
+    note:    drafts.filter(d => d.cards?.some(c => c.type === 'note')).length,
   };
 
   return (
@@ -295,6 +321,7 @@ export default function ContentHub() {
       }}>
         {[
           { key: 'all',     label: 'All'      },
+          { key: 'note',    label: 'Drafts'   },
           { key: 'outline', label: 'Outlines' },
           { key: 'script',  label: 'Scripts'  },
         ].map(({ key, label }) => (

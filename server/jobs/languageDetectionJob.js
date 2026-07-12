@@ -223,9 +223,13 @@ async function detectChannelCountry(channelId) {
   // ── 8. Direct YouTube channels API — for channels with no local video data ─
   if (!videos.length) {
     try {
+      const _ac1 = new AbortController();
+      const _t1  = setTimeout(() => _ac1.abort(), 25_000);
       const resp = await fetch(
         `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics&id=${channelId}&key=${apiKey}`,
+        { signal: _ac1.signal },
       );
+      clearTimeout(_t1);
       if (resp.ok) {
         const data = await resp.json();
         const item = data.items?.[0];
@@ -275,9 +279,13 @@ async function detectChannelCountry(channelId) {
 
   for (const { youtube_video_id: vid } of videos) {
     try {
+      const _ac2 = new AbortController();
+      const _t2  = setTimeout(() => _ac2.abort(), 25_000);
       const resp = await fetch(
         `https://www.googleapis.com/youtube/v3/commentThreads?part=snippet&videoId=${vid}&maxResults=100&key=${apiKey}`,
+        { signal: _ac2.signal },
       );
+      clearTimeout(_t2);
       if (!resp.ok) continue;
       const data  = await resp.json();
       const items = data.items || [];

@@ -12,9 +12,9 @@
  *   This means the job runs ~daily but is resilient to offline periods.
  *
  * QUOTA BUDGET:
- *   Default MAX_QUOTA_PER_CYCLE = 2000 units (leaves headroom for user actions)
+ *   Default MAX_QUOTA_PER_CYCLE = 10000 units (growth-first seeded pool expansion)
  *   The cycle tracks quota consumed and stops early if budget is exhausted.
- *   Set CORPUS_QUOTA_BUDGET env var to override (e.g. CORPUS_QUOTA_BUDGET=1000).
+ *   Set CORPUS_QUOTA_BUDGET env var to override (e.g. CORPUS_QUOTA_BUDGET=10000).
  */
 
 const crypto = require('crypto');
@@ -33,9 +33,10 @@ const { captureTopologySnapshot }                        = require('./topologyHe
 const { runDriftDetection }                              = require('./semanticDriftEngine');
 const { runMaturityCheck }                               = require('./governanceMaturityEngine');
 const { runEcologyInferencePass }                        = require('./attentionEcologyEngine');
+const { runCreatorDiscoveryResolver }                    = require('../scripts/resolveCreatorDiscoveryCandidates');
 const {
-  getAllCorpusChannels,
   getCorpusChannelsForQualityEval,
+  getCorpusChannelsForLightIngest,
   getStaleChannels,
   markRefreshed,
   getAutoPromotionCandidates,
@@ -44,6 +45,7 @@ const {
   getCorpusVideoTitles,
   updateCorpusChannelNiche,
   migrateIngestedVideosToCorpus,
+  normalizeGraphDiscoveryAdmissionState,
 } = require('../db/corpusQueries');
 const { upsertIngestedChannel } = require('../db/queries');
 const { classifyChannel }       = require('./channelClassifier');
@@ -51,7 +53,153 @@ const { classifyChannel }       = require('./channelClassifier');
 const MIN_RUN_INTERVAL_HOURS = parseInt(process.env.CORPUS_RUN_INTERVAL_HOURS ?? '24', 10);
 const STARTUP_DELAY_MS       = 3 * 60_000;   // 3 min after boot — lets server handle requests first
 const CHECK_INTERVAL_MS      = 30 * 60 * 1000; // recheck every 30 minutes
-const MAX_QUOTA_PER_CYCLE    = parseInt(process.env.CORPUS_QUOTA_BUDGET ?? '4000', 10);
+function maxQuotaPerCycle() {
+  return parseInt(process.env.CORPUS_QUOTA_BUDGET ?? '50000', 10);
+}
+
+function creatorGraphResolveQuota() {
+  return parseInt(process.env.CREATOR_GRAPH_RESOLVE_QUOTA ?? '300', 10);
+}
+
+function creatorGraphHandleCap() {
+  return parseInt(process.env.CREATOR_GRAPH_HANDLE_CAP ?? '150', 10);
+}
+
+function aiDiscoveryQuotaCap() {
+  return parseInt(process.env.CORPUS_AI_DISCOVERY_QUOTA ?? '25', 10);
+}
+
+function aiDiscoveryMaxNiches() {
+  return parseInt(process.env.CORPUS_AI_DISCOVERY_MAX_NICHES ?? '1', 10);
+}
+
+function aiDiscoverySkipIfSearchAdded() {
+  return parseInt(process.env.CORPUS_AI_SKIP_IF_SEARCH_ADDED ?? '500', 10);
+}
+
+function corpusLightIngestLimit() {
+  return parseInt(process.env.CORPUS_LIGHT_INGEST_LIMIT ?? '3000', 10);
+}
+
+function isReferenceLikeTitle(title = '') {
+  const s = String(title || '').toLowerCase();
+  return [
+    'windows', 'burger king', 'visit dubai', 'visit qatar', 'epidemic sound',
+    'alienware', 'marine corps', 'live nation', 'microsoft', 'adobe',
+    'makeup by mario', 'kaybykatrina', 'mahindra thar',
+  ].some(x => s.includes(x));
+}
+
+function shouldSkipGrowthLightIngest(ch) {
+  if (process.env.CORPUS_GROWTH_ONLY !== '1') return false;
+  const source = ch.discovery_source || '';
+  const subs = ch.subscriber_count ?? 0;
+  const videos = ch.video_count ?? 0;
+  const isIndiaTagged = ch.yt_country === 'IN' || ch.country === 'IN';
+  const foreignSearchBacklog = new Set([
+    'video_search_es',
+    'video_search_pt',
+    'video_search_id',
+    'spanish_keyword_search',
+    'portuguese_keyword_search',
+    'indonesian_keyword_search',
+  ]);
+
+  if (foreignSearchBacklog.has(source) && !isIndiaTagged) return true;
+  if (
+    (
+      source.startsWith('video_search') ||
+      source.includes('keyword_search') ||
+      source === 'trending_IN' ||
+      source === 'emerging_IN'
+    ) &&
+    videos < 5
+  ) return true;
+
+  if (source === 'description_handle_link') {
+    if (isReferenceLikeTitle(ch.title)) return true;
+    if (subs < 1000 || subs > 10000000) return true;
+    if (videos > 0 && videos < 5) return true;
+  }
+
+  if (source === 'comment_harvest_IN' && (subs < 2000 || videos < 10)) return true;
+  return false;
+}
+
+function discoverySearchFraction() {
+  const raw = parseFloat(process.env.CORPUS_DISCOVERY_SEARCH_FRACTION ?? '0.55');
+  if (!Number.isFinite(raw)) return 0.55;
+  return Math.min(0.75, Math.max(0.1, raw));
+}
+
+function searchPlanForQuota(units) {
+  const slots = Math.max(0, Math.floor(units / 101));
+  const plan = {
+    maxSearches: 0, maxVideoSearches: 0,
+    maxUsSearches: 0, maxGbSearches: 0,
+    maxHindiSearches: 0, maxTamilSearches: 0, maxTeluguSearches: 0,
+    maxBengaliSearches: 0, maxKannadaSearches: 0, maxMalayalamSearches: 0,
+    maxSpanishSearches: 0, maxPortugueseSearches: 0, maxIndonesianSearches: 0,
+    maxArabicSearches: 0, maxPunjabiSearches: 0,
+  };
+  if (slots <= 0) return plan;
+
+  let remaining = slots;
+  function take(desired, cap) {
+    const n = Math.max(0, Math.min(cap, desired, remaining));
+    remaining -= n;
+    return n;
+  }
+
+  // Video search is the best scalable source now: it returns uploader channels
+  // from thin niches, while channel-search keywords saturate faster.
+  plan.maxVideoSearches = take(
+    Math.max(1, Math.floor(slots * 0.45)),
+    parseInt(process.env.DISCOVERY_MAX_VIDEO_SEARCHES ?? '160', 10),
+  );
+  plan.maxSearches = take(
+    Math.max(1, Math.floor(slots * 0.18)),
+    parseInt(process.env.DISCOVERY_MAX_EN_SEARCHES ?? '60', 10),
+  );
+  // US/UK expansion — region-targeted English. Prioritized ahead of regional langs so
+  // the pipeline focuses on these markets going forward. Tune via DISCOVERY_MAX_US/GB_SEARCHES.
+  plan.maxUsSearches = take(
+    Math.max(1, Math.floor(slots * 0.15)),
+    parseInt(process.env.DISCOVERY_MAX_US_SEARCHES ?? '80', 10),
+  );
+  plan.maxGbSearches = take(
+    Math.max(1, Math.floor(slots * 0.08)),
+    parseInt(process.env.DISCOVERY_MAX_GB_SEARCHES ?? '40', 10),
+  );
+
+  const regionalOrder = [
+    ['maxHindiSearches',      'DISCOVERY_MAX_HINDI_SEARCHES',      40, 2],
+    ['maxTamilSearches',      'DISCOVERY_MAX_TAMIL_SEARCHES',      28, 1],
+    ['maxTeluguSearches',     'DISCOVERY_MAX_TELUGU_SEARCHES',     28, 1],
+    ['maxPunjabiSearches',    'DISCOVERY_MAX_PUNJABI_SEARCHES',    24, 1],
+    ['maxBengaliSearches',    'DISCOVERY_MAX_BENGALI_SEARCHES',    24, 1],
+    ['maxKannadaSearches',    'DISCOVERY_MAX_KANNADA_SEARCHES',    24, 1],
+    ['maxMalayalamSearches',  'DISCOVERY_MAX_MALAYALAM_SEARCHES',  24, 1],
+    ['maxArabicSearches',     'DISCOVERY_MAX_ARABIC_SEARCHES',     12, 1],
+    ['maxSpanishSearches',    'DISCOVERY_MAX_SPANISH_SEARCHES',    12, 1],
+    ['maxPortugueseSearches', 'DISCOVERY_MAX_PORTUGUESE_SEARCHES', 12, 1],
+    ['maxIndonesianSearches', 'DISCOVERY_MAX_INDONESIAN_SEARCHES', 12, 1],
+  ];
+
+  let idx = 0;
+  while (remaining > 0 && idx < regionalOrder.length * 50) {
+    const [key, envKey, defaultCap, weight] = regionalOrder[idx % regionalOrder.length];
+    const cap = parseInt(process.env[envKey] ?? String(defaultCap), 10);
+    if (plan[key] < cap) {
+      const grant = Math.min(weight, cap - plan[key], remaining);
+      plan[key] += grant;
+      remaining -= grant;
+    }
+    idx++;
+  }
+
+  return plan;
+}
 
 let isRunning    = false;
 let checkTimer   = null;
@@ -72,6 +220,32 @@ function startRunLog(db, quotaBudget) {
     [id, quotaBudget],
   );
   return id;
+}
+
+function cleanupStaleRunLogs(db, maxAgeHours = 12) {
+  const info = db.run(
+    `UPDATE corpus_run_log
+     SET status = 'failed',
+         completed_at = COALESCE(completed_at, datetime('now')),
+         error = COALESCE(error, 'stale running corpus cycle marked failed on scheduler startup')
+     WHERE status = 'running'
+       AND started_at < datetime('now', ?)`,
+    [`-${maxAgeHours} hours`],
+  );
+  return info.changes ?? 0;
+}
+
+function getPendingCreatorGraphCandidates(db) {
+  try {
+    return db.get(
+      `SELECT COUNT(*) AS n
+       FROM creator_discovery_candidates
+       WHERE status = 'pending'
+         AND score >= 40`,
+    )?.n ?? 0;
+  } catch (_) {
+    return 0;
+  }
 }
 
 function finalizeRunLog(db, id, { ok, quota_used, channels_ingested, channels_evaluated,
@@ -115,10 +289,48 @@ function shouldRun(db) {
   return hoursAgo >= MIN_RUN_INTERVAL_HOURS;
 }
 
+function runAutoPromotePass(db, record) {
+  const qualityThreshold = Math.max(50, parseFloat(process.env.CORPUS_AUTO_PROMOTE_THRESHOLD ?? '60'));
+  const candidates       = getAutoPromotionCandidates(db, { qualityThreshold });
+  let promoted = 0;
+  for (const ch of candidates) {
+    const isIndian = ch.yt_country === 'IN' || ch.country === 'IN';
+    const langCode = ch.yt_default_language?.split('-')[0]?.toLowerCase()
+      ?? ch.language?.split?.('-')?.[0]?.toLowerCase?.()
+      ?? null;
+    const isEnglish = !langCode || langCode === 'en';
+    const allowIndianLocalLanguage = process.env.CORPUS_PROMOTE_INDIAN_LOCAL_LANG !== '0';
+    if (!isEnglish && !(isIndian && allowIndianLocalLanguage)) continue;
+    if (!ch.training_eligible || ch.is_spam || (ch.quality_score ?? 0) < qualityThreshold || !ch.niche) continue;
+
+    try {
+      upsertIngestedChannel(db, {
+        id:                     crypto.randomUUID(),
+        channel_id:             ch.channel_id,
+        channel_name:           ch.title ?? ch.handle ?? ch.channel_id,
+        niche:                  ch.niche,
+        uploads_playlist_id:    ch.uploads_playlist_id ?? null,
+        channel_subscribers:    ch.subscriber_count ?? null,
+        added_by:               'auto_promote',
+        ignore_from_benchmarks: ch.yt_country && ch.yt_country !== 'IN',
+        community_id:           ch.community_id ?? null,
+        notes:                  `Auto-promoted from corpus. quality_score=${ch.quality_score?.toFixed(2)}`,
+      });
+      markCorpusAutoPromoted(db, ch.channel_id);
+      promoted++;
+    } catch (e) {
+      record('auto_promote_channel_error', { channel_id: ch.channel_id, error: e.message });
+    }
+  }
+  const result = { promoted, candidates: candidates.length, threshold: qualityThreshold };
+  record('auto_promote', result);
+  return result;
+}
+
 // ── Main cycle ────────────────────────────────────────────────────────────────
 
 // mode: 'full' (default) | 'discover' (find+ingest only) | 'promote' (evaluate+promote only)
-async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, allowCulturalExpansion = false, allowHindiSearch = false, allowTamilSearch = false, allowTeluguSearch = false, allowBengaliSearch = false, allowKannadaSearch = false, allowMalayalamSearch = false, allowSpanishSearch = false, allowPortugueseSearch = false, allowIndonesianSearch = false, allowArabicSearch = false, allowPunjabiSearch = false, allowVideoSearch = false, quotaBudget, mode = 'full' } = {}) {
+async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, allowCulturalExpansion = false, allowHindiSearch = false, allowTamilSearch = false, allowTeluguSearch = false, allowBengaliSearch = false, allowKannadaSearch = false, allowMalayalamSearch = false, allowSpanishSearch = false, allowPortugueseSearch = false, allowIndonesianSearch = false, allowArabicSearch = false, allowPunjabiSearch = false, allowUsSearch = false, allowGbSearch = false, allowVideoSearch = false, quotaBudget, mode = 'full' } = {}) {
   if (isRunning) {
     console.log('[corpusScheduler] Cycle already running — skipping');
     return { skipped: true, reason: 'already_running' };
@@ -127,10 +339,11 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
   isRunning          = true;
   const db           = getDb();
   const startMs      = Date.now();
-  const budget       = quotaBudget ?? MAX_QUOTA_PER_CYCLE;
+  const budget       = quotaBudget ?? maxQuotaPerCycle();
   const log          = [];
   let   cycleQuota   = 0; // quota consumed this cycle
 
+  const staleRunsMarked = cleanupStaleRunLogs(db);
   const runId = startRunLog(db, budget);
 
   function record(step, data) {
@@ -138,6 +351,9 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     const { niche_gaps: _ng, ...printable } = (data && typeof data === 'object') ? data : { _: data };
     console.log(`[corpusScheduler] ${step}:`, JSON.stringify(printable));
     log.push({ step, data, ts: new Date().toISOString() });
+    try {
+      db.run('UPDATE corpus_run_log SET log_json = ? WHERE id = ?', [JSON.stringify(log), runId]);
+    } catch (_) {}
   }
 
   function quotaLeft() { return budget - cycleQuota; }
@@ -152,20 +368,24 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     quotaGuard.recordUsage(units, tag);
   }
 
+  function accountExternalQuota(units) {
+    cycleQuota += units;
+  }
+
   const summary = {
     quota_used: 0, channels_ingested: 0, channels_evaluated: 0,
     channels_promoted: 0, channels_demoted: 0, discovery_synced: 0,
   };
 
   try {
-    record('start', { budget, quota_left: quotaLeft(), run_id: runId });
+    record('start', { budget, quota_left: quotaLeft(), run_id: runId, stale_runs_marked: staleRunsMarked });
 
     // ── Step 1: Quota plan ────────────────────────────────────────────────────
     const usedToday    = quotaGuard.getUsedToday?.() ?? 0;
     const noSearch     = !allowSearch && !allowHindiSearch && !allowTamilSearch && !allowTeluguSearch
                          && !allowBengaliSearch && !allowKannadaSearch && !allowMalayalamSearch
                          && !allowSpanishSearch && !allowPortugueseSearch && !allowIndonesianSearch
-                         && !allowArabicSearch && !allowPunjabiSearch && !allowVideoSearch && !allowAIDiscovery;
+                         && !allowArabicSearch && !allowPunjabiSearch && !allowUsSearch && !allowGbSearch && !allowVideoSearch && !allowAIDiscovery;
     // When no search flags are set (ingest-only mode), give the full budget to ingestion
     // instead of splitting it via planQuotaAllocation which only allocates 50% to expansion.
     const allocation   = noSearch
@@ -180,57 +400,136 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
 
     summary.discovery_synced = (discovery.synced_ingested ?? 0) + (discovery.synced_approved ?? 0);
     record('discovery', discovery);
+    let searchNewChannels = 0;
 
     // ── Step 3: API-based keyword search across all underrepresented niches ──────
     if (mode === 'promote') { record('discovery_search_skipped', { reason: 'promote_mode' }); }
-    else if ((allowSearch || allowHindiSearch || allowTamilSearch || allowTeluguSearch) && canSpend(100)) {
+    else if ((allowSearch || allowHindiSearch || allowTamilSearch || allowTeluguSearch
+      || allowBengaliSearch || allowKannadaSearch || allowMalayalamSearch
+      || allowSpanishSearch || allowPortugueseSearch || allowIndonesianSearch
+      || allowArabicSearch || allowPunjabiSearch || allowUsSearch || allowGbSearch || allowVideoSearch) && canSpend(100)) {
       const { runDiscoveryCycle: runSearch } = require('./discoveryAgent');
-      // Reserve half the remaining budget for ingest; each search = 100 units
-      const maxSearches = Math.max(1, Math.floor(quotaLeft() / 2 / 100));
+      const searchBudget = Math.floor(quotaLeft() * discoverySearchFraction());
+      const searchPlan = searchPlanForQuota(searchBudget);
       const searchResult = await runSearch(db, {
-        allowSearch,            maxSearches,
-        allowHindiSearch,       maxHindiSearches: 5,
-        allowTamilSearch,       maxTamilSearches: 5,
-        allowTeluguSearch,      maxTeluguSearches: 5,
-        allowBengaliSearch,     maxBengaliSearches: 3,
-        allowKannadaSearch,     maxKannadaSearches: 3,
-        allowMalayalamSearch,   maxMalayalamSearches: 3,
-        allowSpanishSearch,     maxSpanishSearches: 3,
-        allowPortugueseSearch,  maxPortugueseSearches: 3,
-        allowIndonesianSearch,  maxIndonesianSearches: 3,
-        allowArabicSearch,      maxArabicSearches: 3,
-        allowPunjabiSearch,     maxPunjabiSearches: 3,
-        allowVideoSearch,       maxVideoSearches: 5,
+        allowSearch,            maxSearches: searchPlan.maxSearches,
+        allowHindiSearch,       maxHindiSearches: searchPlan.maxHindiSearches,
+        allowTamilSearch,       maxTamilSearches: searchPlan.maxTamilSearches,
+        allowTeluguSearch,      maxTeluguSearches: searchPlan.maxTeluguSearches,
+        allowBengaliSearch,     maxBengaliSearches: searchPlan.maxBengaliSearches,
+        allowKannadaSearch,     maxKannadaSearches: searchPlan.maxKannadaSearches,
+        allowMalayalamSearch,   maxMalayalamSearches: searchPlan.maxMalayalamSearches,
+        allowSpanishSearch,     maxSpanishSearches: searchPlan.maxSpanishSearches,
+        allowPortugueseSearch,  maxPortugueseSearches: searchPlan.maxPortugueseSearches,
+        allowIndonesianSearch,  maxIndonesianSearches: searchPlan.maxIndonesianSearches,
+        allowArabicSearch,      maxArabicSearches: searchPlan.maxArabicSearches,
+        allowPunjabiSearch,     maxPunjabiSearches: searchPlan.maxPunjabiSearches,
+        allowUsSearch,          maxUsSearches: searchPlan.maxUsSearches,
+        allowGbSearch,          maxGbSearches: searchPlan.maxGbSearches,
+        allowVideoSearch,       maxVideoSearches: searchPlan.maxVideoSearches,
       });
-      // quota is recorded internally by discoverByNicheKeyword (100 units/call)
-      const searchesRun = (searchResult.searches_run ?? 0) + (searchResult.hindi_searches_run ?? 0)
-        + (searchResult.tamil_searches_run ?? 0) + (searchResult.telugu_searches_run ?? 0);
-      spend(searchesRun * 100, 'corpus_search');
-      record('discovery_search', searchResult);
-    } else if (allowSearch || allowHindiSearch || allowTamilSearch || allowTeluguSearch) {
+      // quotaGuard is recorded inside discoveryAgent; account here only for this cycle's budget.
+      const keywordSearchesRun = (searchResult.searches_run ?? 0) + (searchResult.hindi_searches_run ?? 0)
+        + (searchResult.tamil_searches_run ?? 0) + (searchResult.telugu_searches_run ?? 0)
+        + (searchResult.bengali_searches_run ?? 0) + (searchResult.kannada_searches_run ?? 0)
+        + (searchResult.malayalam_searches_run ?? 0) + (searchResult.spanish_searches_run ?? 0)
+        + (searchResult.portuguese_searches_run ?? 0) + (searchResult.indonesian_searches_run ?? 0)
+        + (searchResult.arabic_searches_run ?? 0) + (searchResult.punjabi_searches_run ?? 0)
+        + (searchResult.us_searches_run ?? 0) + (searchResult.gb_searches_run ?? 0);
+      const searchQuotaUsed = keywordSearchesRun * 101 + (searchResult.video_searches_run ?? 0) * 101;
+      searchNewChannels = (searchResult.search_discovered ?? 0)
+        + (searchResult.hindi_discovered ?? 0)
+        + (searchResult.tamil_discovered ?? 0)
+        + (searchResult.telugu_discovered ?? 0)
+        + (searchResult.bengali_discovered ?? 0)
+        + (searchResult.kannada_discovered ?? 0)
+        + (searchResult.malayalam_discovered ?? 0)
+        + (searchResult.spanish_discovered ?? 0)
+        + (searchResult.portuguese_discovered ?? 0)
+        + (searchResult.indonesian_discovered ?? 0)
+        + (searchResult.arabic_discovered ?? 0)
+        + (searchResult.punjabi_discovered ?? 0)
+        + (searchResult.us_discovered ?? 0)
+        + (searchResult.gb_discovered ?? 0)
+        + (searchResult.video_discovered ?? 0);
+      accountExternalQuota(searchQuotaUsed);
+      record('discovery_search', { ...searchResult, search_plan: searchPlan, quota_accounted: searchQuotaUsed });
+    } else if (allowSearch || allowHindiSearch || allowTamilSearch || allowTeluguSearch
+      || allowBengaliSearch || allowKannadaSearch || allowMalayalamSearch
+      || allowSpanishSearch || allowPortugueseSearch || allowIndonesianSearch
+      || allowArabicSearch || allowPunjabiSearch || allowVideoSearch) {
       record('discovery_search_skipped', { reason: 'quota_budget_too_low', left: quotaLeft() });
     }
 
     // ── Step 3b: AI diversity discovery (cheap, semantically governed) ────────
-    if (mode !== 'promote' && allowAIDiscovery && canSpend(10)) {
+    const pendingGraphCandidates = getPendingCreatorGraphCandidates(db);
+    const aiQuotaCap = Math.max(0, aiDiscoveryQuotaCap());
+    const aiSearchSkipThreshold = aiDiscoverySkipIfSearchAdded();
+    if (mode !== 'promote' && allowAIDiscovery && searchNewChannels >= aiSearchSkipThreshold) {
+      record('ai_discovery_skipped', {
+        reason: 'search_discovery_sufficient',
+        search_new_channels: searchNewChannels,
+        threshold: aiSearchSkipThreshold,
+      });
+    } else if (mode !== 'promote' && allowAIDiscovery && pendingGraphCandidates >= 500) {
+      record('ai_discovery_skipped', {
+        reason: 'creator_graph_queue_available',
+        pending_graph_candidates: pendingGraphCandidates,
+      });
+    } else if (mode !== 'promote' && allowAIDiscovery && aiQuotaCap <= 0) {
+      record('ai_discovery_skipped', {
+        reason: 'ai_quota_cap_disabled',
+        ai_quota_cap: aiQuotaCap,
+      });
+    } else if (mode !== 'promote' && allowAIDiscovery && canSpend(Math.min(10, aiQuotaCap))) {
       const aiResult = await runAIDiscoveryCycle(db, {
-        maxNiches:             3,
+        maxNiches:             Math.max(1, aiDiscoveryMaxNiches()),
         allowCulturalExpansion,
-        maxQuota:              Math.min(60, quotaLeft()),
+        maxQuota:              Math.min(aiQuotaCap, quotaLeft()),
       });
       if (!aiResult.skipped) spend(aiResult.quota_used ?? 0, 'corpus_ai_discovery');
       record('ai_discovery', aiResult);
     }
 
+    // ── Step 3c: Resolve creator-graph candidates into corpus rows ───────────
+    if (mode !== 'promote' && pendingGraphCandidates > 0) {
+      const ingestReserve = Math.min(500, Math.max(50, Math.floor(budget * 0.4)));
+      const graphQuota = Math.min(creatorGraphResolveQuota(), Math.max(0, quotaLeft() - ingestReserve));
+      if (graphQuota >= 2 && canSpend(2)) {
+        try {
+          const graphResult = await runCreatorDiscoveryResolver(db, {
+            handleCap: creatorGraphHandleCap(),
+            maxQuota: graphQuota,
+          });
+          accountExternalQuota(graphResult.quota_used ?? 0);
+          record('creator_graph_resolver', graphResult);
+        } catch (e) {
+          record('creator_graph_resolver_error', { error: e.message });
+        }
+      } else {
+        record('creator_graph_resolver_skipped', {
+          reason: 'quota_budget_too_low',
+          pending_graph_candidates: pendingGraphCandidates,
+          ingest_reserve: ingestReserve,
+          left: quotaLeft(),
+        });
+      }
+    }
+
     // ── Step 4: Re-score all channels by priority (no quota) ─────────────────
-    const rescored = rescoreAllChannels(db);
-    record('priority_rescore', rescored);
+    if (process.env.CORPUS_SKIP_PRIORITY_RESCORE === '1') {
+      record('priority_rescore_skipped', { reason: 'CORPUS_SKIP_PRIORITY_RESCORE=1' });
+    } else {
+      const rescored = rescoreAllChannels(db);
+      record('priority_rescore', rescored);
+    }
 
     // ── Step 4b: Zero-quota: copy ingested_videos → corpus_videos for sync'd channels ──
     if (mode !== 'promote') {
       try {
         const migrated = migrateIngestedVideosToCorpus(db);
-        record('video_migration', migrated);
+        const normalized = normalizeGraphDiscoveryAdmissionState(db);
+        record('video_migration', { ...migrated, ...normalized });
       } catch (e) {
         record('video_migration_error', { error: e.message });
       }
@@ -240,12 +539,14 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     if (mode === 'promote') {
       record('light_ingest_skipped', { reason: 'promote_mode' });
     } else {
-      const toIngest = getAllCorpusChannels(db, {
-        limit: Math.min(expansionCap * 8, 3000),
-      }).filter(ch => ch.ingest_depth < 1 && !ch.is_spam && ch.discovery_source !== 'ingested_channels_sync');
+      const toIngest = getCorpusChannelsForLightIngest(db, Math.min(expansionCap * 8, corpusLightIngestLimit()));
 
-      const ingestRes = { attempted: 0, ok: 0, quota_exhausted: false, channels: [] };
+      const ingestRes = { attempted: 0, ok: 0, failed: 0, skipped_policy: 0, quota_exhausted: false, failure_reasons: {}, channels: [] };
       for (const ch of toIngest) {
+        if (shouldSkipGrowthLightIngest(ch)) {
+          ingestRes.skipped_policy++;
+          continue;
+        }
         if (!canSpend(3)) { ingestRes.quota_exhausted = true; break; }
         ingestRes.attempted++;
         const result = await lightIngestChannelFull(db, ch.channel_id, {
@@ -255,7 +556,7 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
         if (result.ok) {
           ingestRes.ok++;
           summary.channels_ingested++;
-          spend(3, 'corpus_ingest');
+          accountExternalQuota(3);
           ingestRes.channels.push({
             channel_id:       ch.channel_id,
             title:            ch.title ?? ch.handle ?? ch.channel_id,
@@ -265,6 +566,13 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
             discovery_source: ch.discovery_source ?? null,
             videos_ingested:  result.videos?.stored ?? result.videos?.count ?? 0,
           });
+        } else {
+          ingestRes.failed++;
+          const reason = result.reason ?? result.videos?.reason ?? 'unknown';
+          ingestRes.failure_reasons[reason] = (ingestRes.failure_reasons[reason] ?? 0) + 1;
+          if (reason !== 'no_api_key' && reason !== 'all_api_keys_exhausted' && reason !== 'quota_exhausted') {
+            accountExternalQuota(1);
+          }
         }
         if (result.reason === 'quota_exhausted' || result.videos?.reason === 'quota_exhausted') {
           ingestRes.quota_exhausted = true; break;
@@ -278,7 +586,8 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     if (mode === 'discover') {
       record('niche_classify_skipped', { reason: 'discover_mode' });
     } else {
-      const unclassified = getUnclassifiedCorpusChannels(db, 100);
+      const classifyLimit = Math.max(100, parseInt(process.env.CORPUS_NICHE_CLASSIFY_LIMIT ?? '500', 10));
+      const unclassified = getUnclassifiedCorpusChannels(db, classifyLimit);
       const classifyRes  = { attempted: 0, classified: 0, errors: 0, skipped_no_titles: 0 };
       for (const ch of unclassified) {
         const titles = getCorpusVideoTitles(db, ch.channel_id, 40);
@@ -302,7 +611,8 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
     // ── Step 6: Quality evaluation (no quota) ─────────────────────────────────
     let toEvaluate = [];
     if (mode !== 'discover') {
-      toEvaluate = getCorpusChannelsForQualityEval(db, 500);
+      const qualityEvalLimit = Math.max(500, parseInt(process.env.CORPUS_QUALITY_EVAL_LIMIT ?? '1500', 10));
+      toEvaluate = getCorpusChannelsForQualityEval(db, qualityEvalLimit);
       const evalRes = { evaluated: 0, errors: 0 };
       for (let i = 0; i < toEvaluate.length; i++) {
         try { evaluateChannelQuality(db, toEvaluate[i]); evalRes.evaluated++; summary.channels_evaluated++; }
@@ -330,10 +640,31 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
         if (!canSpend(2)) { refreshRes.skipped_quota++; continue; }
         const r = await lightIngestChannelFull(db, ch.channel_id, { maxVideos: 20, discoverySource: 'refresh' });
         refreshRes.attempted++;
-        if (r.ok) { refreshRes.ok++; spend(2, 'corpus_refresh'); markRefreshed(db, ch.channel_id); }
+        if (r.ok) {
+          refreshRes.ok++;
+          accountExternalQuota(2);
+          markRefreshed(db, ch.channel_id);
+        } else if (r.reason !== 'no_api_key' && r.reason !== 'all_api_keys_exhausted' && r.reason !== 'quota_exhausted') {
+          accountExternalQuota(1);
+        }
         await new Promise(r2 => setTimeout(r2, 150));
       }
       record('stale_refresh', { ...refreshRes, quota_used_so_far: cycleQuota });
+    }
+
+    if (process.env.CORPUS_GROWTH_ONLY === '1') {
+      try {
+        const autoRes = runAutoPromotePass(db, record);
+        summary.channels_promoted = Math.max(summary.channels_promoted, autoRes.promoted ?? 0);
+      } catch (e) {
+        record('auto_promote_error', { error: e.message });
+      }
+      record('growth_only_complete', { reason: 'CORPUS_GROWTH_ONLY=1' });
+      const duration = Date.now() - startMs;
+      summary.quota_used = cycleQuota;
+      record('complete', { duration_ms: duration, quota_used: cycleQuota, budget_remaining: quotaLeft() });
+      finalizeRunLog(db, runId, { ok: true, ...summary, log });
+      return { ok: true, duration_ms: duration, quota_used: cycleQuota, log };
     }
 
     if (mode === 'discover') {
@@ -416,15 +747,23 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
             } catch (_) {}
           }
 
-          const ytLang   = ch.yt_default_language?.split('-')[0]?.toLowerCase() ?? null;
-          const langCode = ytLang ?? profilePrimary;
-          const isEnglish = !langCode || langCode === 'en' || langCode === 'en-US' || langCode === 'en-GB';
+          const ytLang      = ch.yt_default_language?.split('-')[0]?.toLowerCase() ?? null;
+          const profileLang = profilePrimary?.split?.('-')?.[0]?.toLowerCase?.() ?? null;
+          const corpusLang  = ch.language?.split?.('-')?.[0]?.toLowerCase?.() ?? null;
+          const isIndian    = ch.yt_country === 'IN' || ch.country === 'IN';
+          const langCode    = ytLang ?? profileLang ?? corpusLang;
+          const isEnglish   = !langCode || langCode === 'en';
+          const corpusSaysEnglish = corpusLang === 'en' || profileLang === 'en';
+          const allowIndianLocalLanguage = process.env.CORPUS_PROMOTE_INDIAN_LOCAL_LANG !== '0';
+          const canPromoteByLanguage = isEnglish || corpusSaysEnglish || (isIndian && allowIndianLocalLanguage);
 
-          if (!isEnglish) continue;
+          if (!canPromoteByLanguage) continue;
 
-          // Uncertain = Indian channel where only weak signal (franc/fallback) detected English.
-          // Promote but exclude from benchmark aggregation.
-          const ignoreFromBenchmarks = profileUncertain && ch.yt_country === 'IN';
+          // Foreign channels (non-IN country) go in as reference-only — never affect Indian benchmarks.
+          // Indian local-language/uncertain channels are promoted for recommendations,
+          // but excluded from English benchmark math until language-specific benchmarks exist.
+          const isForeign = ch.yt_country && ch.yt_country !== 'IN';
+          const ignoreFromBenchmarks = isForeign || (isIndian && (!isEnglish || profileUncertain));
           if (
             !ch.training_eligible ||
             ch.is_spam ||
@@ -442,7 +781,7 @@ async function runCorpusCycle({ allowSearch = false, allowAIDiscovery = false, a
               added_by:               'auto_promote',
               ignore_from_benchmarks: ignoreFromBenchmarks,
               community_id:           ch.community_id ?? null,
-              notes:                  `Auto-promoted from corpus. quality_score=${ch.quality_score?.toFixed(2)}${ignoreFromBenchmarks ? ' [lang:uncertain-IN]' : ''}`,
+              notes:                  `Auto-promoted from corpus. quality_score=${ch.quality_score?.toFixed(2)}${ignoreFromBenchmarks ? ' [benchmark-excluded]' : ''}`,
             });
             markCorpusAutoPromoted(db, ch.channel_id);
             promoted++;
@@ -495,16 +834,14 @@ function checkAndRunIfDue() {
 // ── Start scheduler ───────────────────────────────────────────────────────────
 
 function startCorpusScheduler() {
-  // First eligibility check after server boot (give other services time to init)
-  setTimeout(checkAndRunIfDue, STARTUP_DELAY_MS);
-
+  // No startup catch-up — run via: node pipeline.js
   // Recurring check — catches missed runs after downtime
   checkTimer = setInterval(checkAndRunIfDue, CHECK_INTERVAL_MS);
 
   console.log(
     `[corpusScheduler] Started — checks every ${CHECK_INTERVAL_MS / 60_000}min, ` +
     `runs when >${MIN_RUN_INTERVAL_HOURS}h since last success, ` +
-    `quota budget: ${MAX_QUOTA_PER_CYCLE} units/cycle`,
+    `quota budget: ${maxQuotaPerCycle()} units/cycle`,
   );
 }
 
@@ -526,7 +863,7 @@ function getSchedulerStatus() {
     next_run_eligible_in: hoursAgo != null
       ? Math.max(0, +(MIN_RUN_INTERVAL_HOURS - hoursAgo).toFixed(1))
       : 0,
-    quota_budget_per_cycle: MAX_QUOTA_PER_CYCLE,
+    quota_budget_per_cycle: maxQuotaPerCycle(),
     run_interval_hours:     MIN_RUN_INTERVAL_HOURS,
   };
 }
@@ -548,4 +885,5 @@ module.exports = {
   runCorpusCycle,
   getSchedulerStatus,
   getRunHistory,
+  _searchPlanForQuota: searchPlanForQuota,
 };

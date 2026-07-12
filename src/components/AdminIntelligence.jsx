@@ -75,6 +75,64 @@ function StatBox({ label, value, sub }) {
   );
 }
 
+function maintenanceColor(status) {
+  if (status === 'due') return { bg: '#1f0a0a', border: '#4a1a1a', color: '#f87171', label: 'due' };
+  if (status === 'warning') return { bg: '#1f1a0a', border: '#4a3a1a', color: '#facc15', label: 'soon' };
+  return { bg: '#0a1f0a', border: '#1a4a1a', color: '#4ade80', label: 'ok' };
+}
+
+function MaintenancePill({ status, count, title }) {
+  if (!status) return null;
+  const c = maintenanceColor(status);
+  return (
+    <span
+      title={title}
+      style={{
+        display: 'inline-flex',
+        alignItems: 'center',
+        justifyContent: 'center',
+        minWidth: 22,
+        height: 16,
+        padding: '0 5px',
+        marginLeft: 6,
+        borderRadius: 4,
+        border: `1px solid ${c.border}`,
+        background: c.bg,
+        color: c.color,
+        fontSize: '0.55rem',
+        lineHeight: 1,
+        textTransform: 'uppercase',
+      }}
+    >
+      {count && count > 1 ? count : c.label}
+    </span>
+  );
+}
+
+function tabMaintenance(tabName, maintenance) {
+  const byKey = maintenance?.by_key || {};
+  const groups = {
+    'Ingest Status': ['historical_ingest'],
+    'Cron Health': ['historical_ingest', 'snapshot_refresh', 'patterns', 'calibration'],
+    Patterns: ['patterns'],
+    Controls: ['historical_ingest', 'snapshot_refresh', 'patterns', 'calibration', 'louvain', 'community_backfill'],
+    Evolution: ['calibration'],
+    Learning: ['calibration'],
+    Corpus: ['historical_ingest', 'louvain', 'community_backfill'],
+    Communities: ['louvain', 'community_backfill'],
+  };
+  const keys = groups[tabName];
+  if (!keys) return null;
+  const items = keys.map(k => byKey[k]).filter(Boolean);
+  if (!items.length) return null;
+  const due = items.filter(i => i.status === 'due');
+  const warning = items.filter(i => i.status === 'warning');
+  const active = due.length ? due : warning;
+  const status = due.length ? 'due' : warning.length ? 'warning' : 'ok';
+  const title = items.map(i => `${i.label}: ${i.status}${i.age_hours == null ? '' : ` (${i.age_hours}h old)`}`).join('\n');
+  return { status, count: active.length, title };
+}
+
 function RssSweepControl({ token }) {
   const [busy, setBusy]     = useState(false);
   const [err, setErr]       = useState('');
@@ -3973,6 +4031,14 @@ export default function AdminIntelligence() {
             <div style={{ ...S.row, gap: 6 }}>
               <span style={S.tagGreen}>authenticated</span>
               {status?.quota?.available === false && <span style={S.tagRed}>QUOTA EXHAUSTED</span>}
+              {status?.maintenance?.summary?.due > 0 && (
+                <span style={S.tagRed}>{status.maintenance.summary.due} maintenance due</span>
+              )}
+              {!status?.maintenance?.summary?.due && status?.maintenance?.summary?.warning > 0 && (
+                <span style={{ ...S.tag, color: '#facc15', borderColor: '#4a3a1a', background: '#1f1a0a' }}>
+                  {status.maintenance.summary.warning} maintenance soon
+                </span>
+              )}
             </div>
             <button style={{ ...S.btn, fontSize: '0.7rem' }} onClick={clearToken}>Clear Token</button>
           </div>
@@ -3980,37 +4046,43 @@ export default function AdminIntelligence() {
           {loadErr && <div style={{ ...S.err, marginBottom: 12 }}>{loadErr}</div>}
 
           {/* Tabs */}
-          <div style={{ display: 'flex', gap: 0, marginBottom: 20, borderBottom: '1px solid #1a1a2e' }}>
-            {TABS.map((t, i) => (
-              <motion.button
-                key={t}
-                onClick={() => setTab(i)}
-                whileHover={{ color: '#8888ff' }}
-                whileTap={{ scale: 0.97 }}
-                transition={spring.snappy}
-                style={{
-                  position: 'relative',
-                  background: tab === i ? '#0d0d1f' : 'transparent',
-                  border: 'none',
-                  color: tab === i ? '#8888ff' : '#444',
-                  padding: '8px 14px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600,
-                  fontFamily: 'monospace',
-                }}
-              >
-                {t}
-                {tab === i && (
-                  <motion.span
-                    layoutId="admin-tab-indicator"
-                    style={{
-                      position: 'absolute', bottom: 0, left: 0, right: 0,
-                      height: 2, background: '#8888ff',
-                      borderRadius: '2px 2px 0 0',
-                    }}
-                    transition={spring.layout}
-                  />
-                )}
-              </motion.button>
-            ))}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 0, marginBottom: 20, borderBottom: '1px solid #1a1a2e' }}>
+            {TABS.map((t, i) => {
+              const maint = tabMaintenance(t, status?.maintenance);
+              return (
+                <motion.button
+                  key={t}
+                  onClick={() => setTab(i)}
+                  whileHover={{ color: '#8888ff' }}
+                  whileTap={{ scale: 0.97 }}
+                  transition={spring.snappy}
+                  style={{
+                    position: 'relative',
+                    background: tab === i ? '#0d0d1f' : 'transparent',
+                    border: 'none',
+                    color: tab === i ? '#8888ff' : '#444',
+                    padding: '8px 14px', cursor: 'pointer', fontSize: '0.75rem', fontWeight: 600,
+                    fontFamily: 'monospace',
+                    display: 'inline-flex',
+                    alignItems: 'center',
+                  }}
+                >
+                  {t}
+                  <MaintenancePill {...maint} />
+                  {tab === i && (
+                    <motion.span
+                      layoutId="admin-tab-indicator"
+                      style={{
+                        position: 'absolute', bottom: 0, left: 0, right: 0,
+                        height: 2, background: '#8888ff',
+                        borderRadius: '2px 2px 0 0',
+                      }}
+                      transition={spring.layout}
+                    />
+                  )}
+                </motion.button>
+              );
+            })}
           </div>
 
           {/* Tab content */}

@@ -1,4 +1,5 @@
 const OpenAI = require('openai');
+const { applyIdentityGuard } = require('../lib/channelIdentityGuard');
 
 // ── Layer 1: Benchmark buckets (hard-validated, no expansion) ─────────────────
 const ALLOWED_NICHES = [
@@ -102,7 +103,12 @@ Rules:
   - "philosophy" = abstract philosophical inquiry, Stoicism, Vedanta, existentialism, consciousness studies → NOT self-improvement or motivation content
   - "health" = physical health, fitness, nutrition, medicine, doctors → NOT mental health awareness or self-improvement
   - If a channel covers BOTH domestic politics AND geopolitics, use whichever is primary; put the other in secondary_niche
-- Other mappings: political commentary→politics, startup culture→business, AI tools→technology, economic commentary→finance, breaking news→news, current events (non-political)→news, wellness/mindset→selfimprovement
+  - "comedy" = sketches, pranks, skits, stand-up, parody, roasts, relatable/funny videos → use "comedy" NOT "entertainment"/"beauty"/"lifestyle" just because a sketch happens to mention makeup, food, or school
+  - "beauty" = makeup, skincare, fashion, outfits, clothing/jewellery hauls, shopping hauls, home-decor hauls (kurta/saree/dress/comforter/bedsheet showcases) → use "beauty" NOT "food"/"technology" just because products appear
+  - Astrology / horoscope / zodiac / kundli / vastu / numerology / tarot / panchang / ritual-remedy content → use "meditation" (closest spiritual bucket) NOT "finance"/"news"/"education"
+  - Devotional SONGS (bhajan, kirtan, shabad, naat, gospel, aarti) → use "music"; devotional DISCOURSE (katha, pravachan, satsang, sermon) → "meditation"
+- LANGUAGE IS NOT THE NICHE: classify by what the content is ABOUT, not the language. A Kannada/Tamil/Telugu/Bengali/Arabic channel is still comedy/music/food/etc. based on its actual content — never default to "other" just because titles are non-English.
+- Other mappings: political commentary→politics, startup culture→business, AI tools→technology, economic commentary→finance, breaking news→news, current events (non-political)→news, wellness/mindset→selfimprovement, product haul/shopping/unboxing-for-purchase-advice→beauty (fashion) or technology (gadgets) by product type
 
 STEP 3 — Generate inferred_topics[]
 Free-form semantic descriptors of what the channel ACTUALLY discusses.
@@ -282,7 +288,9 @@ async function classifyChannel({ channelName, titles, description }) {
   const openai = new OpenAI({ apiKey });
 
   const response = await openai.chat.completions.create({
-    model: 'gpt-4.1-mini',
+    // Default mini (cheap, fine for clear cases the guard also covers). Set
+    // OPENAI_CLASSIFIER_MODEL=gpt-4.1 for higher accuracy on regional/edge channels.
+    model: process.env.OPENAI_CLASSIFIER_MODEL || 'gpt-4.1-mini',
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: buildSystemPrompt() },
@@ -293,7 +301,10 @@ async function classifyChannel({ channelName, titles, description }) {
   });
 
   const raw    = response.choices?.[0]?.message?.content ?? '';
-  const result = parseClassifierResponse(raw);
+  const result = applyIdentityGuard(
+    parseClassifierResponse(raw),
+    { channelName, titles, description },
+  );
 
   result.identity_strength          = computeIdentityStrength(
     result.identity_confidence,
@@ -301,12 +312,15 @@ async function classifyChannel({ channelName, titles, description }) {
     result.secondary_niche,
   );
   result.identity_last_detected_at  = new Date().toISOString();
+  result._usage                     = response.usage ?? null;
 
   return result;
 }
 
 module.exports = {
   classifyChannel,
+  buildSystemPrompt,
+  buildUserPrompt,
   ALLOWED_NICHES,
   ALLOWED_BEHAVIOR_TAGS,
   ALLOWED_ARCHETYPES,

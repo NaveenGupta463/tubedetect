@@ -1,13 +1,17 @@
-import { useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { T, spring, ease } from './tokens';
-import HomeScreen         from './screens/HomeScreen';
-import CommunityDashboard from './screens/CommunityDashboard';
-import WhatToPost         from './screens/WhatToPost';
-import TrendDetection     from './screens/TrendDetection';
-import PlaceholderScreen  from './screens/PlaceholderScreen';
-import CopilotPanel       from './screens/CopilotPanel';
-import ContentHub         from './screens/ContentHub';
+
+const HomeScreen         = lazy(() => import('./screens/HomeScreen'));
+const CommunityDashboard = lazy(() => import('./screens/CommunityDashboard'));
+const WhatToPost         = lazy(() => import('./screens/WhatToPost'));
+const TrendDetection     = lazy(() => import('./screens/TrendDetection'));
+const PlaceholderScreen  = lazy(() => import('./screens/PlaceholderScreen'));
+const CopilotPanel       = lazy(() => import('./screens/CopilotPanel'));
+const ContentHub         = lazy(() => import('./screens/ContentHub'));
+const PrePublish         = lazy(() => import('./screens/PrePublish'));
+const VideoRepair        = lazy(() => import('./screens/VideoRepair'));
+const AdminIntelligence  = lazy(() => import('../src/components/AdminIntelligence'));
 
 // ── Icons ─────────────────────────────────────────────────────────────────────
 
@@ -43,6 +47,14 @@ const IconBlueprint = ({ size = 16, color = 'currentColor' }) => (
   <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
     <rect x="3.5" y="3.5" width="13" height="13" rx="2" stroke={color} strokeWidth="1.5"/>
     <path d="M7 7h6M7 10h6M7 13h4" stroke={color} strokeWidth="1.5" strokeLinecap="round"/>
+  </svg>
+);
+
+const IconRepair = ({ size = 16, color = 'currentColor' }) => (
+  <svg width={size} height={size} viewBox="0 0 20 20" fill="none">
+    <path d="M3 10a7 7 0 0114 0" stroke={color} strokeWidth="1.5" strokeLinecap="round"/>
+    <path d="M17 10a7 7 0 01-14 0" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeDasharray="2 3"/>
+    <path d="M10 6v4l2.5 2.5" stroke={color} strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>
   </svg>
 );
 
@@ -138,6 +150,14 @@ function StarField() {
           animation: s.tw ? `${s.tw} ${s.twDur.toFixed(1)}s ${s.twDelay.toFixed(1)}s ease-in-out infinite` : 'none',
         }} />
       ))}
+    </div>
+  );
+}
+
+function ScreenFallback() {
+  return (
+    <div style={{ minHeight: '45vh', display: 'flex', alignItems: 'center', justifyContent: 'center', color: T.muted, fontSize: '0.78rem' }}>
+      Loading...
     </div>
   );
 }
@@ -245,13 +265,12 @@ const NAV = [
   { id: 'hub',       label: 'Content Hub',  Icon: IconHub,       badge: null  },
   { id: 'publish',   label: 'Pre-Publish',  Icon: IconPublish,   badge: null  },
   { id: 'compete',   label: 'Compete',      Icon: IconCompete,   badge: null  },
-  { id: 'blueprint', label: 'Blueprint',    Icon: IconBlueprint, badge: null  },
+  { id: 'repair',    label: 'Repair',       Icon: IconRepair,    badge: null  },
 ];
 
 const PLACEHOLDER_META = {
   publish:   { icon: IconPublish,   title: 'Pre-Publish',  sub: 'Score your title and thumbnail against your peer community before you upload.' },
   compete:   { icon: IconCompete,   title: 'Compete',      sub: 'Auto-loaded competitors from your community. No manual searching.' },
-  blueprint: { icon: IconBlueprint, title: 'Blueprint',    sub: 'Start a new channel or reverse-engineer a successful one in your niche.' },
 };
 
 const API = 'http://localhost:3002';
@@ -310,33 +329,96 @@ function NicheGrid({ onSelect }) {
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const [activeNav,   setActiveNav]   = useState('channel');
-  const [channel,     setChannel]     = useState(null);
+  const [activeNav,        setActiveNav]        = useState('channel');
+  const [channel,          setChannel]          = useState(null);
+  const [prepublishPrefill, setPrepublishPrefill] = useState(null);
   const [cmdOpen,     setCmdOpen]     = useState(false);
   const [cmdQuery,    setCmdQuery]    = useState('');
   const [cmdSelected, setCmdSelected] = useState(0);
   const [cmdResults,  setCmdResults]  = useState([]);
   const [cmdLoading,      setCmdLoading]      = useState(false);
+  const [cmdSearchNote,   setCmdSearchNote]   = useState('');
   const [selectedCluster, setSelectedCluster] = useState(null);
-  const cmdInputRef   = useRef(null);
-  const searchTimer   = useRef(null);
+  const [cmdSession,      setCmdSession]      = useState(0);
+  const cmdInputRef    = useRef(null);
+  const searchTimer    = useRef(null);
+
+  // Hidden operator route — ?admin=1 or hash #admin-1 (mirrors src/App.jsx behaviour)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get('admin') === '1' || window.location.hash === '#admin-1') {
+      setActiveNav('admin');
+      return;
+    }
+
+    // E2E-only entry point for UI audits. This still renders the real app and
+    // real WTP screen; it only bypasses the command-search selection ceremony.
+    if (params.get('e2e') === '1' && params.get('channel_id')) {
+      setChannel({
+        channel_id:   params.get('channel_id'),
+        name:         params.get('name') || params.get('channel_id'),
+        subs:         fmtSubsNum(Number(params.get('subs') || 0)),
+        subsRaw:      Number(params.get('subs') || 0),
+        niche:        params.get('niche') || 'other',
+        community:    params.get('community_id') || params.get('niche') || '—',
+        community_id: params.get('community_id') || null,
+        language:     params.get('language') || null,
+        thumbnail:    params.get('thumbnail') || null,
+        source:       'e2e',
+      });
+      setActiveNav(params.get('nav') || 'post');
+    }
+  }, []);
+  const searchGenRef   = useRef(0);
 
   const filtered = cmdResults;
 
   const mapResult = (ch) => ({
-    channel_id: ch.channel_id,
-    handle:     `@${(ch.name || '').replace(/\s+/g, '')}`,
-    name:       ch.name || ch.channel_id,
-    subs:       fmtSubsNum(ch.subs),
-    subsRaw:    ch.subs || 0,
-    niche:      ch.niche || 'other',
-    community:  ch.community_id || ch.niche || '—',
-    language:   ch.language || null,
-    thumbnail:  ch.thumbnail || null,
-    source:     ch.source || 'corpus',
+    channel_id:   ch.channel_id,
+    handle:       `@${(ch.name || '').replace(/\s+/g, '')}`,
+    name:         ch.name || ch.channel_id,
+    subs:         fmtSubsNum(ch.subs),
+    subsRaw:      ch.subs || 0,
+    niche:        ch.niche || 'other',
+    community:    ch.community_id || ch.niche || '—',
+    community_id: ch.community_id || null,
+    language:     ch.language || null,
+    thumbnail:    ch.thumbnail || null,
+    source:       ch.source || 'corpus',
   });
 
+  const cancelActiveSearch = ({ invalidate = true } = {}) => {
+    clearTimeout(searchTimer.current);
+    searchTimer.current = null;
+    if (invalidate) ++searchGenRef.current;
+  };
+
+  const fetchJsonWithDeadline = async (url, ms) => {
+    let timeoutId;
+    const deadline = new Promise((_, reject) => {
+      timeoutId = setTimeout(() => reject(new Error('search_timeout')), ms);
+    });
+    try {
+      const r = await Promise.race([
+        fetch(url, { cache: 'no-store' }),
+        deadline,
+      ]);
+      return await r.json();
+    } finally {
+      clearTimeout(timeoutId);
+    }
+  };
+
+  const closeCmd = () => {
+    cancelActiveSearch();
+    setCmdLoading(false);
+    setCmdSearchNote('');
+    setCmdOpen(false);
+  };
+
   const browseNiche = (cluster) => {
+    cancelActiveSearch({ invalidate: false });
+    const gen = ++searchGenRef.current;
     setSelectedCluster(cluster);
     setCmdQuery('');
     setCmdResults([]);
@@ -344,46 +426,116 @@ export default function App() {
     const nicheParam = encodeURIComponent(cluster.niches.join(','));
     fetch(`${API}/api/channel-cache/browse?niches=${nicheParam}&limit=20`)
       .then(r => r.json())
-      .then(({ results = [] }) => { setCmdResults(results.map(mapResult)); setCmdLoading(false); })
-      .catch(() => setCmdLoading(false));
+      .then(({ results = [] }) => {
+        if (searchGenRef.current !== gen) return;
+        setCmdResults(results.map(mapResult));
+        setCmdLoading(false);
+      })
+      .catch(() => { if (searchGenRef.current === gen) setCmdLoading(false); });
   };
 
   const runSearch = (q) => {
     setSelectedCluster(null);
-    clearTimeout(searchTimer.current);
-    if (!q.trim()) { setCmdResults([]); setCmdLoading(false); return; }
+    cancelActiveSearch({ invalidate: false });
+    const query = q.trim();
+    if (!query) {
+      ++searchGenRef.current;
+      setCmdResults([]);
+      setCmdLoading(false);
+      return;
+    }
+    setCmdResults([]);
+    setCmdSearchNote('');
     setCmdLoading(true);
-    searchTimer.current = setTimeout(() => {
-      const enc = encodeURIComponent(q);
+    const gen = ++searchGenRef.current;
+    searchTimer.current = setTimeout(async () => {
+      const enc         = encodeURIComponent(query);
+      try {
+        if (query.startsWith('@')) {
+          try {
+            const { results: ytRaw = [], live_unavailable, reason } = await fetchJsonWithDeadline(`${API}/api/channel-cache/search-youtube?q=${enc}&limit=5&_=${gen}`, 20000);
+            if (searchGenRef.current !== gen) return;
+            const ytMapped = ytRaw.map(mapResult);
+            setCmdResults(ytMapped);
+            setCmdSearchNote(live_unavailable ? (reason || 'Live YouTube search unavailable') : '');
+          } catch {
+            if (searchGenRef.current === gen) setCmdSearchNote('Live YouTube search unavailable');
+          } finally {
+            if (searchGenRef.current === gen) setCmdLoading(false);
+          }
+          return;
+        }
 
-      const dbPromise = fetch(`${API}/api/channel-cache/search?q=${enc}&limit=8`)
-        .then(r => r.json()).then(({ results = [] }) => results.map(mapResult)).catch(() => []);
-
-      const ytPromise = fetch(`${API}/api/channel-cache/search-youtube?q=${enc}&limit=5`)
-        .then(r => r.json()).then(({ results = [] }) => results.map(mapResult)).catch(() => []);
-
-      dbPromise.then(dbResults => { setCmdResults(dbResults); setCmdLoading(false); });
-
-      Promise.all([dbPromise, ytPromise]).then(([, ytResults]) => {
-        setCmdResults(prev => {
-          const knownIds = new Set(prev.map(r => r.channel_id).filter(Boolean));
-          const thumbMap = {};
-          for (const r of ytResults) if (r.thumbnail) thumbMap[r.channel_id] = r.thumbnail;
-          const patched  = prev.map(r => (!r.thumbnail && thumbMap[r.channel_id])
-            ? { ...r, thumbnail: thumbMap[r.channel_id] } : r);
-          const newLive  = ytResults.filter(r => r.channel_id && !knownIds.has(r.channel_id));
-          return [...patched, ...newLive];
-        });
-      });
-    }, 220);
+        const { results = [] } = await fetchJsonWithDeadline(`${API}/api/channel-cache/search?q=${enc}&limit=8&_=${gen}`, 60000);
+        const dbResults = results.map(mapResult);
+        if (searchGenRef.current !== gen) return;
+        setCmdResults(dbResults);
+        const hasDbResults = dbResults.length > 0;
+        if (hasDbResults) setCmdLoading(false);
+        // YouTube fallback — only when DB results are sparse and query is substantial
+        const shouldTryLiveSearch = (dbResults.length < 3 || query.startsWith('@')) && query.length >= 3;
+        if (!shouldTryLiveSearch) {
+          setCmdLoading(false);
+          return;
+        }
+        if (searchGenRef.current === gen) {
+          try {
+            const { results: ytRaw = [], live_unavailable, reason } = await fetchJsonWithDeadline(`${API}/api/channel-cache/search-youtube?q=${enc}&limit=5&_=${gen}`, 20000);
+            const ytMapped = ytRaw.map(mapResult);
+            if (searchGenRef.current !== gen) return;
+            if (ytMapped.length > 0 && searchGenRef.current === gen) {
+              setCmdSearchNote('');
+              setCmdResults(prev => {
+                const knownIds = new Set(prev.map(r => r.channel_id).filter(Boolean));
+                const thumbMap = {};
+                for (const r of ytMapped) if (r.thumbnail) thumbMap[r.channel_id] = r.thumbnail;
+                const patched = prev.map(r => (!r.thumbnail && thumbMap[r.channel_id]) ? { ...r, thumbnail: thumbMap[r.channel_id] } : r);
+                const newLive = ytMapped.filter(r => r.channel_id && !knownIds.has(r.channel_id));
+                return [...patched, ...newLive];
+              });
+            } else if (live_unavailable && searchGenRef.current === gen) {
+              setCmdSearchNote(reason || 'Live YouTube search unavailable');
+            }
+          } catch {
+            // Live YouTube results are optional; DB results are already visible.
+          } finally {
+            if (searchGenRef.current === gen && !hasDbResults) setCmdLoading(false);
+          }
+        }
+      } catch (e) {
+        if (searchGenRef.current === gen) {
+          setCmdResults([]);
+          setCmdLoading(false);
+        }
+      }
+    }, 300);
   };
 
-  const openCmd = () => { setCmdOpen(true); setCmdQuery(''); setCmdSelected(0); setCmdResults([]); setSelectedCluster(null); };
+  const openCmd = () => {
+    cancelActiveSearch();
+    setCmdLoading(false);
+    setCmdSession(s => s + 1);
+    setCmdOpen(true); setCmdQuery(''); setCmdSelected(0); setCmdResults([]); setCmdSearchNote(''); setSelectedCluster(null);
+  };
+
+  useEffect(() => {
+    if (!cmdOpen) return;
+    runSearch(cmdQuery);
+  }, [cmdOpen, cmdQuery]);
 
   useEffect(() => {
     const handler = (e) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === 'k') { e.preventDefault(); setCmdOpen(o => !o); setCmdQuery(''); setCmdSelected(0); }
-      if (e.key === 'Escape') setCmdOpen(false);
+      if ((e.metaKey || e.ctrlKey) && e.key === 'k') {
+        e.preventDefault();
+        setCmdOpen(o => {
+          if (o) { cancelActiveSearch(); setCmdLoading(false); }
+          return !o;
+        });
+        setCmdQuery(''); setCmdSelected(0); setCmdResults([]); setCmdSearchNote('');
+      }
+      if (e.key === 'Escape') {
+        closeCmd();
+      }
     };
     window.addEventListener('keydown', handler);
     return () => window.removeEventListener('keydown', handler);
@@ -404,12 +556,53 @@ export default function App() {
     return () => window.removeEventListener('keydown', handler);
   }, [cmdOpen, cmdSelected, filtered]);
 
-  const selectChannel = (s) => {
-    setChannel(s);
+  const selectChannel = async (s) => {
+    cancelActiveSearch();
+    const selected = { ...s };
+
+    if (selected.source === 'youtube' && selected.channel_id) {
+      setCmdLoading(true);
+      setCmdSearchNote('Preparing channel intelligence...');
+      try {
+        const resp = await fetch(`${API}/api/intel/onboard-channel`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ channel_id: selected.channel_id }),
+        });
+        const data = await resp.json().catch(() => ({}));
+        if (resp.ok) {
+          selected.name         = data.name || selected.name;
+          selected.subs         = data.subs ?? selected.subs;
+          selected.subsRaw      = data.subs ?? selected.subsRaw ?? selected.subs;
+          selected.niche        = data.niche || selected.niche;
+          selected.community_id = data.community_id || selected.community_id || null;
+          selected.thumbnail    = data.thumbnail || selected.thumbnail;
+          selected.source       = data.already_existed ? 'ingested' : 'youtube_onboarded';
+          selected.onboarded    = true;
+          selected.videos_stored = data.videos_stored || 0;
+        } else {
+          selected.onboard_error = data.error || 'Could not prepare channel intelligence';
+        }
+      } catch (_) {
+        selected.onboard_error = 'Could not prepare channel intelligence';
+      } finally {
+        setCmdLoading(false);
+      }
+    } else {
+      setCmdLoading(false);
+    }
+
+    setChannel(selected);
     setCmdOpen(false);
     setCmdQuery('');
     setCmdResults([]);
+    setCmdSearchNote('');
     setActiveNav('channel');
+  };
+
+  const handleCmdInputValue = (value) => {
+    setCmdQuery(value);
+    setCmdSelected(0);
   };
 
   return (
@@ -577,23 +770,35 @@ export default function App() {
         transition={spring.smooth}
         style={{ position: 'relative', zIndex: 1 }}
       >
-        <AnimatePresence mode="wait">
-          <motion.div key={!channel ? 'home' : activeNav} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
-            {activeNav === 'post' ? (
-              <WhatToPost channel={channel} onSearch={openCmd} />
-            ) : activeNav === 'trends' ? (
-              <TrendDetection channel={channel} />
-            ) : activeNav === 'hub' ? (
-              <ContentHub />
-            ) : !channel ? (
-              <HomeScreen onSearch={openCmd} />
-            ) : activeNav === 'channel' ? (
-              <CommunityDashboard channel={channel} onChannelUpdate={setChannel} />
-            ) : (
-              <PlaceholderScreen meta={PLACEHOLDER_META[activeNav]} />
-            )}
-          </motion.div>
-        </AnimatePresence>
+        <Suspense fallback={<ScreenFallback />}>
+          <AnimatePresence mode="wait">
+            <motion.div key={!channel ? 'home' : activeNav} initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -6 }} transition={{ duration: 0.22, ease }}>
+              {activeNav === 'admin' ? (
+                <AdminIntelligence />
+              ) : activeNav === 'post' ? (
+                <WhatToPost
+                  channel={channel}
+                  onSearch={openCmd}
+                  onValidate={(prefill) => { setPrepublishPrefill(prefill); setActiveNav('publish'); }}
+                />
+              ) : activeNav === 'trends' ? (
+                <TrendDetection channel={channel} />
+              ) : activeNav === 'hub' ? (
+                <ContentHub />
+              ) : activeNav === 'publish' ? (
+                <PrePublish channel={channel} prefill={prepublishPrefill} />
+              ) : activeNav === 'repair' ? (
+                <VideoRepair />
+              ) : !channel ? (
+                <HomeScreen onSearch={openCmd} />
+              ) : activeNav === 'channel' ? (
+                <CommunityDashboard channel={channel} onChannelUpdate={setChannel} />
+              ) : (
+                <PlaceholderScreen meta={PLACEHOLDER_META[activeNav]} />
+              )}
+            </motion.div>
+          </AnimatePresence>
+        </Suspense>
       </motion.div>
 
       {/* ── Command bar ──────────────────────────────────────────────────── */}
@@ -604,12 +809,12 @@ export default function App() {
               key="backdrop"
               initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}
               transition={{ duration: 0.18 }}
-              onClick={() => setCmdOpen(false)}
+              onClick={closeCmd}
               style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.55)', backdropFilter: 'blur(6px)', zIndex: 100 }}
             />
 
             <motion.div
-              key="cmdbar"
+              key={`cmdbar-${cmdSession}`}
               initial={{ opacity: 0, scale: 0.96, y: -12 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.96, y: -12 }}
@@ -630,7 +835,8 @@ export default function App() {
                 <input
                   ref={cmdInputRef}
                   value={cmdQuery}
-                  onChange={e => { const v = e.target.value; setCmdQuery(v); setCmdSelected(0); runSearch(v); }}
+                  onInput={e => handleCmdInputValue(e.currentTarget.value)}
+                  onChange={e => handleCmdInputValue(e.currentTarget.value)}
                   placeholder="Search channels in your community..."
                   style={{ flex: 1, background: 'none', border: 'none', outline: 'none', color: T.text, fontSize: '0.92rem', fontFamily: 'inherit' }}
                 />
@@ -648,7 +854,9 @@ export default function App() {
                   <div style={{ padding: '24px', textAlign: 'center', color: T.muted, fontSize: '0.83rem' }}>
                     {selectedCluster
                       ? `No channels indexed in ${selectedCluster.label} yet — try searching by name`
-                      : `No results for "${cmdQuery}"`}
+                      : cmdSearchNote
+                        ? `No local results for "${cmdQuery}". Live YouTube search unavailable: ${cmdSearchNote}`
+                        : `No results for "${cmdQuery}"`}
                   </div>
                 ) : (
                   <>
@@ -731,7 +939,9 @@ export default function App() {
       </AnimatePresence>
 
       {/* ── Copilot floating panel ────────────────────────────────────────── */}
-      <CopilotPanel channel={channel} />
+      <Suspense fallback={null}>
+        <CopilotPanel channel={channel} />
+      </Suspense>
 
     </div>
   );

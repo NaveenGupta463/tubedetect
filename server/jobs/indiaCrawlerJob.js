@@ -34,7 +34,7 @@ const quotaGuard              = require('../services/quotaGuard');
 const { withCronRetry }       = require('../utils/cronRetry');
 const { detectNicheFromItem } = require('../services/nicheDetector');
 
-const CRAWLER_BUDGET = parseInt(process.env.CRAWLER_QUOTA_BUDGET || '70000', 10);
+let _budget = parseInt(process.env.CRAWLER_QUOTA_BUDGET || '70000', 10);
 
 // YouTube video category IDs — covers all major content verticals in India
 const YT_CATEGORIES = [
@@ -183,7 +183,7 @@ function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
 async function ytGet(path, params, costUnits) {
   for (let keyAttempt = 0; keyAttempt < 13; keyAttempt++) {
-    const key = getApiKey();
+    const key = getApiKey('discovery');
     if (!key) throw new Error('all_api_keys_exhausted');
 
     const url = new URL(`${YT_BASE}/${path}`);
@@ -193,10 +193,16 @@ async function ytGet(path, params, costUnits) {
 
     for (let t = 1; t <= 3; t++) {
       let res, data;
+      const ac    = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 25_000);
       try {
-        res  = await fetch(full);
+        res  = await fetch(full, { signal: ac.signal });
         data = await res.json();
-      } catch (_) {
+        clearTimeout(timer);
+      } catch (e) {
+        clearTimeout(timer);
+        const isTimeout = e.name === 'AbortError';
+        if (isTimeout) console.warn(`[indiaCrawler] ytFetch timeout (25s), attempt ${t}`);
         if (t < 3) { await sleep(2000 * t); continue; }
         throw new Error('network_error_after_retries');
       }
@@ -259,10 +265,17 @@ function saveItem(db, item, source) {
 
 // ── Batch: fetch + save channel details for up to 50 IDs (1 unit each) ────────
 
-async function fetchAndSave(db, newIds, source, budgetUsed) {
-  let saved = 0;
+async function fetchAndSave(db, newIds, source, budgetUsed, opts = {}) {
+  const {
+    minSubs              = 0,
+    minVideos            = 0,
+    requireUploadsPlaylist = false,
+    allowCountries       = null,   // null = India default (null/IN); Set = accept those countries (or null country)
+  } = opts;
+
+  let saved = 0, gated = 0;
   for (let i = 0; i < newIds.length; i += 50) {
-    if (budgetUsed[0] + 1 > CRAWLER_BUDGET) break;
+    if (budgetUsed[0] + 1 > _budget) break;
     const batch = newIds.slice(i, i + 50);
     try {
       const data = await ytGet('channels', {
@@ -272,7 +285,15 @@ async function fetchAndSave(db, newIds, source, budgetUsed) {
       }, 1);
       budgetUsed[0] += 1;
       for (const item of (data.items || [])) {
-        if (!isLikelyIndian(item)) continue;
+        if (allowCountries) {
+          const c = item.snippet?.country || null;
+          if (c && !allowCountries.has(c)) continue;
+        } else if (!isLikelyIndian(item)) continue;
+        // Creator quality gate — enforced per-source via opts.
+        // statistics and contentDetails are always fetched above, so no extra API cost.
+        if (minSubs > 0 && parseInt(item.statistics?.subscriberCount || '0', 10) < minSubs) { gated++; continue; }
+        if (minVideos > 0 && parseInt(item.statistics?.videoCount || '0', 10) < minVideos) { gated++; continue; }
+        if (requireUploadsPlaylist && !item.contentDetails?.relatedPlaylists?.uploads) { gated++; continue; }
         saveItem(db, item, source);
         saved++;
       }
@@ -282,6 +303,7 @@ async function fetchAndSave(db, newIds, source, budgetUsed) {
       console.warn('[crawler] fetchAndSave batch error:', e.message);
     }
   }
+  if (gated > 0) console.log(`[crawler] fetchAndSave (${source}): ${gated} channels blocked by quality gate, ${saved} saved`);
   return saved;
 }
 
@@ -289,16 +311,16 @@ async function fetchAndSave(db, newIds, source, budgetUsed) {
 // videos?chart=mostPopular&regionCode=IN costs 1 unit and returns 50 channel IDs.
 // Run for each category → guaranteed fresh Indian channels every day.
 
-async function runTrendingPhase(db, knownIds, budgetUsed) {
+async function runTrendingPhase(db, knownIds, budgetUsed, region = 'IN') {
   const newIds = [];
 
   // General trending (no category)
   try {
-    if (budgetUsed[0] + 1 <= CRAWLER_BUDGET) {
+    if (budgetUsed[0] + 1 <= _budget) {
       const data = await ytGet('videos', {
         part:       'snippet',
         chart:      'mostPopular',
-        regionCode: 'IN',
+        regionCode: region,
         maxResults: 50,
       }, 1);
       budgetUsed[0] += 1;
@@ -313,12 +335,12 @@ async function runTrendingPhase(db, knownIds, budgetUsed) {
 
   // Per-category trending
   for (const catId of YT_CATEGORIES) {
-    if (budgetUsed[0] + 1 > CRAWLER_BUDGET) break;
+    if (budgetUsed[0] + 1 > _budget) break;
     try {
       const data = await ytGet('videos', {
         part:              'snippet',
         chart:             'mostPopular',
-        regionCode:        'IN',
+        regionCode:        region,
         videoCategoryId:   catId,
         maxResults:        50,
       }, 1);
@@ -333,8 +355,9 @@ async function runTrendingPhase(db, knownIds, budgetUsed) {
     }
   }
 
-  const saved = await fetchAndSave(db, newIds, 'trending_IN', budgetUsed);
-  console.log(`[crawler] Phase 1 (trending) done — newFound=${newIds.length} saved=${saved} quota=${budgetUsed[0]}`);
+  const allowCountries = region === 'IN' ? null : new Set([region]);
+  const saved = await fetchAndSave(db, newIds, `trending_${region}`, budgetUsed, { allowCountries });
+  console.log(`[crawler] Phase 1 (trending ${region}) done — newFound=${newIds.length} saved=${saved} quota=${budgetUsed[0]}`);
   return { newFound: newIds.length, saved };
 }
 
@@ -344,7 +367,7 @@ async function runTrendingPhase(db, knownIds, budgetUsed) {
 // Cost: 1 unit per 100 comments. Far cheaper than search.list.
 
 async function runCommentHarvestPhase(db, knownIds, budgetUsed) {
-  const COMMENT_BUDGET = Math.floor(CRAWLER_BUDGET * 0.08); // 8% of total budget
+  const COMMENT_BUDGET = Math.floor(_budget * 0.08); // 8% of total budget
 
   // Pick the highest-viewed Indian videos in our DB
   const topVideos = db.all(`
@@ -364,7 +387,7 @@ async function runCommentHarvestPhase(db, knownIds, budgetUsed) {
   const phaseStart = budgetUsed[0];
 
   for (const videoId of topVideos) {
-    if (budgetUsed[0] >= CRAWLER_BUDGET) break;
+    if (budgetUsed[0] >= _budget) break;
     if (budgetUsed[0] - phaseStart >= COMMENT_BUDGET) break;
 
     try {
@@ -387,7 +410,11 @@ async function runCommentHarvestPhase(db, knownIds, budgetUsed) {
     }
   }
 
-  const saved = await fetchAndSave(db, newIds, 'comment_harvest_IN', budgetUsed);
+  const saved = await fetchAndSave(db, newIds, 'comment_harvest_IN', budgetUsed, {
+    minSubs:               1000,
+    minVideos:             10,
+    requireUploadsPlaylist: true,
+  });
   console.log(`[crawler] Phase 2 (comments) done — scanned=${scanned} newFound=${newIds.length} saved=${saved} quota=${budgetUsed[0]}`);
   return { scanned, newFound: newIds.length, saved };
 }
@@ -398,7 +425,7 @@ async function runCommentHarvestPhase(db, knownIds, budgetUsed) {
 // Orders by relevance (most popular first) — high signal, established channels.
 
 async function runVideoSearchPhase(db, knownIds, budgetUsed) {
-  const SEARCH_BUDGET = Math.floor(CRAWLER_BUDGET * 0.40); // 40% of total budget
+  const SEARCH_BUDGET = Math.floor(_budget * 0.40); // 40% of total budget
   const dayOfYear     = Math.floor((Date.now() - new Date(new Date().getFullYear(), 0, 0)) / 86400000);
   const startOffset   = (dayOfYear * 7) % INDIA_KEYWORDS.length;
   const newIds        = [];
@@ -406,7 +433,7 @@ async function runVideoSearchPhase(db, knownIds, budgetUsed) {
   const phaseStart    = budgetUsed[0];
 
   for (let k = 0; k < INDIA_KEYWORDS.length; k++) {
-    if (budgetUsed[0] + 100 > CRAWLER_BUDGET) break;
+    if (budgetUsed[0] + 100 > _budget) break;
     if (budgetUsed[0] - phaseStart + 100 > SEARCH_BUDGET) break;
 
     const keyword = INDIA_KEYWORDS[(startOffset + k) % INDIA_KEYWORDS.length];
@@ -444,7 +471,7 @@ async function runVideoSearchPhase(db, knownIds, budgetUsed) {
 // Uses a rotating subset of keywords — budget-capped.
 
 async function runEmergingCreatorsPhase(db, knownIds, budgetUsed) {
-  const EMERGING_BUDGET = Math.floor(CRAWLER_BUDGET * 0.12); // 12% of total budget
+  const EMERGING_BUDGET = Math.floor(_budget * 0.12); // 12% of total budget
 
   // Keywords most likely to surface emerging creators (vlogs, shorts, new content)
   const EMERGING_KEYWORDS = [
@@ -461,7 +488,7 @@ async function runEmergingCreatorsPhase(db, knownIds, budgetUsed) {
   const phaseStart  = budgetUsed[0];
 
   for (let k = 0; k < EMERGING_KEYWORDS.length; k++) {
-    if (budgetUsed[0] + 100 > CRAWLER_BUDGET) break;
+    if (budgetUsed[0] + 100 > _budget) break;
     if (budgetUsed[0] - phaseStart + 100 > EMERGING_BUDGET) break;
 
     const keyword = EMERGING_KEYWORDS[(startOffset + k) % EMERGING_KEYWORDS.length];
@@ -496,15 +523,19 @@ async function runEmergingCreatorsPhase(db, knownIds, budgetUsed) {
 
 // ── Main crawl cycle ──────────────────────────────────────────────────────────
 
-async function runCrawlerCycle() {
+async function runCrawlerCycle({ quotaBudget } = {}) {
+  _budget = quotaBudget || CRAWLER_BUDGET;
   const db = getDb();
-  console.log(`[crawler] Cycle start — budget=${CRAWLER_BUDGET} units`);
+  console.log(`[crawler] Cycle start — budget=${_budget} units`);
 
   const knownIds   = buildKnownSet(db);
   const budgetUsed = [0];
   const before     = db.get('SELECT COUNT(*) AS n FROM corpus_channels').n;
 
   const p1 = await runTrendingPhase(db, knownIds, budgetUsed);
+  // Foreign-expansion: trending harvest for US + UK (cheap mostPopular passes, 1u each).
+  const p1us = await runTrendingPhase(db, knownIds, budgetUsed, 'US');
+  const p1gb = await runTrendingPhase(db, knownIds, budgetUsed, 'GB');
   const p2 = await runCommentHarvestPhase(db, knownIds, budgetUsed);
   const p3 = await runVideoSearchPhase(db, knownIds, budgetUsed);
   const p4 = await runEmergingCreatorsPhase(db, knownIds, budgetUsed);
@@ -517,7 +548,7 @@ async function runCrawlerCycle() {
   );
 
   return {
-    p1, p2, p3, p4,
+    p1, p1us, p1gb, p2, p3, p4,
     quota_used:   budgetUsed[0],
     corpus_total: after,
     new_channels: after - before,

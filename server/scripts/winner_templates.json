@@ -1,0 +1,585 @@
+{
+  "generated": "2026-06-14",
+  "gold_set_size": 1023,
+  "total_winners": 71,
+  "overall_win_rate": 0.06940371456500488,
+  "templates": {
+    "MISTAKE_BEHIND": {
+      "type": "mistake_behind",
+      "category": "education",
+      "description": "Common mistake / error / trap behind a domain",
+      "total_in_gold": 118,
+      "winners": 29,
+      "losers": 89,
+      "win_rate": 0.2457627118644068,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "The beginner mistake behind fitness supplements",
+          "skeleton": "The [ADJ] [MISTAKE] [PREP] [FITNESS_TOPIC] supplements"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "The beginner mistake behind fitness supplements",
+          "skeleton": "The [ADJ] [MISTAKE] [PREP] [FITNESS_TOPIC] supplements"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "The ingredient mistake that ruins iconic street food",
+          "skeleton": "The ingredient [MISTAKE] that ruins iconic street [FOOD_TOPIC]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "The beginner mistake behind protein snacks",
+          "skeleton": "The [ADJ] [MISTAKE] [PREP] [INGREDIENT] snacks"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "The ingredient mistake that ruins street food competition",
+          "skeleton": "The ingredient [MISTAKE] that ruins street [FOOD_TOPIC] competition"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Garbage",
+          "title": "The beginner mistake behind beginner workout"
+        },
+        {
+          "label": "Garbage",
+          "title": "The beginner mistake behind beginner workout"
+        },
+        {
+          "label": "Poor",
+          "title": "The beginner mistake inside crypto trading beginners"
+        }
+      ],
+      "structural_patterns": [
+        "The [ADJ] [MISTAKE] [PREP] [FITNESS_TOPIC] supplements",
+        "The ingredient [MISTAKE] that ruins iconic street [FOOD_TOPIC]",
+        "The [ADJ] [MISTAKE] [PREP] [INGREDIENT] snacks",
+        "The ingredient [MISTAKE] that ruins street [FOOD_TOPIC] competition",
+        "The [ADJ] [MISTAKE] [PREP] low carb"
+      ],
+      "generation_hints": [
+        "Lead with the audience segment (beginner / common / biggest)",
+        "Name the specific domain (not just \"fitness\" but \"fat loss\" or \"SIP investing\")",
+        "The mistake should be counterintuitive — not obvious from the domain name alone",
+        "Examples: \"The beginner mistake behind [TOPIC]\", \"The [ADJ] [MISTAKE] in [TOPIC]\""
+      ]
+    },
+    "GENERIC": {
+      "type": "generic",
+      "category": "unknown",
+      "description": "No template matched",
+      "total_in_gold": 674,
+      "winners": 10,
+      "losers": 664,
+      "win_rate": 0.01483679525222552,
+      "examples": [
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "skeleton": "(no pattern matched)"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "skeleton": "(no pattern matched)"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "skeleton": "(no pattern matched)"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "Trump Can’t Negotiate for S**t, and the Iran Peace Talks Prove It",
+          "skeleton": "(no pattern matched)"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "A Santro, A Family and 20 Years of Memories",
+          "skeleton": "(no pattern matched)"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Garbage",
+          "title": "Kids Fun Learning Educational"
+        },
+        {
+          "label": "Garbage",
+          "title": "Learn Shapes Little Baby"
+        },
+        {
+          "label": "Garbage",
+          "title": "Kids Fun Learning Educational"
+        }
+      ],
+      "structural_patterns": [],
+      "generation_hints": []
+    },
+    "DISH_TECHNIQUE": {
+      "type": "dish_technique",
+      "category": "food",
+      "description": "Specific dish + cooking style/technique/format",
+      "total_in_gold": 19,
+      "winners": 8,
+      "losers": 11,
+      "win_rate": 0.42105263157894735,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "peer_video_signal",
+          "title": "Mumbai Style Vada Pav With Garlic Chutney ASMR Cooking",
+          "skeleton": "[PLACE] Style [DISH] With [INGREDIENT] [FORMAT]"
+        },
+        {
+          "label": "Good",
+          "source": "peer_video_signal",
+          "title": "Mumbai Style Vada Pav With Garlic Chutney ASMR Cooking",
+          "skeleton": "[PLACE] Style [DISH] With [INGREDIENT] [FORMAT]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "Can you make Thai Street Food Combo at home without shortcuts?",
+          "skeleton": "Can you make [PLACE] Street Food Style at home without shortcuts?"
+        },
+        {
+          "label": "Good",
+          "source": "peer_video_signal",
+          "title": "Mumbai Style Vada Pav With Garlic Chutney ASMR Cooking",
+          "skeleton": "[PLACE] Style [DISH] With [INGREDIENT] [FORMAT]"
+        },
+        {
+          "label": "Good",
+          "source": "peer_video_signal",
+          "title": "Mumbai Style Vada Pav With Garlic Chutney ASMR Cooking",
+          "skeleton": "[PLACE] Style [DISH] With [INGREDIENT] [FORMAT]"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Garbage",
+          "title": "A regional twist on regional thali"
+        }
+      ],
+      "structural_patterns": [
+        "[PLACE] Style [DISH] With [INGREDIENT] [FORMAT]",
+        "Can you make [PLACE] Street Food Style at home without shortcuts?",
+        "The ingredient mistake that ruins [DISH] street food",
+        "The ingredient mistake that ruins burger street food"
+      ],
+      "generation_hints": [
+        "Pair a specific dish with a specific regional style or format",
+        "Add a technique or cooking method (ASMR, home version, budget version)",
+        "Include a specific ingredient twist to add novelty",
+        "Examples: \"[City] Style [Dish] With [Ingredient]\", \"[Dish] [Cooking Method]\""
+      ]
+    },
+    "WAY_TO": {
+      "type": "way_to",
+      "category": "education",
+      "description": "A [constraint] way to [action] [outcome]",
+      "total_in_gold": 18,
+      "winners": 5,
+      "losers": 13,
+      "win_rate": 0.2777777777777778,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A no-equipment way to improve carb plan",
+          "skeleton": "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A no-equipment way to improve fat loss",
+          "skeleton": "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A no-equipment way to improve fat loss",
+          "skeleton": "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A no-equipment way to improve fat loss workout",
+          "skeleton": "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME] workout"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A no-equipment way to improve fat loss workout",
+          "skeleton": "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME] workout"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Poor",
+          "title": "A no-equipment way to improve health apps"
+        }
+      ],
+      "structural_patterns": [
+        "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME]",
+        "A [CONSTRAINT] way to [ACTION] [FITNESS_OUTCOME] workout"
+      ],
+      "generation_hints": [
+        "The constraint makes the template specific: \"no-equipment\", \"budget\", \"under 30 min\"",
+        "The action must be a real verb (improve, lose, build, master)",
+        "The outcome must be a specific measurable domain term",
+        "Examples: \"A no-equipment way to improve [TOPIC]\", \"A [CONSTRAINT] way to [ACTION] [OUTCOME]\""
+      ]
+    },
+    "CHECKLIST_FORMAT": {
+      "type": "checklist_format",
+      "category": "education",
+      "description": "A checklist / guide / tips for a specific domain",
+      "total_in_gold": 31,
+      "winners": 5,
+      "losers": 26,
+      "win_rate": 0.16129032258064516,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A practical checklist for SIP choices",
+          "skeleton": "A [ADJ] [FORMAT] for [FINANCE_TOPIC] choices"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "workout culture: a routine for people starting late",
+          "skeleton": "[FITNESS_TOPIC] culture: a [FORMAT] for people starting late"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "workout culture: a routine for people starting late",
+          "skeleton": "[FITNESS_TOPIC] culture: a [FORMAT] for people starting late"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A practical checklist for stock market telugu",
+          "skeleton": "A [ADJ] [FORMAT] for [FINANCE_TOPIC] market telugu"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "A practical checklist for stock market telugu",
+          "skeleton": "A [ADJ] [FORMAT] for [FINANCE_TOPIC] market telugu"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Poor",
+          "title": "A practical checklist for coins crypto"
+        },
+        {
+          "label": "Poor",
+          "title": "A practical checklist for stock surged"
+        },
+        {
+          "label": "Poor",
+          "title": "weight loss lose: a routine for people starting late"
+        }
+      ],
+      "structural_patterns": [
+        "A [ADJ] [FORMAT] for [FINANCE_TOPIC] choices",
+        "[FITNESS_TOPIC] culture: a [FORMAT] for people starting late",
+        "A [ADJ] [FORMAT] for [FINANCE_TOPIC] market telugu"
+      ],
+      "generation_hints": [
+        "Lead with a qualifying adjective (practical, honest, quick)",
+        "Format word sets expectation (checklist = scannable, guide = narrative, tips = listicle)",
+        "Domain must be specific — not \"finance\" but \"SIP choices\" or \"stock market entry\"",
+        "Examples: \"A practical checklist for [DOMAIN]\", \"An honest guide to [TOPIC]\""
+      ]
+    },
+    "COLON_EXPLAINER": {
+      "type": "colon_explainer",
+      "category": "education",
+      "description": "Topic: dimension1, dimension2, dimension3 explained",
+      "total_in_gold": 61,
+      "winners": 5,
+      "losers": 56,
+      "win_rate": 0.08196721311475409,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "stock jumps: risk, returns, and timing explained simply",
+          "skeleton": "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "packaged food labels: what to do, what to avoid, and why",
+          "skeleton": "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "back pain: what to do, what to avoid, and why",
+          "skeleton": "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "weight loss transformation: what to do, what to avoid, and why",
+          "skeleton": "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "weight loss transformation: what to do, what to avoid, and why",
+          "skeleton": "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Poor",
+          "title": "chasing stocks financially: risk, returns, and timing explained simply"
+        },
+        {
+          "label": "Poor",
+          "title": "Routine: what to do, what to avoid, and why"
+        },
+        {
+          "label": "Poor",
+          "title": "without workout: what to do, what to avoid, and why"
+        }
+      ],
+      "structural_patterns": [
+        "[TOPIC]: [DIM1], [DIM2], and [DIM3] explained"
+      ],
+      "generation_hints": [
+        "Topic before colon should be specific (not just \"stocks\" but \"stock jumps\")",
+        "After colon: 2-4 dimensions or aspects of the topic",
+        "End with \"explained\" or \"explained simply\" for clear educational signal",
+        "Examples: \"[EVENT]: risk, returns, and timing explained\", \"[TOPIC]: what works, what doesn't, and why\""
+      ]
+    },
+    "COLON_VARIANT": {
+      "type": "colon_variant",
+      "category": "food",
+      "description": "Topic: a specific angle or variant for audience",
+      "total_in_gold": 96,
+      "winners": 5,
+      "losers": 91,
+      "win_rate": 0.052083333333333336,
+      "examples": [
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "achieve weight loss: a 7-day routine viewers can actually follow",
+          "skeleton": "[TOPIC]: [ADJ] version for [AUDIENCE]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "food competition iconic: the budget version vs the restaurant version",
+          "skeleton": "[TOPIC]: [ADJ] version for [AUDIENCE]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "desi food: quick version for busy days",
+          "skeleton": "[TOPIC]: [ADJ] version for [AUDIENCE]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "desi food competition: the budget version vs the restaurant version",
+          "skeleton": "[TOPIC]: [ADJ] version for [AUDIENCE]"
+        },
+        {
+          "label": "Good",
+          "source": "dna_original_bets",
+          "title": "achieve weight loss: a 7-day routine viewers can actually follow",
+          "skeleton": "[TOPIC]: [ADJ] version for [AUDIENCE]"
+        }
+      ],
+      "loser_examples": [
+        {
+          "label": "Garbage",
+          "title": "CJP Protests LIVE: Cockroach Janta Party's 1st Protest"
+        },
+        {
+          "label": "Garbage",
+          "title": "CJP Protests LIVE: Cockroach Janta Party's 1st Protest"
+        }
+      ],
+      "structural_patterns": [
+        "[TOPIC]: [ADJ] version for [AUDIENCE]"
+      ],
+      "generation_hints": [
+        "Topic before colon should be the core concept (desi food, street food)",
+        "After colon: a specific angle that adds dimension (quick version, budget version, regional twist)",
+        "Optional audience tag (\"for busy days\", \"for beginners\")",
+        "Examples: \"desi food: quick version for busy days\", \"street food: the budget challenge\""
+      ]
+    },
+    "ASSUMPTION_REVERSAL": {
+      "type": "assumption_reversal",
+      "category": "narrative",
+      "description": "We thought X. Actually Y. (reveals wrong assumption)",
+      "total_in_gold": 2,
+      "winners": 2,
+      "losers": 0,
+      "win_rate": 1,
+      "examples": [
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "skeleton": "We Thought [ACCEPTED BELIEF]. They [Might/Actually] [SURPRISING TRUTH]"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "We Thought Black Holes Ended in Singularities. They Might End In a Frozen Big Bang",
+          "skeleton": "We Thought [ACCEPTED BELIEF]. They [Might/Actually] [SURPRISING TRUTH]"
+        }
+      ],
+      "loser_examples": [],
+      "structural_patterns": [
+        "We Thought [ACCEPTED BELIEF]. They [Might/Actually] [SURPRISING TRUTH]"
+      ],
+      "generation_hints": [
+        "Lead with the widely-held belief (what everyone thinks is true)",
+        "Pivot with \"but\", \"actually\", \"turns out\", \"might\"",
+        "The surprising truth should be specific and counter-intuitive",
+        "Best for science, finance, health — where conventional wisdom is wrong",
+        "Examples: \"We Thought X Ended in Y. They Might End in Z\""
+      ]
+    },
+    "FORCED_CONFLICT": {
+      "type": "forced_conflict",
+      "category": "narrative",
+      "description": "Named subject forced / made to do something against its nature",
+      "total_in_gold": 2,
+      "winners": 2,
+      "losers": 0,
+      "win_rate": 1,
+      "examples": [
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "The Tiger That Was Forced to Hunt Humans",
+          "skeleton": "The [SUBJECT] That Was Forced to [ACTION] [OBJECT]"
+        },
+        {
+          "label": "Excellent",
+          "source": "peer_video_signal",
+          "title": "The Tiger That Was Forced to Hunt Humans",
+          "skeleton": "The [SUBJECT] That Was Forced to [ACTION] [OBJECT]"
+        }
+      ],
+      "loser_examples": [],
+      "structural_patterns": [
+        "The [SUBJECT] That Was Forced to [ACTION] [OBJECT]"
+      ],
+      "generation_hints": [
+        "Named specific subject (the tiger, not \"a tiger\")",
+        "\"forced to\" creates immediate tension and sympathy",
+        "Action should be against the subject's nature or will",
+        "Best for nature, history, human interest narratives"
+      ]
+    },
+    "NUMBER_LIST": {
+      "type": "number_list",
+      "category": "education",
+      "description": "N ways / reasons / tips to [action] [domain]",
+      "total_in_gold": 2,
+      "winners": 0,
+      "losers": 2,
+      "win_rate": 0,
+      "examples": [],
+      "loser_examples": [],
+      "structural_patterns": [],
+      "generation_hints": [
+        "Specific number signals concrete value (5 > \"several\")",
+        "Format word sets expectation (mistakes = what not to do, ways = options)",
+        "The action must follow directly (5 ways to LOSE fat, not just \"5 fat loss things\")",
+        "Keep number ≤ 7 for credibility; odd numbers feel more genuine than even"
+      ]
+    },
+    "CONFLICT_EXPOSE": {
+      "type": "conflict_expose",
+      "category": "narrative",
+      "description": "Subject can't / won't / didn't + reveal or expose",
+      "total_in_gold": 0,
+      "winners": 0,
+      "losers": 0,
+      "win_rate": 0,
+      "examples": [],
+      "loser_examples": [],
+      "structural_patterns": [],
+      "generation_hints": [
+        "Name the specific actor (Trump, not \"a politician\")",
+        "\"Can't\" creates immediate tension — establishes a failing",
+        "Include the evidence source (\"the Iran talks prove it\")",
+        "Avoid vague claims — specific named story + specific verdict"
+      ]
+    },
+    "HOW_TO": {
+      "type": "how_to",
+      "category": "education",
+      "description": "How to [specific action] [specific topic]",
+      "total_in_gold": 0,
+      "winners": 0,
+      "losers": 0,
+      "win_rate": 0,
+      "examples": [],
+      "loser_examples": [],
+      "structural_patterns": [],
+      "generation_hints": [
+        "The action must be specific (not just \"understand\" but \"read\" or \"build\")",
+        "The topic must be domain-specific (not \"finance\" but \"a SIP portfolio\")",
+        "Add constraint for specificity: \"without\", \"on a budget\", \"in N days\""
+      ]
+    }
+  },
+  "generation_strategy": {
+    "primary_targets": [
+      {
+        "template": "MISTAKE_BEHIND",
+        "win_rate": 0.2457627118644068,
+        "category": "education"
+      },
+      {
+        "template": "DISH_TECHNIQUE",
+        "win_rate": 0.42105263157894735,
+        "category": "food"
+      },
+      {
+        "template": "WAY_TO",
+        "win_rate": 0.2777777777777778,
+        "category": "education"
+      }
+    ],
+    "avoid": [
+      {
+        "template": "GENERIC",
+        "win_rate": 0.01483679525222552,
+        "reason": "<2% win rate in gold set"
+      }
+    ]
+  }
+}

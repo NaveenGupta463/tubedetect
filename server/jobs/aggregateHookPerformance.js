@@ -85,16 +85,18 @@ function computeMomentum(db, niche, hookType, durBucket) {
     const recentSql = `
       SELECT AVG(vgs.views_per_hour) avg_vph
       FROM ingested_videos iv
+      JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
       JOIN video_growth_snapshots vgs ON vgs.video_id = iv.youtube_video_id
-      WHERE iv.niche = ? AND iv.duration_seconds IS NOT NULL
+      WHERE ic.primary_niche = ? AND iv.duration_seconds IS NOT NULL
         AND iv.published_at >= datetime('now', '-14 days')
         AND vgs.views_per_hour IS NOT NULL AND vgs.views_per_hour > 0`;
 
     const baseSql = `
       SELECT AVG(vgs.views_per_hour) avg_vph
       FROM ingested_videos iv
+      JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
       JOIN video_growth_snapshots vgs ON vgs.video_id = iv.youtube_video_id
-      WHERE iv.niche = ? AND iv.duration_seconds IS NOT NULL
+      WHERE ic.primary_niche = ? AND iv.duration_seconds IS NOT NULL
         AND iv.published_at BETWEEN datetime('now', '-90 days') AND datetime('now', '-14 days')
         AND vgs.views_per_hour IS NOT NULL AND vgs.views_per_hour > 0`;
 
@@ -120,17 +122,18 @@ function aggregateHookPerformance(db) {
 
   // Load all ingested videos with VPH data (latest snapshot per video)
   const rows = db.all(`
-    SELECT iv.youtube_video_id, iv.title, iv.niche, iv.duration_seconds,
+    SELECT iv.youtube_video_id, iv.title, ic.primary_niche AS niche, iv.duration_seconds,
            iv.published_at,
            vgs.views_per_hour
     FROM ingested_videos iv
+    JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
     JOIN (
       SELECT video_id, views_per_hour, snapshotted_at,
              ROW_NUMBER() OVER (PARTITION BY video_id ORDER BY snapshotted_at DESC) rn
       FROM video_growth_snapshots
       WHERE views_per_hour IS NOT NULL AND views_per_hour > 0
     ) vgs ON vgs.video_id = iv.youtube_video_id AND vgs.rn = 1
-    WHERE iv.title IS NOT NULL AND iv.niche IS NOT NULL
+    WHERE iv.title IS NOT NULL AND ic.primary_niche IS NOT NULL
   `);
 
   if (!rows.length) {

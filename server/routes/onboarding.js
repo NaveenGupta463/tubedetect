@@ -19,9 +19,14 @@ const express = require('express');
 const router  = express.Router();
 const { getDb }                  = require('../db/init');
 const { classifyChannel }        = require('../services/channelClassifier');
-const { upsertIngestedChannel, saveChannelIdentity } = require('../db/queries');
+const { upsertIngestedChannel, upsertIngestedVideo, markChannelIngested, saveChannelIdentity } = require('../db/queries');
+const { upsertCorpusChannel }    = require('../db/corpusQueries');
+const { upsertChannelCache }     = require('../db/queries');
 const { detectChannelCountry }   = require('../jobs/languageDetectionJob');
-const { ingestChannel }          = require('../jobs/historicalIngest');
+const { detectAndSaveLanguage }  = require('../jobs/primaryLanguageJob');
+const { pickBestThumbnail }      = require('../services/videoFormatClassifier');
+const { persistCreatorIdeaDnaForPipeline } = require('../services/creatorIdeaDnaPipeline');
+const { getApiKey } = require('../services/apiKeyManager');
 
 // ── Niche keyword detection ───────────────────────────────────────────────────
 
@@ -123,6 +128,24 @@ function nicheFromTopicCategories(categories = []) {
   return null;
 }
 
+function parseIsoDurationSeconds(duration) {
+  const m = String(duration || '').match(/PT(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?/);
+  if (!m) return null;
+  return (parseInt(m[1] || '0', 10) * 3600) +
+         (parseInt(m[2] || '0', 10) * 60) +
+          parseInt(m[3] || '0', 10);
+}
+
+async function fetchYoutubeJson(url) {
+  const resp = await fetch(url);
+  const data = await resp.json().catch(() => null);
+  if (!resp.ok) {
+    const msg = data?.error?.message || `YouTube ${resp.status}`;
+    throw new Error(msg);
+  }
+  return data;
+}
+
 // ── Inline community inference (same logic as /api/intel/community/infer) ────
 
 function inferCommunityId(db, niche, subs) {
@@ -145,21 +168,18 @@ function inferCommunityId(db, niche, subs) {
 
 // ── Route ─────────────────────────────────────────────────────────────────────
 
-router.post('/onboard-channel', async (req, res) => {
-  const { channel_id } = req.body;
-  if (!channel_id) return res.status(400).json({ error: 'channel_id required' });
-
-  const apiKey = process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
-  if (!apiKey) return res.status(503).json({ error: 'YouTube API key not configured' });
-
-  const db = getDb();
-
+// Core onboarding pipeline, reusable by the HTTP route AND batch ingestion.
+// `res` is an Express response (route) or a mock {status(),json()} (batch).
+async function onboardChannel(db, channel_id, apiKey, res) {
   // 1. Already fully onboarded?
   const existing = db.get(
     'SELECT channel_id, channel_name, channel_subscribers, niche, community_id, region FROM ingested_channels WHERE channel_id = ?',
     [channel_id],
   );
-  if (existing?.niche && existing?.community_id) {
+  const existingVideoCount = existing
+    ? (db.get('SELECT COUNT(*) AS n FROM ingested_videos WHERE channel_id = ?', [channel_id])?.n || 0)
+    : 0;
+  if (existing?.niche && existing?.community_id && existingVideoCount >= 5) {
     // Pull thumbnail from corpus_channels or channel_cache
     const thumbRow = db.get('SELECT thumbnail_url FROM corpus_channels WHERE channel_id = ?', [channel_id]);
     let thumbnail = thumbRow?.thumbnail_url || null;
@@ -172,16 +192,15 @@ router.post('/onboard-channel', async (req, res) => {
         } catch (_) {}
       }
     }
-    return res.json({ ...existing, name: existing.channel_name, subs: existing.channel_subscribers, thumbnail, already_existed: true });
+    return res.json({ ...existing, name: existing.channel_name, subs: existing.channel_subscribers, thumbnail, titles_count: existingVideoCount, videos_stored: 0, already_existed: true });
   }
 
   // 2. Fetch from YouTube API
   let item;
   try {
-    const ytResp = await fetch(
+    const ytData = await fetchYoutubeJson(
       `https://www.googleapis.com/youtube/v3/channels?part=snippet,statistics,contentDetails,topicDetails&id=${channel_id}&key=${apiKey}`,
     );
-    const ytData = await ytResp.json();
     item = ytData.items?.[0];
     if (!item) return res.status(404).json({ error: 'Channel not found on YouTube' });
   } catch (e) {
@@ -197,50 +216,49 @@ router.post('/onboard-channel', async (req, res) => {
   const thumbnail         = item.snippet?.thumbnails?.medium?.url || item.snippet?.thumbnails?.default?.url || null;
 
   // 3. Cache raw JSON in channel_cache
+  try { upsertChannelCache(db, item); } catch (_) {}
+
+  // 4. Upsert into corpus_channels immediately so the channel becomes seeded.
   try {
-    db.run(
-      `INSERT INTO channel_cache (channel_id, raw_json, cached_at)
-       VALUES (?, ?, ?)
-       ON CONFLICT(channel_id) DO UPDATE SET raw_json = excluded.raw_json, cached_at = excluded.cached_at`,
-      [channel_id, JSON.stringify(item), new Date().toISOString()],
-    );
+    upsertCorpusChannel(db, {
+      channel_id,
+      title:               name,
+      handle:              item.snippet?.customUrl?.replace(/^@/, '').toLowerCase() || null,
+      thumbnail_url:       thumbnail,
+      uploads_playlist_id: uploadsPlaylistId,
+      niche:               null,
+      language:            item.snippet?.defaultLanguage || 'en',
+      country,
+      subscriber_count:    subs,
+      total_views:         parseInt(item.statistics?.viewCount || '0', 10),
+      video_count:         parseInt(item.statistics?.videoCount || '0', 10),
+      last_ingested_at:    new Date().toISOString(),
+      discovery_source:    'user_search_onboard',
+      raw_json:            item,
+      yt_default_language: item.snippet?.defaultLanguage || null,
+      yt_country:          country,
+      yt_topic_ids:        topicCategories.length ? JSON.stringify(topicCategories) : null,
+    });
   } catch (_) {}
 
-  // 4. Upsert into ingested_channels
-  upsertIngestedChannel(db, {
-    channel_id,
-    channel_name:        name,
-    channel_subscribers: subs,
-    uploads_playlist_id: uploadsPlaylistId,
-    added_by:            'user_onboard',
-    notes:               'Auto-onboarded via search',
-  });
-  db.run(`UPDATE ingested_channels SET ingest_enabled = 1 WHERE channel_id = ?`, [channel_id]);
-  if (country) {
-    db.run(`UPDATE ingested_channels SET region = ? WHERE channel_id = ? AND region IS NULL`, [country, channel_id]);
-  }
-
-  // 5. Upsert into corpus_channels
-  try {
-    db.run(
-      `INSERT INTO corpus_channels (channel_id, title, subscriber_count)
-       VALUES (?, ?, ?)
-       ON CONFLICT(channel_id) DO UPDATE SET
-         title            = COALESCE(excluded.title, title),
-         subscriber_count = COALESCE(excluded.subscriber_count, subscriber_count)`,
-      [channel_id, name, subs],
-    );
-  } catch (_) {}
-
-  // 6. Fetch recent video titles (for niche detection)
+  // 5. Fetch recent videos (for niche detection + immediate WTP fingerprint)
   let titles = [];
+  let videoItems = [];
   if (uploadsPlaylistId) {
     try {
-      const plResp = await fetch(
+      const plData = await fetchYoutubeJson(
         `https://www.googleapis.com/youtube/v3/playlistItems?part=snippet&playlistId=${uploadsPlaylistId}&maxResults=50&key=${apiKey}`,
       );
-      if (plResp.ok) {
-        const plData = await plResp.json();
+      const videoIds = (plData.items || [])
+        .map(i => i.snippet?.resourceId?.videoId)
+        .filter(Boolean);
+      if (videoIds.length > 0) {
+        const videoData = await fetchYoutubeJson(
+          `https://www.googleapis.com/youtube/v3/videos?part=snippet,statistics,contentDetails&id=${encodeURIComponent(videoIds.join(','))}&key=${apiKey}`,
+        );
+        videoItems = videoData.items || [];
+        titles = videoItems.map(v => v.snippet?.title).filter(Boolean);
+      } else {
         titles = (plData.items || []).map(i => i.snippet?.title).filter(Boolean);
       }
     } catch (e) {
@@ -268,7 +286,22 @@ router.post('/onboard-channel', async (req, res) => {
   // 8. Infer community_id
   const communityId = inferCommunityId(db, niche, subs);
 
-  // 9. Persist niche + community_id
+  // 9. Persist ingested profile + niche/community_id.
+  upsertIngestedChannel(db, {
+    channel_id,
+    channel_name:        name,
+    niche,
+    channel_subscribers: subs,
+    uploads_playlist_id: uploadsPlaylistId,
+    community_id:        communityId,
+    added_by:            'user_onboard',
+    notes:               'Auto-onboarded via search',
+  });
+  db.run(`UPDATE ingested_channels SET ingest_enabled = 1 WHERE channel_id = ?`, [channel_id]);
+  if (country) {
+    db.run(`UPDATE ingested_channels SET region = ? WHERE channel_id = ? AND region IS NULL`, [country, channel_id]);
+  }
+
   db.run(
     `UPDATE ingested_channels SET niche = ?, community_id = ? WHERE channel_id = ?`,
     [niche, communityId, channel_id],
@@ -277,6 +310,47 @@ router.post('/onboard-channel', async (req, res) => {
     `UPDATE corpus_channels SET niche = ?, community_id = ?, subscriber_count = ? WHERE channel_id = ?`,
     [niche, communityId, subs, channel_id],
   );
+
+  let storedVideos = 0;
+  let creatorDna = null;
+  for (const v of videoItems) {
+    const sn = v.snippet || {};
+    const st = v.statistics || {};
+    const cd = v.contentDetails || {};
+    const thumb = pickBestThumbnail(sn.thumbnails);
+    try {
+      upsertIngestedVideo(db, {
+        youtube_video_id:    v.id,
+        channel_id,
+        niche,
+        title:               sn.title || '',
+        description:         sn.description || null,
+        published_at:        sn.publishedAt || null,
+        duration_seconds:    parseIsoDurationSeconds(cd.duration),
+        category_id:         sn.categoryId || null,
+        thumbnail_url:       thumb.thumbnail_url,
+        thumbnail_width:     thumb.thumbnail_width,
+        thumbnail_height:    thumb.thumbnail_height,
+        thumbnail_aspect_ratio: thumb.thumbnail_aspect_ratio,
+        ingest_source:       'onboarding',
+        views:               parseInt(st.viewCount || '0', 10),
+        likes:               parseInt(st.likeCount || '0', 10),
+        comments:            parseInt(st.commentCount || '0', 10),
+        channel_subscribers: subs,
+      });
+      storedVideos++;
+    } catch (_) {}
+  }
+  if (storedVideos > 0) {
+    try { markChannelIngested(db, channel_id); } catch (_) {}
+    try {
+      creatorDna = persistCreatorIdeaDnaForPipeline(db, channel_id, {
+        reason: 'onboarding_recent_uploads',
+      });
+    } catch (e) {
+      creatorDna = { ok: false, skipped: true, reason: e.message };
+    }
+  }
 
   if (identity) {
     const channelRow = db.get('SELECT id FROM ingested_channels WHERE channel_id = ?', [channel_id]);
@@ -287,12 +361,11 @@ router.post('/onboard-channel', async (req, res) => {
     }
   }
 
-  // 10. Background: country detection + historical video ingest
+  // 10. Background: country detection only — full video ingest runs via daily pipeline
+  // (ingestChannel is NOT called here — it does 500+ synchronous DB writes that block
+  //  the event loop and freeze all HTTP requests while it runs)
   detectChannelCountry(channel_id).catch(() => {});
-  const fullChannel = db.get('SELECT * FROM ingested_channels WHERE channel_id = ?', [channel_id]);
-  if (fullChannel) {
-    ingestChannel(fullChannel).catch(e => console.warn(`[onboard] ingest error for ${channel_id}:`, e.message));
-  }
+  try { detectAndSaveLanguage(channel_id); } catch (_) {}
 
   console.log(`[onboard] ${name} → niche=${niche} community=${communityId} subs=${subs}`);
 
@@ -305,8 +378,27 @@ router.post('/onboard-channel', async (req, res) => {
     region:       country,
     thumbnail,
     titles_count: titles.length,
+    videos_stored: storedVideos,
+    creator_dna: creatorDna ? {
+      ok: creatorDna.ok,
+      skipped: !!creatorDna.skipped,
+      reason: creatorDna.reason,
+      confidence: creatorDna.confidence,
+      sample_count: creatorDna.sample_count,
+    } : null,
     identity_source: identity ? 'openai' : (niche !== 'other' ? 'keyword' : 'fallback'),
   });
+}
+
+router.post('/onboard-channel', async (req, res) => {
+  const { channel_id } = req.body;
+  if (!channel_id) return res.status(400).json({ error: 'channel_id required' });
+  // Use the 'ingest' quota lane (falls back to primary key if the pool is unavailable).
+  const apiKey = getApiKey('ingest') || process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
+  if (!apiKey) return res.status(503).json({ error: 'YouTube API key not configured' });
+  try { return await onboardChannel(getDb(), channel_id, apiKey, res); }
+  catch (e) { return res.status(500).json({ error: e.message }); }
 });
 
 module.exports = router;
+module.exports.onboardChannel = onboardChannel;

@@ -9,6 +9,15 @@ const { runPatternMining } = require('../services/patternMiner');
 const DATA_DIR  = path.resolve(__dirname, '../data');
 const DB_PATH   = path.resolve(DATA_DIR, 'scoring.db');
 const LOCK_PATH = DB_PATH + '.lock';
+const DB_SLOW_MS = Math.max(0, parseInt(process.env.DB_SLOW_MS || '250', 10));
+const DB_TIMING_DEBUG = process.env.DB_TIMING_DEBUG === '1';
+
+function compactSql(sql) {
+  return String(sql || '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 260);
+}
 
 // Thin wrapper so all existing db.all/get/run/exec calls work unchanged.
 // Prepared statements are cached per SQL string for performance.
@@ -25,10 +34,22 @@ class Database {
     if (params == null) return [];
     return Array.isArray(params) ? params : [params];
   }
-  all(sql, params)  { return this._stmt(sql).all(this._p(params)); }
-  get(sql, params)  { return this._stmt(sql).get(this._p(params)); }
-  run(sql, params)  { return this._stmt(sql).run(this._p(params)); }
-  exec(sql)         { return this._db.exec(sql); }
+  _timed(kind, sql, fn) {
+    const t0 = Date.now();
+    try {
+      return fn();
+    } finally {
+      const ms = Date.now() - t0;
+      if (DB_TIMING_DEBUG || (DB_SLOW_MS > 0 && ms >= DB_SLOW_MS)) {
+        const level = DB_SLOW_MS > 0 && ms >= DB_SLOW_MS ? 'warn' : 'log';
+        console[level](`[DB_TIMING] ${kind} ${ms}ms :: ${compactSql(sql)}`);
+      }
+    }
+  }
+  all(sql, params)  { return this._timed('all', sql, () => this._stmt(sql).all(this._p(params))); }
+  get(sql, params)  { return this._timed('get', sql, () => this._stmt(sql).get(this._p(params))); }
+  run(sql, params)  { return this._timed('run', sql, () => this._stmt(sql).run(this._p(params))); }
+  exec(sql)         { return this._timed('exec', sql, () => this._db.exec(sql)); }
   close()           { this._cache.clear(); return this._db.close(); }
   pragma(str, opts) { return this._db.pragma(str, opts); }
   transaction(fn)   { return this._db.transaction(fn); }
@@ -64,6 +85,27 @@ function verifyWalMode(database) {
   } catch (e) {
     console.warn('[DB] Could not verify WAL mode:', e.message);
   }
+}
+
+function shouldRunStartupDataBackfills() {
+  if (process.env.RUN_STARTUP_DATA_BACKFILLS === '0') return false;
+  return (
+    process.env.RUN_STARTUP_DATA_BACKFILLS === '1' ||
+    process.env.TUBEINTEL_PROCESS === 'worker' ||
+    process.env.ENABLE_API_CRONS === '1'
+  );
+}
+
+function shouldRunHeavyIndexMigrations() {
+  return (
+    process.env.RUN_HEAVY_INDEX_MIGRATIONS === '1' ||
+    process.env.TUBEINTEL_PROCESS === 'worker' ||
+    process.env.ENABLE_API_CRONS === '1'
+  );
+}
+
+function logSkippedStartupBackfill(name) {
+  console.log(`[DB] ${name} skipped in API startup; worker runs startup data backfills`);
 }
 
 function repairCorruptedIndexes(database) {
@@ -128,10 +170,13 @@ function _rebuildKeyIndexes(database) {
   const indexes = [
     ['idx_vgs_video_id', 'CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id)'],
     ['idx_vgs_bucket',   'CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket)'],
+    ['idx_vgs_video_bucket', 'CREATE INDEX IF NOT EXISTS idx_vgs_video_bucket ON video_growth_snapshots(video_id, bucket)'],
+    ['idx_iv_snapshot_due',  'CREATE INDEX IF NOT EXISTS idx_iv_snapshot_due ON ingested_videos(published_at, last_refreshed_at, youtube_video_id)'],
     ['idx_iv_niche',     'CREATE INDEX IF NOT EXISTS idx_iv_niche     ON ingested_videos(niche)'],
     ['idx_iv_channel',   'CREATE INDEX IF NOT EXISTS idx_iv_channel   ON ingested_videos(channel_id)'],
-    ['idx_ic_niche',     'CREATE INDEX IF NOT EXISTS idx_ic_niche     ON ingested_channels(niche)'],
-    ['idx_ic_enabled',   'CREATE INDEX IF NOT EXISTS idx_ic_enabled   ON ingested_channels(ingest_enabled)'],
+    ['idx_ic_niche',         'CREATE INDEX IF NOT EXISTS idx_ic_niche         ON ingested_channels(niche)'],
+    ['idx_ic_enabled',       'CREATE INDEX IF NOT EXISTS idx_ic_enabled       ON ingested_channels(ingest_enabled)'],
+    ['idx_ic_primary_niche', 'CREATE INDEX IF NOT EXISTS idx_ic_primary_niche ON ingested_channels(primary_niche)'],
   ];
   for (const [name, sql] of indexes) {
     try {
@@ -763,6 +808,10 @@ function migratePhaseXII(database) {
 }
 
 function migrateNiches(database) {
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('Legacy niche rename');
+    return;
+  }
   try {
     const ch1  = database.run(`UPDATE ingested_channels SET niche = 'technology' WHERE niche = 'ai_tools'`);
     const ch2  = database.run(`UPDATE ingested_channels SET niche = 'business'   WHERE niche = 'creator_growth'`);
@@ -783,6 +832,10 @@ function migrateNiches(database) {
 }
 
 function backfillIdentityPrimaryNiche(database) {
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('primary_niche data backfill');
+    return;
+  }
   try {
     const result = database.run(
       `UPDATE ingested_channels SET primary_niche = niche WHERE primary_niche IS NULL AND niche IS NOT NULL`,
@@ -794,6 +847,10 @@ function backfillIdentityPrimaryNiche(database) {
 }
 
 function backfillNewFeatures(database) {
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('feature data backfill');
+    return;
+  }
   // Skip if already completed — uses kv_store (created by migrateSignals before this runs)
   try {
     const done = database.get(`SELECT value FROM kv_store WHERE key = 'features_backfill_done'`);
@@ -834,6 +891,10 @@ function backfillNewFeatures(database) {
 }
 
 function applyOpenAINicheOverride(database) {
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('OpenAI niche override backfill');
+    return;
+  }
   // OpenAI inferred_topics is ground truth — overwrite the keyword-guessed niche
   // for every channel that has been classified. Skips if already done (kv_store flag).
   try {
@@ -892,6 +953,7 @@ function getDb() {
   }
 
   db.exec('PRAGMA journal_mode=WAL');
+  db.exec('PRAGMA busy_timeout=60000');        // wait up to 60 s before returning SQLITE_BUSY
   db.exec('PRAGMA synchronous=NORMAL');        // WAL mode default; fewer fsyncs on Windows
   db.exec('PRAGMA wal_autocheckpoint=2000');   // checkpoint every 2000 pages (~8 MB) instead of default 1000
   db.exec('PRAGMA cache_size=-8000');          // 8 MB page cache
@@ -921,9 +983,906 @@ function getDb() {
   migrateNicheIntelligence(db);
   migrateCredits(db);
   migrateDrafts(db);
-  repairCorruptedIndexes(db);
+  migrateIntelligenceDerivedTables(db);
+  migrateContentFingerprint(db);
+  migrateBenchmarkResults(db);
+  migrateSaturationHistory(db);
+  migrateEcosystemTables(db);
+  migrateChannelIdentity(db);
+  migrateAIKeywords(db);
+  migrateTopicEventMetadata(db);
+  migrateLifecycleHealth(db);
+  migrateNarrativeLifecycle(db);
+  migrateCreatorMode(db);
+  migrateRoutingProfile(db);
+  migrateFormatProfile(db);
+  migrateVideoRepairCache(db);
+  migrateShadowLog(db);
+  migrateCalibrationCells(db);
+  migrateChannelSearchIndex(db);
+  migrateContentStrategyProfiles(db);
+  migrateCreatorIdeaDna(db);
+  migrateCreatorIdeaDnaPhase5(db);
+  migrateSuggestionHistory(db);
+  migrateTerritoryProfiles(db);
+  migrateChannelWtpCache(db);
+  migrateRefreshJobs(db);
+  migrateChannelRuntimeSummary(db);
+  migratePerformanceIndexes(db);
+  migrateSnapshotDueIndexes(db);
+  migratePipelineHealthSnapshots(db);
+  migrateCreatorDiscovery(db);
+  migrateWtpOutcomes(db);
+  migrateWtpOutcomeQuality(db);
+  migrateWtpAttributionCandidates(db);
+  // Integrity checks are intentionally opt-in for the API process. On the
+  // production-sized local DB this can block the Node event loop for minutes,
+  // which makes lightweight routes like channel search appear broken.
+  if (process.env.RUN_DB_INTEGRITY_CHECK === '1') repairCorruptedIndexes(db);
 
   return db;
+}
+
+function migrateSnapshotDueIndexes(database) {
+  try {
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_vgs_video_bucket ON video_growth_snapshots(video_id, bucket)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_snapshot_due ON ingested_videos(published_at, last_refreshed_at, youtube_video_id)`);
+    console.log('[DB] Snapshot due indexes ready');
+  } catch (e) {
+    console.warn('[DB] Snapshot due index migration skipped:', e.message);
+  }
+}
+
+function migratePipelineHealthSnapshots(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS pipeline_health_snapshots (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_name      TEXT NOT NULL,
+        status        TEXT NOT NULL DEFAULT 'ok',
+        started_at    TEXT,
+        completed_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        duration_ms   INTEGER,
+        metrics_json  TEXT,
+        error_message TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_phs_job_time ON pipeline_health_snapshots(job_name, completed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_phs_status   ON pipeline_health_snapshots(status, completed_at DESC);
+    `);
+    console.log('[DB] Pipeline health snapshots ready');
+  } catch (e) {
+    console.warn('[DB] Pipeline health snapshot migration skipped:', e.message);
+  }
+}
+
+function migrateRefreshJobs(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS refresh_jobs (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        job_type        TEXT    NOT NULL,
+        channel_id      TEXT    NOT NULL DEFAULT '',
+        priority        INTEGER NOT NULL DEFAULT 100,
+        status          TEXT    NOT NULL DEFAULT 'pending',
+        run_after       TEXT    NOT NULL DEFAULT (datetime('now')),
+        attempts        INTEGER NOT NULL DEFAULT 0,
+        locked_by       TEXT,
+        locked_at       TEXT,
+        started_at      TEXT,
+        completed_at    TEXT,
+        failed_at       TEXT,
+        payload_json    TEXT,
+        result_json     TEXT,
+        refresh_reason  TEXT,
+        error_message   TEXT,
+        created_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at      TEXT    NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_refresh_jobs_pending_unique
+        ON refresh_jobs(job_type, channel_id)
+        WHERE status = 'pending';
+      CREATE INDEX IF NOT EXISTS idx_refresh_jobs_claim
+        ON refresh_jobs(status, priority, run_after, id);
+      CREATE INDEX IF NOT EXISTS idx_refresh_jobs_channel
+        ON refresh_jobs(channel_id, job_type, status);
+      CREATE INDEX IF NOT EXISTS idx_refresh_jobs_locked
+        ON refresh_jobs(status, locked_at);
+    `);
+    console.log('[DB] Refresh jobs queue ready');
+  } catch (e) {
+    console.warn('[DB] Refresh jobs queue migration skipped:', e.message);
+  }
+}
+
+function migrateChannelWtpCache(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_wtp_cache (
+        channel_id            TEXT PRIMARY KEY,
+        payload_json          TEXT NOT NULL,
+        computed_at           TEXT NOT NULL,
+        expires_at            TEXT NOT NULL,
+        status                TEXT NOT NULL DEFAULT 'ready',
+        source_versions_json  TEXT,
+        refresh_reason        TEXT,
+        error_message         TEXT,
+        created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_cwc_status_expiry
+        ON channel_wtp_cache(status, expires_at);
+      CREATE INDEX IF NOT EXISTS idx_cwc_updated
+        ON channel_wtp_cache(updated_at);
+    `);
+    console.log('[DB] Channel WTP cache ready');
+  } catch (e) {
+    console.warn('[DB] Channel WTP cache migration skipped:', e.message);
+  }
+}
+
+function migrateChannelRuntimeSummary(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_runtime_summary (
+        channel_id                  TEXT PRIMARY KEY,
+        channel_name                TEXT,
+        handle                      TEXT,
+        thumbnail_url               TEXT,
+        subscriber_count            INTEGER DEFAULT 0,
+        niche                       TEXT,
+        primary_niche               TEXT,
+        community_id                TEXT,
+        primary_language            TEXT,
+        region                      TEXT,
+        content_language            TEXT,
+        audience_geo                TEXT,
+        format_profile              TEXT,
+        routing_profile             TEXT,
+        creator_mode                TEXT,
+        primary_csp                 TEXT,
+        csp_confidence              TEXT,
+        csp_confidence_score        REAL,
+        dna_confidence              TEXT,
+        dna_confidence_score        REAL,
+        dna_drift_status            TEXT,
+        dna_drift_score             REAL,
+        dna_updated_at              TEXT,
+        territory_count             INTEGER DEFAULT 0,
+        top_territories_json        TEXT,
+        video_count                 INTEGER DEFAULT 0,
+        recent_video_count          INTEGER DEFAULT 0,
+        shorts_count                INTEGER DEFAULT 0,
+        long_count                  INTEGER DEFAULT 0,
+        latest_video_published_at   TEXT,
+        max_views                   INTEGER DEFAULT 0,
+        avg_views                   REAL DEFAULT 0,
+        wtp_cache_status            TEXT,
+        wtp_cache_computed_at       TEXT,
+        wtp_cache_expires_at        TEXT,
+        summary_json                TEXT,
+        source_versions_json        TEXT,
+        computed_at                 TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at                  TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_crs_niche
+        ON channel_runtime_summary(primary_niche, subscriber_count DESC);
+      CREATE INDEX IF NOT EXISTS idx_crs_csp
+        ON channel_runtime_summary(primary_csp, subscriber_count DESC);
+      CREATE INDEX IF NOT EXISTS idx_crs_updated
+        ON channel_runtime_summary(updated_at);
+      CREATE INDEX IF NOT EXISTS idx_crs_wtp_expiry
+        ON channel_runtime_summary(wtp_cache_status, wtp_cache_expires_at);
+    `);
+    console.log('[DB] Channel runtime summary ready');
+  } catch (e) {
+    console.warn('[DB] Channel runtime summary migration skipped:', e.message);
+  }
+}
+
+function migratePerformanceIndexes(database) {
+  try {
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_ccsp_primary_conf_channel
+        ON channel_content_strategy_profiles(primary_csp, confidence, channel_id);
+      CREATE INDEX IF NOT EXISTS idx_ic_enabled_subs_name
+        ON ingested_channels(ingest_enabled, channel_subscribers DESC, channel_name);
+      CREATE INDEX IF NOT EXISTS idx_ic_region_enabled_subs
+        ON ingested_channels(region, ingest_enabled, channel_subscribers DESC);
+      CREATE INDEX IF NOT EXISTS idx_ic_format_enabled_subs
+        ON ingested_channels(format_type, ingest_enabled, channel_subscribers DESC);
+      CREATE INDEX IF NOT EXISTS idx_ctl_channel_phrase_stage
+        ON creator_topic_lifecycle(channel_id, phrase, stage);
+    `);
+    if (shouldRunHeavyIndexMigrations()) {
+      database.exec(`
+        CREATE INDEX IF NOT EXISTS idx_iv_channel_published
+          ON ingested_videos(channel_id, published_at DESC);
+        CREATE INDEX IF NOT EXISTS idx_iv_channel_views_desc
+          ON ingested_videos(channel_id, views DESC);
+      `);
+      console.log('[DB] Performance indexes ready');
+    } else {
+      console.log('[DB] Performance indexes ready (heavy video indexes skipped in API startup)');
+    }
+  } catch (e) {
+    console.warn('[DB] Performance index migration skipped:', e.message);
+  }
+}
+
+function migrateShadowLog(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS prepublish_shadow_log (
+        id                         INTEGER PRIMARY KEY AUTOINCREMENT,
+        created_at                 TEXT    NOT NULL DEFAULT (datetime('now')),
+        title                      TEXT,
+        channel_id                 TEXT,
+        niche                      TEXT,
+        calibration_niche          TEXT,
+        semantic_cluster           TEXT,
+        lifecycle_stage            TEXT,
+        saturation_level           TEXT,
+        duration_bucket            TEXT,
+        topic_signal_tier          TEXT,
+        legacy_data_adjustment     INTEGER,
+        empirical_adjustment       INTEGER,
+        calibration_cell_used      TEXT,
+        calibration_confidence     TEXT,
+        cell_level                 INTEGER,
+        negative_adjustment_status TEXT,
+        request_json               TEXT,
+        result_json                TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_psl_created_at ON prepublish_shadow_log(created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_psl_cell       ON prepublish_shadow_log(calibration_cell_used);
+      CREATE INDEX IF NOT EXISTS idx_psl_empirical  ON prepublish_shadow_log(empirical_adjustment);
+    `);
+  } catch (_) {}
+  console.log('[DB] Shadow log migration complete');
+}
+
+function migrateCalibrationCells(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS prepublish_calibration_cells (
+        id                           INTEGER PRIMARY KEY,
+        cell_key                     TEXT    NOT NULL UNIQUE,
+        cell_level                   INTEGER NOT NULL,
+        niche                        TEXT    NOT NULL,
+        raw_niche                    TEXT,
+        routing_profile              TEXT,
+        format_profile               TEXT,
+        semantic_cluster             TEXT,
+        lifecycle_stage              TEXT,
+        saturation_level             TEXT,
+        duration_bucket              TEXT,
+        topic_signal_tier            TEXT,
+        sample_size_1d               INTEGER NOT NULL DEFAULT 0,
+        sample_size_7d               INTEGER NOT NULL DEFAULT 0,
+        sample_size_14d              INTEGER NOT NULL DEFAULT 0,
+        beat_median_rate_1d          REAL,
+        beat_median_rate_7d          REAL,
+        beat_median_rate_14d         REAL,
+        beat_p75_rate_7d             REAL,
+        avg_sav_ratio_7d             REAL,
+        baseline_niche_rate_7d       REAL,
+        lift_vs_baseline             REAL,
+        lift_1d                      REAL,
+        lift_14d                     REAL,
+        positive_consistent_buckets  INTEGER NOT NULL DEFAULT 0,
+        negative_consistent_buckets  INTEGER NOT NULL DEFAULT 0,
+        calibration_confidence       TEXT    NOT NULL DEFAULT 'none'
+          CHECK(calibration_confidence IN ('none', 'low', 'medium', 'high')),
+        empirical_adjustment         INTEGER NOT NULL DEFAULT 0,
+        computed_at                  INTEGER NOT NULL,
+        backtest_rows_used           INTEGER
+      );
+      CREATE INDEX IF NOT EXISTS idx_pcc_niche          ON prepublish_calibration_cells(niche, cell_level);
+      CREATE INDEX IF NOT EXISTS idx_pcc_cluster        ON prepublish_calibration_cells(niche, semantic_cluster);
+      CREATE INDEX IF NOT EXISTS idx_pcc_clus_life      ON prepublish_calibration_cells(niche, semantic_cluster, lifecycle_stage);
+      CREATE INDEX IF NOT EXISTS idx_pcc_lifecycle      ON prepublish_calibration_cells(niche, lifecycle_stage);
+      CREATE INDEX IF NOT EXISTS idx_pcc_cell_key       ON prepublish_calibration_cells(cell_key);
+
+      CREATE TABLE IF NOT EXISTS prepublish_calibration_meta (
+        id                   INTEGER PRIMARY KEY,
+        run_at               INTEGER NOT NULL,
+        total_cells          INTEGER,
+        total_rows_processed INTEGER,
+        global_beat_rate_7d  REAL,
+        niche_count          INTEGER,
+        cells_with_positive  INTEGER,
+        cells_with_negative  INTEGER,
+        cells_neutral        INTEGER,
+        min_sample_positive  INTEGER,
+        min_sample_negative  INTEGER,
+        min_lift_positive    REAL,
+        notes                TEXT
+      );
+    `);
+  } catch (_) {}
+  console.log('[DB] Prepublish calibration migration complete');
+}
+
+function migrateChannelSearchIndex(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_search_index (
+        channel_id      TEXT PRIMARY KEY,
+        name            TEXT NOT NULL,
+        normalized_name TEXT NOT NULL,
+        source          TEXT NOT NULL DEFAULT 'corpus',
+        subs            INTEGER DEFAULT 0,
+        niche           TEXT,
+        community_id    TEXT,
+        language        TEXT,
+        thumbnail       TEXT,
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_csi_normalized ON channel_search_index(normalized_name);
+      CREATE INDEX IF NOT EXISTS idx_csi_subs       ON channel_search_index(subs DESC);
+    `);
+
+    const count = database.get('SELECT COUNT(*) AS n FROM channel_search_index');
+    if (count?.n > 0) {
+      console.log(`[DB] Channel search index ready (${count.n} entries)`);
+      return;
+    }
+
+    // Initial population from ingested_channels (priority source)
+    database.exec(`
+      INSERT OR REPLACE INTO channel_search_index
+        (channel_id, name, normalized_name, source, subs, niche, community_id, language, thumbnail, updated_at)
+      SELECT ic.channel_id, ic.channel_name, lower(ic.channel_name),
+             'ingested', COALESCE(ic.channel_subscribers, 0),
+             ic.niche, ic.community_id,
+             COALESCE(ic.primary_language, cc.yt_default_language),
+             cc.thumbnail_url, datetime('now')
+      FROM ingested_channels ic
+      LEFT JOIN corpus_channels cc ON cc.channel_id = ic.channel_id
+      WHERE ic.ingest_enabled = 1 AND ic.channel_name IS NOT NULL AND ic.channel_name != '';
+    `);
+
+    // Add corpus channels not already covered by ingested
+    database.exec(`
+      INSERT OR IGNORE INTO channel_search_index
+        (channel_id, name, normalized_name, source, subs, niche, community_id, language, thumbnail, updated_at)
+      SELECT cc.channel_id, cc.title, lower(cc.title),
+             'corpus', COALESCE(cc.subscriber_count, 0),
+             cc.niche, cc.community_id,
+             COALESCE(cc.language, cc.yt_default_language),
+             cc.thumbnail_url, datetime('now')
+      FROM corpus_channels cc
+      WHERE cc.title IS NOT NULL AND cc.title != ''
+        AND NOT EXISTS (
+          SELECT 1 FROM ingested_channels ic
+          WHERE ic.channel_id = cc.channel_id AND ic.ingest_enabled = 1
+        );
+    `);
+
+    const built = database.get('SELECT COUNT(*) AS n FROM channel_search_index');
+    console.log(`[DB] Channel search index built (${built?.n ?? 0} entries)`);
+  } catch (e) {
+    console.warn('[DB] Channel search index migration warning:', e.message);
+  }
+}
+
+function migrateContentStrategyProfiles(database) {
+  // Use prepare().run() not exec() — only the former propagates the busy handler
+  try {
+    database.run(
+      `CREATE TABLE IF NOT EXISTS channel_content_strategy_profiles (` +
+      `channel_id TEXT PRIMARY KEY, primary_csp TEXT NOT NULL, ` +
+      `secondary_csp_1 TEXT, secondary_csp_2 TEXT, ` +
+      `confidence TEXT NOT NULL DEFAULT 'low', ` +
+      `confidence_score REAL DEFAULT 0, signal_source TEXT, ` +
+      `title_sample_used INTEGER DEFAULT 0, version INTEGER DEFAULT 1, ` +
+      `classified_at TEXT NOT NULL DEFAULT (datetime('now')))`,
+    );
+  } catch (e) { console.warn('[DB] CSP table create:', e.message); }
+  try { database.run(`CREATE INDEX IF NOT EXISTS idx_ccsp_primary ON channel_content_strategy_profiles(primary_csp)`); } catch (_) {}
+  try { database.run(`CREATE INDEX IF NOT EXISTS idx_ccsp_conf ON channel_content_strategy_profiles(confidence)`); } catch (_) {}
+  try { database.run(`CREATE INDEX IF NOT EXISTS idx_ccsp_classified ON channel_content_strategy_profiles(classified_at DESC)`); } catch (_) {}
+  // Extended debug/signal columns added in v2 classifier
+  for (const col of [
+    `ALTER TABLE channel_content_strategy_profiles ADD COLUMN guest_signal REAL`,
+    `ALTER TABLE channel_content_strategy_profiles ADD COLUMN evergreen_ratio REAL`,
+    `ALTER TABLE channel_content_strategy_profiles ADD COLUMN event_reactive_ratio REAL`,
+    `ALTER TABLE channel_content_strategy_profiles ADD COLUMN title_vocabulary TEXT`,
+    `ALTER TABLE channel_content_strategy_profiles ADD COLUMN debug_json TEXT`,
+  ]) { try { database.run(col); } catch (_) {} }
+  console.log('[DB] Content strategy profiles migration complete');
+}
+
+function migrateCreatorIdeaDna(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS video_dna_signals (
+        video_id              TEXT PRIMARY KEY,
+        channel_id            TEXT NOT NULL,
+        title                 TEXT NOT NULL,
+        published_at          TEXT,
+        views                 INTEGER,
+        duration_seconds      INTEGER,
+        is_short              INTEGER,
+        format_type           TEXT,
+        hook_type             TEXT,
+        hook_templates_json   TEXT,
+        thesis_patterns_json  TEXT,
+        domain_tags_json      TEXT,
+        keywords_json         TEXT,
+        entities_json         TEXT,
+        micro_topics_json     TEXT,
+        novelty_markers_json  TEXT,
+        signal_json           TEXT,
+        extracted_at          TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_vds_channel_time
+        ON video_dna_signals(channel_id, published_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_vds_channel_hook
+        ON video_dna_signals(channel_id, hook_type);
+      CREATE INDEX IF NOT EXISTS idx_vds_channel_format
+        ON video_dna_signals(channel_id, format_type);
+
+      CREATE TABLE IF NOT EXISTS creator_idea_dna (
+        channel_id               TEXT PRIMARY KEY,
+        sample_count             INTEGER NOT NULL DEFAULT 0,
+        long_count               INTEGER NOT NULL DEFAULT 0,
+        short_count              INTEGER NOT NULL DEFAULT 0,
+        stable_dna_json          TEXT,
+        recent_direction_json    TEXT,
+        format_mix_json          TEXT,
+        vocabulary_json          TEXT,
+        entities_json            TEXT,
+        micro_topics_json        TEXT,
+        hook_templates_json      TEXT,
+        thesis_patterns_json     TEXT,
+        domain_tags_json         TEXT,
+        negative_dna_json        TEXT,
+        drift_score              REAL DEFAULT 0,
+        drift_status             TEXT NOT NULL DEFAULT 'stable',
+        confidence               TEXT NOT NULL DEFAULT 'low',
+        confidence_score         REAL DEFAULT 0,
+        source_version           INTEGER NOT NULL DEFAULT 1,
+        last_video_published_at  TEXT,
+        updated_at               TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_cid_confidence
+        ON creator_idea_dna(confidence, updated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cid_drift
+        ON creator_idea_dna(drift_status, drift_score);
+    `);
+    console.log('[DB] Creator idea DNA tables ready');
+  } catch (e) {
+    console.warn('[DB] Creator idea DNA migration skipped:', e.message);
+  }
+}
+
+function migrateCreatorIdeaDnaPhase5(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_idea_dna_snapshots (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id               TEXT NOT NULL,
+        source_version           INTEGER NOT NULL DEFAULT 1,
+        sample_count             INTEGER NOT NULL DEFAULT 0,
+        long_count               INTEGER NOT NULL DEFAULT 0,
+        short_count              INTEGER NOT NULL DEFAULT 0,
+        stable_dna_json          TEXT,
+        recent_direction_json    TEXT,
+        format_mix_json          TEXT,
+        vocabulary_json          TEXT,
+        entities_json            TEXT,
+        micro_topics_json        TEXT,
+        hook_templates_json      TEXT,
+        thesis_patterns_json     TEXT,
+        domain_tags_json         TEXT,
+        negative_dna_json        TEXT,
+        drift_score              REAL DEFAULT 0,
+        drift_status             TEXT NOT NULL DEFAULT 'stable',
+        confidence               TEXT NOT NULL DEFAULT 'low',
+        confidence_score         REAL DEFAULT 0,
+        last_video_published_at  TEXT,
+        snapshot_reason          TEXT NOT NULL DEFAULT 'refresh',
+        source_hash              TEXT,
+        created_at               TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_cids_channel_time
+        ON creator_idea_dna_snapshots(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cids_hash
+        ON creator_idea_dna_snapshots(channel_id, source_hash);
+
+      CREATE TABLE IF NOT EXISTS original_bet_feedback (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id         TEXT NOT NULL,
+        idea_key           TEXT NOT NULL,
+        topic              TEXT NOT NULL,
+        action             TEXT NOT NULL CHECK(action IN ('shown','saved','dismissed','acted','published','rated')),
+        rating             INTEGER,
+        notes              TEXT,
+        source_version     INTEGER NOT NULL DEFAULT 1,
+        dna_snapshot_id    INTEGER,
+        metadata_json      TEXT,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_obf_channel_time
+        ON original_bet_feedback(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_obf_idea
+        ON original_bet_feedback(channel_id, idea_key, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_obf_action
+        ON original_bet_feedback(action, created_at DESC);
+
+      CREATE TABLE IF NOT EXISTS original_bet_evaluation_runs (
+        id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_label          TEXT,
+        channel_limit      INTEGER,
+        holdout_count      INTEGER,
+        train_count        INTEGER,
+        min_confidence     TEXT,
+        metrics_json       TEXT,
+        created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+
+      CREATE TABLE IF NOT EXISTS original_bet_evaluation_items (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_id               INTEGER NOT NULL,
+        channel_id           TEXT NOT NULL,
+        channel_name         TEXT,
+        idea_key             TEXT NOT NULL,
+        topic                TEXT NOT NULL,
+        best_match_title     TEXT,
+        best_match_video_id  TEXT,
+        best_match_views     INTEGER,
+        lexical_overlap      REAL DEFAULT 0,
+        domain_overlap       REAL DEFAULT 0,
+        hit                  INTEGER NOT NULL DEFAULT 0,
+        metadata_json        TEXT,
+        created_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (run_id) REFERENCES original_bet_evaluation_runs(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_obei_run
+        ON original_bet_evaluation_items(run_id);
+      CREATE INDEX IF NOT EXISTS idx_obei_channel
+        ON original_bet_evaluation_items(channel_id, hit);
+    `);
+    console.log('[DB] Creator idea DNA phase 5 tables ready');
+  } catch (e) {
+    console.warn('[DB] Creator idea DNA phase 5 migration skipped:', e.message);
+  }
+}
+
+function migrateSuggestionHistory(database) {
+  try {
+    database.run(
+      `CREATE TABLE IF NOT EXISTS suggestion_history (` +
+      `id                INTEGER  PRIMARY KEY AUTOINCREMENT,` +
+      `channel_id        TEXT     NOT NULL,` +
+      `suggestion_key    TEXT     NOT NULL,` +
+      `raw_topic         TEXT,` +
+      `csp_at_show_time  TEXT,` +
+      `template_id       TEXT,` +
+      `source            TEXT,` +
+      `shown_at          TEXT,` +
+      `seen_at           TEXT,` +
+      `saved_at          TEXT,` +
+      `dismissed_at      TEXT,` +
+      `validated_at      TEXT,` +
+      `published_at      TEXT,` +
+      `views_7d          INTEGER,` +
+      `views_30d         INTEGER,` +
+      `metadata_json     TEXT,` +
+      `created_at        TEXT     NOT NULL DEFAULT (datetime('now')))`,
+    );
+  } catch (e) { console.warn('[DB] suggestion_history table:', e.message); }
+  try { database.run(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sh_channel_key ON suggestion_history(channel_id, suggestion_key)`); } catch (_) {}
+  try { database.run(`CREATE INDEX IF NOT EXISTS idx_sh_channel_shown  ON suggestion_history(channel_id, shown_at DESC)`); } catch (_) {}
+  try { database.run(`CREATE INDEX IF NOT EXISTS idx_sh_key            ON suggestion_history(suggestion_key)`); } catch (_) {}
+  console.log('[DB] Suggestion history migration complete');
+}
+
+function migrateTerritoryProfiles(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS video_territories (
+        video_id       TEXT NOT NULL,
+        channel_id     TEXT NOT NULL,
+        territory_id   TEXT NOT NULL,
+        confidence     TEXT NOT NULL CHECK (confidence IN ('high','medium','low')),
+        evidence_terms TEXT,
+        source         TEXT NOT NULL CHECK (source IN ('title','description','fingerprint','hint')),
+        classified_at  TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (video_id, territory_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_vt_channel ON video_territories(channel_id, territory_id);
+      CREATE INDEX IF NOT EXISTS idx_vt_territory ON video_territories(territory_id, confidence);
+
+      CREATE TABLE IF NOT EXISTS channel_territory_profiles (
+        channel_id          TEXT NOT NULL,
+        territory_id        TEXT NOT NULL,
+        role                TEXT NOT NULL CHECK (role IN ('core','accepted','test')),
+        confidence          TEXT NOT NULL CHECK (confidence IN ('high','medium','low')),
+        video_count         INTEGER NOT NULL DEFAULT 0,
+        recent_video_count  INTEGER NOT NULL DEFAULT 0,
+        median_views        REAL,
+        view_lift           REAL,
+        first_seen_at       TEXT,
+        last_seen_at        TEXT,
+        evidence_video_ids  TEXT,
+        updated_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (channel_id, territory_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ctp_channel ON channel_territory_profiles(channel_id, role);
+      CREATE INDEX IF NOT EXISTS idx_ctp_territory ON channel_territory_profiles(territory_id, role);
+    `);
+    console.log('[DB] Territory profiles migration complete');
+  } catch (e) {
+    console.warn('[DB] Territory profiles migration warning:', e.message);
+  }
+}
+
+function migrateRoutingProfile(database) {
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN routing_profile            TEXT`);           } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN routing_profile_confidence TEXT`);           } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN routing_profile_version    INTEGER DEFAULT 0`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN routing_profile_debug      TEXT`);           } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_ic_routing_profile ON ingested_channels(routing_profile) WHERE routing_profile IS NOT NULL`); } catch (_) {}
+  console.log('[DB] Routing profile migration complete');
+}
+
+function migrateFormatProfile(database) {
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN format_profile            TEXT`);               } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN format_profile_confidence TEXT`);               } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN format_profile_version    INTEGER DEFAULT 0`);  } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN format_profile_debug      TEXT`);               } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_ic_format_profile ON ingested_channels(format_profile) WHERE format_profile IS NOT NULL`); } catch (_) {}
+  console.log('[DB] Format profile migration complete');
+}
+
+function migrateCreatorMode(database) {
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN creator_mode            TEXT`);       } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN creator_mode_confidence REAL`);       } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN creator_mode_reason     TEXT`);       } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN creator_mode_version    INTEGER DEFAULT 0`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN podcast_fingerprint     TEXT`);       } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_ic_creator_mode ON ingested_channels(creator_mode) WHERE creator_mode IS NOT NULL`); } catch (_) {}
+  console.log('[DB] Creator mode migration complete');
+}
+
+function migrateContentFingerprint(database) {
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN content_fingerprint TEXT`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_ic_content_fp ON ingested_channels(content_fingerprint) WHERE content_fingerprint IS NOT NULL`); } catch (_) {}
+  console.log('[DB] Content fingerprint migration complete');
+}
+
+function migrateBenchmarkResults(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS benchmark_results (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date     TEXT NOT NULL,
+        version      TEXT NOT NULL,
+        channel_id   TEXT NOT NULL,
+        topic        TEXT NOT NULL,
+        score        REAL,
+        trend_label  TEXT,
+        rank_in_run  INTEGER,
+        ear          REAL,
+        por          REAL,
+        fmas         REAL,
+        owd          INTEGER,
+        rank_at_10   INTEGER,
+        peer_count   INTEGER,
+        created_at   TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_br_run_date ON benchmark_results(run_date);
+      CREATE INDEX IF NOT EXISTS idx_br_channel  ON benchmark_results(channel_id);
+      CREATE INDEX IF NOT EXISTS idx_br_version  ON benchmark_results(version);
+    `);
+  } catch (_) {}
+  console.log('[DB] Benchmark results migration complete');
+}
+
+function migrateEcosystemTables(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_topic_lifecycle (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id           TEXT NOT NULL,
+        phrase               TEXT NOT NULL,
+        stage                TEXT NOT NULL,
+        first_seen           TEXT,
+        last_seen            TEXT,
+        video_count          INTEGER DEFAULT 0,
+        avg_views_on_topic   REAL,
+        updated_at           TEXT DEFAULT (datetime('now')),
+        UNIQUE(channel_id, phrase)
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_ctl_channel ON creator_topic_lifecycle(channel_id)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_ctl_phrase  ON creator_topic_lifecycle(phrase)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_ctl_stage   ON creator_topic_lifecycle(stage)`);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS format_migration_trends (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        niche_id       INTEGER NOT NULL,
+        snapshot_date  TEXT NOT NULL,
+        format         TEXT NOT NULL,
+        share_pct      REAL,
+        median_views   REAL,
+        channel_count  INTEGER,
+        UNIQUE(niche_id, snapshot_date, format)
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_fmt_niche_date ON format_migration_trends(niche_id, snapshot_date)`);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS niche_evolution_snapshots (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        niche_id             INTEGER NOT NULL,
+        snapshot_date        TEXT NOT NULL,
+        avg_channel_subs     REAL,
+        median_vph           REAL,
+        top_phrase_entropy   REAL,
+        new_channel_30d      INTEGER,
+        churned_channel_30d  INTEGER,
+        UNIQUE(niche_id, snapshot_date)
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_nes_niche_date ON niche_evolution_snapshots(niche_id, snapshot_date)`);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS phrase_niche_pmi (
+        id          INTEGER PRIMARY KEY AUTOINCREMENT,
+        phrase      TEXT NOT NULL,
+        niche_id    INTEGER NOT NULL,
+        pmi_score   REAL,
+        updated_at  TEXT DEFAULT (datetime('now')),
+        UNIQUE(phrase, niche_id)
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_pmi_niche  ON phrase_niche_pmi(niche_id)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_pmi_phrase ON phrase_niche_pmi(phrase)`);
+
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS ecosystem_shifts (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        niche_id       INTEGER NOT NULL,
+        detected_at    TEXT NOT NULL,
+        shift_type     TEXT NOT NULL,
+        signals_fired  TEXT,
+        primary_phrase TEXT,
+        confidence     REAL,
+        resolved_at    TEXT
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_es_niche_date ON ecosystem_shifts(niche_id, detected_at)`);
+  } catch (_) {}
+  console.log('[DB] Ecosystem tables migration complete');
+}
+
+function migrateSaturationHistory(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS topic_saturation_history (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        niche_id       INTEGER NOT NULL,
+        phrase         TEXT NOT NULL,
+        snapshot_date  TEXT NOT NULL,
+        adoption_pct   REAL,
+        median_views   REAL,
+        channel_count  INTEGER,
+        stage          TEXT,
+        created_at     TEXT DEFAULT (datetime('now')),
+        UNIQUE(niche_id, phrase, snapshot_date)
+      )
+    `);
+    database.exec(`
+      CREATE INDEX IF NOT EXISTS idx_tsh_niche_phrase ON topic_saturation_history(niche_id, phrase);
+      CREATE INDEX IF NOT EXISTS idx_tsh_date         ON topic_saturation_history(snapshot_date);
+    `);
+  } catch (_) {}
+  console.log('[DB] Saturation history migration complete');
+}
+
+function migrateChannelIdentity(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_identity (
+        channel_id               TEXT PRIMARY KEY,
+        content_phrases          TEXT,
+        content_phrase_count     INTEGER,
+        brand_phrases            TEXT,
+        brand_contamination_pct  REAL,
+        script_type              TEXT,
+        primary_script_pct       REAL,
+        confidence_score         REAL,
+        confidence_tier          TEXT,
+        health_flags             TEXT,
+        peer_source_recommended  TEXT,
+        identity_type            TEXT,
+        is_hybrid                INTEGER DEFAULT 0,
+        topic_clusters           TEXT,
+        video_count_used         INTEGER,
+        latest_video_date        TEXT,
+        computed_at              TEXT DEFAULT (datetime('now')),
+        previous_content_phrases TEXT,
+        phrase_churn_pct         REAL
+      );
+      CREATE INDEX IF NOT EXISTS idx_ci_tier     ON channel_identity(confidence_tier);
+      CREATE INDEX IF NOT EXISTS idx_ci_computed ON channel_identity(computed_at);
+      CREATE INDEX IF NOT EXISTS idx_ci_hybrid   ON channel_identity(is_hybrid);
+      CREATE INDEX IF NOT EXISTS idx_ci_health   ON channel_identity(health_flags) WHERE health_flags IS NOT NULL;
+    `);
+  } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_channels ADD COLUMN identity_version INTEGER DEFAULT 0`); } catch (_) {}
+  console.log('[DB] Channel identity migration complete');
+}
+
+function migrateAIKeywords(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS ai_generated_keywords (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        niche        TEXT NOT NULL,
+        lang         TEXT NOT NULL DEFAULT 'en',
+        keyword      TEXT NOT NULL,
+        generated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        used_count   INTEGER NOT NULL DEFAULT 0,
+        last_used_at TEXT,
+        UNIQUE(niche, lang, keyword)
+      );
+      CREATE INDEX IF NOT EXISTS idx_aik_niche_lang ON ai_generated_keywords(niche, lang);
+      CREATE INDEX IF NOT EXISTS idx_aik_used       ON ai_generated_keywords(used_count, generated_at);
+    `);
+  } catch (_) {}
+  console.log('[DB] AI keywords migration complete');
+}
+
+function migrateTopicEventMetadata(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS topic_event_metadata (
+        topic             TEXT PRIMARY KEY,
+        topic_category    TEXT NOT NULL,   -- event|news_event|seasonal|recurring|evergreen
+        event_stage       TEXT,            -- pre_event|live_event|post_event|decay|dead|revived
+        confidence        TEXT DEFAULT 'medium',
+        calendar_date     TEXT,            -- YYYY-MM-DD anchor date for the event
+        next_occurrence   TEXT,            -- YYYY-MM-DD for recurring/seasonal
+        death_score       REAL DEFAULT 0,  -- 0-100 composite decay score
+        last_live_d0      REAL,            -- density when last in live_event (revival baseline)
+        stage_entered_at  TEXT,
+        detected_by       TEXT DEFAULT 'keyword',
+        updated_at        TEXT DEFAULT (datetime('now'))
+      )
+    `);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_tem_stage    ON topic_event_metadata(event_stage)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_tem_category ON topic_event_metadata(topic_category)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_tem_updated  ON topic_event_metadata(updated_at)`);
+  } catch (_) {}
+  console.log('[DB] Topic event metadata migration complete');
+}
+
+function migrateLifecycleHealth(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS lifecycle_daily_snapshots (
+        snapshot_date            TEXT PRIMARY KEY,
+        channels_with_lifecycle  INTEGER,
+        total_records            INTEGER,
+        regular_count            INTEGER,
+        saturated_count          INTEGER,
+        seed_count               INTEGER,
+        early_count              INTEGER,
+        pre_topic_count          INTEGER,
+        brand_contamination_pct  REAL,
+        content_match_pct        REAL,
+        computed_at              TEXT DEFAULT (datetime('now'))
+      )
+    `);
+  } catch (_) {}
+  console.log('[DB] Lifecycle health migration complete');
 }
 
 function migrateRssSweep(database) {
@@ -933,10 +1892,32 @@ function migrateRssSweep(database) {
 
 function migrateShorts(database) {
   try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN is_short INTEGER NOT NULL DEFAULT 0`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN thumbnail_url TEXT`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN thumbnail_width INTEGER`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN thumbnail_height INTEGER`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN thumbnail_aspect_ratio REAL`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN format_type TEXT NOT NULL DEFAULT 'unknown'`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN format_confidence TEXT NOT NULL DEFAULT 'low'`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN format_reason TEXT`); } catch (_) {}
+  try { database.exec(`ALTER TABLE ingested_videos ADD COLUMN ingest_source TEXT`); } catch (_) {}
   try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_is_short ON ingested_videos(is_short)`); } catch (_) {}
   try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_channel_short ON ingested_videos(channel_id, is_short)`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_format_type ON ingested_videos(format_type)`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_channel_format ON ingested_videos(channel_id, format_type)`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_ingest_source ON ingested_videos(ingest_source)`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_iv_format_reason_ingested ON ingested_videos(format_reason, ingested_at DESC)`); } catch (_) {}
+  // Guard: skip the expensive full-table UPDATE if already done once
+  try {
+    const done = database.get(`SELECT value FROM kv_store WHERE key = 'shorts_backfill_done'`);
+    if (done?.value === '1') return;
+  } catch (_) {}
   // Backfill existing rows — duration_seconds <= 60 = Short
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('shorts data backfill');
+    return;
+  }
   database.exec(`UPDATE ingested_videos SET is_short = CASE WHEN duration_seconds <= 60 THEN 1 ELSE 0 END WHERE duration_seconds IS NOT NULL`);
+  try { database.run(`INSERT OR REPLACE INTO kv_store (key, value) VALUES ('shorts_backfill_done', '1')`); } catch (_) {}
   const counts = database.get(`SELECT SUM(is_short) as shorts, COUNT(*) - SUM(is_short) as long_form FROM ingested_videos`);
   console.log(`[DB] Shorts migration complete — shorts=${counts.shorts?.toLocaleString()} long_form=${counts.long_form?.toLocaleString()}`);
 }
@@ -1185,6 +2166,10 @@ function seedDefaultScoringVersion(db) {
 }
 
 function seedGovernanceRoadmap(db) {
+  if (!shouldRunStartupDataBackfills()) {
+    logSkippedStartupBackfill('governance roadmap seed');
+    return;
+  }
   const layers = [
     {
       id: 'grm-001',
@@ -1427,10 +2412,20 @@ function migrateDrafts(database) {
         client_id  TEXT NOT NULL,
         channel_id TEXT,
         topic      TEXT,
+        draft_key  TEXT,
+        thread_id  TEXT,
         cards_json TEXT NOT NULL,
-        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
       CREATE INDEX IF NOT EXISTS idx_drafts_client ON content_drafts(client_id, created_at DESC);
+    `);
+    const cols = new Set(database.all(`PRAGMA table_info(content_drafts)`).map(c => c.name));
+    if (!cols.has('draft_key')) database.exec(`ALTER TABLE content_drafts ADD COLUMN draft_key TEXT`);
+    if (!cols.has('thread_id')) database.exec(`ALTER TABLE content_drafts ADD COLUMN thread_id TEXT`);
+    if (!cols.has('updated_at')) database.exec(`ALTER TABLE content_drafts ADD COLUMN updated_at TEXT`);
+    database.exec(`
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_drafts_key ON content_drafts(draft_key) WHERE draft_key IS NOT NULL;
     `);
   } catch (_) {}
   console.log('[DB] Drafts migration complete');
@@ -1453,8 +2448,457 @@ function migrateVoiceProfile(database) {
   console.log('[DB] creator_voice table ready');
 }
 
+function migrateIntelligenceDerivedTables(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS channel_evolution_summary (
+        channel_id        TEXT NOT NULL,
+        period            TEXT NOT NULL,
+        view_change_pct   REAL,
+        upload_delta      REAL,
+        sub_velocity      REAL,
+        topics_gained     TEXT,
+        topics_lost       TEXT,
+        topics_maintained TEXT,
+        peak_views        INTEGER,
+        avg_views         INTEGER,
+        top_video_title   TEXT,
+        notable_event     TEXT,
+        video_count       INTEGER,
+        computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (channel_id, period)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ces_period   ON channel_evolution_summary(period, view_change_pct DESC);
+      CREATE INDEX IF NOT EXISTS idx_ces_computed ON channel_evolution_summary(computed_at);
+
+      CREATE TABLE IF NOT EXISTS topic_community_stats (
+        topic             TEXT NOT NULL,
+        period            TEXT NOT NULL,
+        channel_count     INTEGER,
+        total_views       INTEGER,
+        avg_views         INTEGER,
+        velocity          REAL,
+        velocity_trend    TEXT,
+        top_channels      TEXT,
+        computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (topic, period)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tcs_velocity ON topic_community_stats(period, velocity DESC);
+      CREATE INDEX IF NOT EXISTS idx_tcs_topic    ON topic_community_stats(topic);
+
+      CREATE TABLE IF NOT EXISTS topic_signal_stats (
+        topic                     TEXT NOT NULL,
+        niche                     TEXT NOT NULL DEFAULT '',
+        region                    TEXT NOT NULL DEFAULT 'IN',
+        video_count_30d           INTEGER,
+        channel_count_30d         INTEGER,
+        channel_count_prior_30d   INTEGER,
+        avg_outperformance_ratio  REAL,
+        pct_videos_outperforming  REAL,
+        avg_vph_30d               REAL,
+        avg_vph_prior_30d         REAL,
+        vph_direction             TEXT,
+        foreign_channel_count_30d INTEGER,
+        foreign_lead_days         INTEGER,
+        signal_score              INTEGER,
+        signal_tier               TEXT,
+        score_breakdown           TEXT,
+        computed_at               TEXT NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (topic, niche, region)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tss_niche_score ON topic_signal_stats(niche, region, signal_score DESC);
+      CREATE INDEX IF NOT EXISTS idx_tss_computed    ON topic_signal_stats(computed_at);
+
+      CREATE TABLE IF NOT EXISTS trend_signal_outcomes (
+        topic                   TEXT,
+        niche                   TEXT,
+        flagged_at              TEXT,
+        signal_tier             TEXT,
+        signal_score            INTEGER,
+        score_breakdown         TEXT,
+        channel_count_60d_later INTEGER,
+        adoption_change_pct     REAL,
+        outcome_confirmed       INTEGER,
+        evaluated_at            TEXT
+      );
+    `);
+  } catch (e) {
+    console.warn('[DB] migrateIntelligenceDerivedTables partial error (likely already exists):', e.message);
+  }
+  console.log('[DB] Intelligence derived tables ready');
+}
+
+function migrateNarrativeLifecycle(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS narrative_lifecycle (
+        anchor            TEXT NOT NULL,
+        narrative         TEXT NOT NULL,
+        niche             TEXT NOT NULL,
+        narrative_type    TEXT NOT NULL DEFAULT 'news_event',
+        first_seen_at     TEXT,
+        last_seen_at      TEXT,
+        age_hours         REAL,
+        peak_channels     INTEGER DEFAULT 0,
+        current_channels  INTEGER DEFAULT 0,
+        saturation_pct    INTEGER DEFAULT 0,
+        velocity          INTEGER DEFAULT 0,
+        pub_rate_recent   REAL DEFAULT 0,
+        pub_rate_prior    REAL DEFAULT 0,
+        stage             TEXT NOT NULL DEFAULT 'seed',
+        window_score      INTEGER DEFAULT 100,
+        act_now_conf      INTEGER DEFAULT 0,
+        expiry_estimate   TEXT,
+        computed_at       TEXT,
+        PRIMARY KEY (anchor, narrative, niche)
+      );
+      CREATE INDEX IF NOT EXISTS idx_nl_niche_stage ON narrative_lifecycle(niche, stage);
+      CREATE INDEX IF NOT EXISTS idx_nl_computed    ON narrative_lifecycle(computed_at);
+    `);
+  } catch (_) {}
+  console.log('[DB] Narrative lifecycle migration complete');
+}
+
+function migrateVideoRepairCache(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS video_repair_cache (
+        video_id          TEXT PRIMARY KEY,
+        computed_at       TEXT NOT NULL,
+        repair_window     TEXT,
+        do_not_touch      INTEGER NOT NULL DEFAULT 0,
+        urgency_score     REAL,
+        fixability_score  REAL,
+        result_json       TEXT NOT NULL,
+        input_hash        TEXT,
+        ai_result_json    TEXT,
+        ai_computed_at    TEXT,
+        ai_input_hash     TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_vrc_repair_window ON video_repair_cache(repair_window);
+      CREATE INDEX IF NOT EXISTS idx_vrc_urgency       ON video_repair_cache(urgency_score DESC);
+    `);
+  } catch (_) {}
+  console.log('[DB] video_repair_cache migration complete');
+}
+
+function migrateCreatorDiscovery(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS creator_discovery_candidates (
+        candidate_key               TEXT    PRIMARY KEY,
+        handle                      TEXT,
+        candidate_type              TEXT    NOT NULL DEFAULT 'handle',
+        score                       REAL    NOT NULL DEFAULT 0,
+        total_mentions              INTEGER NOT NULL DEFAULT 0,
+        distinct_source_channels    INTEGER NOT NULL DEFAULT 0,
+        recent_mention_count        INTEGER NOT NULL DEFAULT 0,
+        title_collab_count          INTEGER NOT NULL DEFAULT 0,
+        description_mention_count   INTEGER NOT NULL DEFAULT 0,
+        high_quality_source_count   INTEGER NOT NULL DEFAULT 0,
+        thin_pool_relevance         REAL    NOT NULL DEFAULT 0,
+        status                      TEXT    NOT NULL DEFAULT 'pending',
+        resolved_channel_id         TEXT,
+        resolved_title              TEXT,
+        resolved_subscriber_count   INTEGER,
+        resolved_video_count        INTEGER,
+        resolved_country            TEXT,
+        resolved_language           TEXT,
+        rejection_reason            TEXT,
+        created_at                  TEXT    NOT NULL DEFAULT (datetime('now')),
+        updated_at                  TEXT    NOT NULL DEFAULT (datetime('now')),
+        resolved_at                 TEXT,
+        admitted_at                 TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cdc_status    ON creator_discovery_candidates(status);
+      CREATE INDEX IF NOT EXISTS idx_cdc_score     ON creator_discovery_candidates(score DESC);
+      CREATE INDEX IF NOT EXISTS idx_cdc_type      ON creator_discovery_candidates(candidate_type);
+      CREATE INDEX IF NOT EXISTS idx_cdc_resolved  ON creator_discovery_candidates(resolved_channel_id);
+
+      CREATE TABLE IF NOT EXISTS creator_discovery_edges (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        candidate_key     TEXT    NOT NULL,
+        source_channel_id TEXT,
+        source_video_id   TEXT,
+        evidence_type     TEXT    NOT NULL,
+        evidence_text     TEXT,
+        source_niche      TEXT,
+        observed_at       TEXT,
+        created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+        FOREIGN KEY (candidate_key) REFERENCES creator_discovery_candidates(candidate_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_cde_candidate ON creator_discovery_edges(candidate_key);
+      CREATE INDEX IF NOT EXISTS idx_cde_source_ch ON creator_discovery_edges(source_channel_id);
+      CREATE INDEX IF NOT EXISTS idx_cde_type      ON creator_discovery_edges(evidence_type);
+    `);
+  } catch (_) {}
+}
+
+function migrateWtpAttributionCandidates(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS wtp_attribution_candidates (
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id              TEXT    NOT NULL,
+        video_id                TEXT    NOT NULL,
+        video_title             TEXT,
+        video_published_at      TEXT,
+        idea_key                TEXT    NOT NULL,
+        topic                   TEXT,
+        rec_source              TEXT,
+        rec_type                TEXT,
+        had_export              INTEGER NOT NULL DEFAULT 0,
+        had_brief               INTEGER NOT NULL DEFAULT 0,
+        had_save                INTEGER NOT NULL DEFAULT 0,
+        recommendation_age_days INTEGER,
+        title_sim_score         REAL    NOT NULL DEFAULT 0,
+        behavior_score          INTEGER NOT NULL DEFAULT 0,
+        age_score               INTEGER NOT NULL DEFAULT 0,
+        title_score             INTEGER NOT NULL DEFAULT 0,
+        total_score             INTEGER NOT NULL DEFAULT 0,
+        match_confidence        TEXT    NOT NULL,
+        creator_confirmed       INTEGER,
+        confirmed_at            TEXT,
+        rejected_at             TEXT,
+        promoted                INTEGER NOT NULL DEFAULT 0,
+        promoted_at             TEXT,
+        computed_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(channel_id, video_id, idea_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_attr_channel
+        ON wtp_attribution_candidates(channel_id, computed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_attr_video
+        ON wtp_attribution_candidates(video_id, channel_id);
+      CREATE INDEX IF NOT EXISTS idx_wtp_attr_conf
+        ON wtp_attribution_candidates(match_confidence, promoted);
+      CREATE INDEX IF NOT EXISTS idx_wtp_attr_pending
+        ON wtp_attribution_candidates(channel_id, creator_confirmed, match_confidence)
+        WHERE creator_confirmed IS NULL AND match_confidence = 'possible';
+    `);
+  } catch (_) {}
+  console.log('[DB] WTP attribution candidates table ready');
+}
+
+function migrateWtpOutcomes(database) {
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS wtp_impressions (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id    TEXT NOT NULL,
+        session_id    TEXT,
+        idea_key      TEXT NOT NULL,
+        topic         TEXT NOT NULL,
+        rec_source    TEXT NOT NULL,
+        rec_type      TEXT,
+        score         INTEGER,
+        confidence    TEXT,
+        rank_position INTEGER,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_imp_channel  ON wtp_impressions(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_imp_source   ON wtp_impressions(rec_source, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_imp_key      ON wtp_impressions(idea_key);
+
+      CREATE TABLE IF NOT EXISTS wtp_saves (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id    TEXT NOT NULL,
+        idea_key      TEXT NOT NULL,
+        topic         TEXT NOT NULL,
+        rec_source    TEXT NOT NULL,
+        rec_type      TEXT,
+        score         INTEGER,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_saves_channel ON wtp_saves(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_saves_source  ON wtp_saves(rec_source, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_saves_key     ON wtp_saves(idea_key);
+
+      CREATE TABLE IF NOT EXISTS wtp_brief_generations (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id    TEXT NOT NULL,
+        idea_key      TEXT NOT NULL,
+        topic         TEXT NOT NULL,
+        rec_source    TEXT NOT NULL,
+        rec_type      TEXT,
+        score         INTEGER,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_brief_channel ON wtp_brief_generations(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_brief_source  ON wtp_brief_generations(rec_source, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_brief_key     ON wtp_brief_generations(idea_key);
+
+      CREATE TABLE IF NOT EXISTS wtp_exports (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id    TEXT NOT NULL,
+        idea_key      TEXT NOT NULL,
+        topic         TEXT NOT NULL,
+        rec_source    TEXT NOT NULL,
+        rec_type      TEXT,
+        score         INTEGER,
+        export_format TEXT,
+        created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_exports_channel ON wtp_exports(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_exports_source  ON wtp_exports(rec_source, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_exports_key     ON wtp_exports(idea_key);
+
+      CREATE TABLE IF NOT EXISTS wtp_video_matches (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        channel_id       TEXT NOT NULL,
+        idea_key         TEXT NOT NULL,
+        topic            TEXT NOT NULL,
+        rec_source       TEXT NOT NULL,
+        rec_type         TEXT,
+        score            INTEGER,
+        video_id         TEXT,
+        video_title      TEXT,
+        days_to_publish  INTEGER,
+        match_confidence TEXT,
+        created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_match_channel ON wtp_video_matches(channel_id, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_match_source  ON wtp_video_matches(rec_source, created_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_match_key     ON wtp_video_matches(idea_key);
+    `);
+  } catch (_) {}
+  // Extend wtp_impressions with per-idea signal telemetry columns.
+  // These are nullable so existing rows and all analytics queries are unaffected.
+  // The try/catch pattern is the project standard for idempotent ADD COLUMN migrations.
+  try { database.exec(`ALTER TABLE wtp_impressions ADD COLUMN trend_bonus INTEGER`); } catch (_) {}
+  try { database.exec(`ALTER TABLE wtp_impressions ADD COLUMN gap_bonus   INTEGER`); } catch (_) {}
+
+  // Generation trace table: records the full concept-centric pipeline for every
+  // original-bet idea that ships to the UI. Used by recommendationQualityAudit.js.
+  // Never returned in API responses — audit tooling only.
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS wtp_generation_traces (
+      id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+      idea_key            TEXT NOT NULL,
+      channel_id          TEXT NOT NULL,
+      raw_subject         TEXT,
+      concept_id          TEXT,
+      concept_label       TEXT,
+      concept_confidence  REAL,
+      dna_affinity_score  REAL,
+      dna_affinity_reason TEXT,
+      family              TEXT,
+      archetype           TEXT,
+      generated_title     TEXT,
+      recommendation_title TEXT,
+      created_at          TEXT NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  try {
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_wtp_trace_channel ON wtp_generation_traces(channel_id, created_at DESC)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_wtp_trace_concept ON wtp_generation_traces(concept_id)`);
+  } catch (_) {}
+  // Add rec_source column for multi-source trace coverage (Phase 0B)
+  try { database.exec(`ALTER TABLE wtp_generation_traces ADD COLUMN rec_source TEXT`); } catch (_) {}
+  try { database.exec(`CREATE INDEX IF NOT EXISTS idx_wtp_trace_source ON wtp_generation_traces(rec_source, created_at DESC)`); } catch (_) {}
+  // Backfill existing DNA-only rows
+  try { database.exec(`UPDATE wtp_generation_traces SET rec_source = 'dna_original_bets' WHERE rec_source IS NULL`); } catch (_) {}
+  // Add wtp_score: unified 0-100 ranking signal across all sources (P0 normalization fix)
+  try { database.exec(`ALTER TABLE wtp_generation_traces ADD COLUMN wtp_score INTEGER`); } catch (_) {}
+
+  // Gold set for human-reviewed recommendation quality benchmarking (Phase 1B)
+  database.exec(`
+    CREATE TABLE IF NOT EXISTS recommendation_gold_set (
+      id              INTEGER PRIMARY KEY AUTOINCREMENT,
+      recommendation  TEXT NOT NULL,
+      topic           TEXT NOT NULL,
+      channel_id      TEXT,
+      creator_niche   TEXT,
+      creator_family  TEXT,
+      rec_source      TEXT NOT NULL,
+      quality_label   TEXT NOT NULL CHECK(quality_label IN ('excellent','average','poor')),
+      reviewer_notes  TEXT,
+      failure_mode    TEXT,
+      reviewed_at     TEXT NOT NULL DEFAULT (datetime('now')),
+      trace_id        INTEGER REFERENCES wtp_generation_traces(id)
+    )
+  `);
+  try {
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_gold_label  ON recommendation_gold_set(quality_label)`);
+    database.exec(`CREATE INDEX IF NOT EXISTS idx_gold_source ON recommendation_gold_set(rec_source, quality_label)`);
+  } catch (_) {}
+
+  console.log('[DB] WTP outcome tracking tables ready');
+}
+
+function migrateWtpOutcomeQuality(database) {
+  // Extend wtp_video_matches with performance columns (silently skip if already present)
+  const matchCols = [
+    ['views_7d',                        'INTEGER'],
+    ['views_30d',                       'INTEGER'],
+    ['relative_performance',            'REAL'],
+    ['percentile_vs_channel',           'REAL'],
+    ['percentile_vs_recommendation_source', 'REAL'],
+    ['outcome_class',                   'TEXT'],
+    ['performance_computed_at',         'TEXT'],
+  ];
+  for (const [col, def] of matchCols) {
+    try { database.exec(`ALTER TABLE wtp_video_matches ADD COLUMN ${col} ${def}`); } catch (_) {}
+  }
+
+  // wtp_outcomes: one row per matched recommendation, stores computed quality fields
+  try {
+    database.exec(`
+      CREATE TABLE IF NOT EXISTS wtp_outcomes (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        idea_key                 TEXT NOT NULL,
+        channel_id               TEXT NOT NULL,
+        video_id                 TEXT NOT NULL,
+        -- source metadata (denormalized for reporting queries)
+        rec_source               TEXT NOT NULL,
+        rec_type                 TEXT,
+        rec_score                INTEGER,
+        confidence               TEXT,
+        topic                    TEXT NOT NULL,
+        niche                    TEXT,
+        -- raw performance
+        views_7d                 INTEGER,
+        views_30d                INTEGER,
+        -- baseline & relative metrics
+        channel_baseline_views   REAL,
+        niche_median_views_7d    REAL,
+        relative_lift            REAL,
+        percentile_vs_channel    REAL,
+        percentile_vs_source     REAL,
+        -- classification
+        outcome_class            TEXT NOT NULL,
+        -- provenance
+        days_to_publish          INTEGER,
+        match_confidence         TEXT,
+        computed_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(idea_key, video_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wtp_out_channel   ON wtp_outcomes(channel_id, computed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_out_source    ON wtp_outcomes(rec_source, outcome_class);
+      CREATE INDEX IF NOT EXISTS idx_wtp_out_niche     ON wtp_outcomes(niche, rec_source);
+      CREATE INDEX IF NOT EXISTS idx_wtp_out_class     ON wtp_outcomes(outcome_class, computed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_wtp_out_key       ON wtp_outcomes(idea_key);
+    `);
+  } catch (_) {}
+  console.log('[DB] WTP outcome quality tables ready');
+}
+
 function closeDb() {
   if (db) { try { db.close(); } catch (_) {} db = null; }
 }
 
-module.exports = { getDb, closeDb };
+// PRAGMA busy_timeout already makes SQLite block internally for up to 60s on a write before
+// throwing SQLITE_BUSY. That's usually enough, but a long batch job (e.g. the nightly pipeline
+// running thousands of inserts in one transaction) can occasionally hold the write lock past that
+// window. Retrying gives the write another full busy_timeout wait instead of failing outright.
+function runWithRetry(database, sql, params = [], attempts = 3) {
+  for (let i = 1; i <= attempts; i++) {
+    try {
+      return database.run(sql, params);
+    } catch (e) {
+      if (e.code !== 'SQLITE_BUSY' || i === attempts) throw e;
+      console.warn(`[DB] write busy, retrying (${i}/${attempts})...`);
+    }
+  }
+}
+
+module.exports = { getDb, closeDb, runWithRetry };

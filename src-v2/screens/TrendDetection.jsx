@@ -1,107 +1,229 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
-import { T, spring, ease } from '../tokens';
+import { T, ease } from '../tokens';
 
-const SCORING_URL = 'http://localhost:3002';
+const API = 'http://localhost:3002';
 
 const NICHES = [
-  'all', 'geopolitics', 'defence', 'politics', 'selfimprovement', 'education',
-  'technology', 'finance', 'business', 'entertainment', 'gaming', 'lifestyle',
-  'health', 'fitness', 'food', 'travel', 'music', 'comedy', 'news', 'science',
-  'philosophy', 'sports',
+  'all','politics','news','entertainment','education','technology','finance',
+  'business','sports','music','lifestyle','gaming','health','fitness',
+  'food','travel','comedy','science','philosophy','general',
 ];
 
-function growthRate(thisWeek, lastWeek) {
-  if (!lastWeek && !thisWeek) return 0;
-  if (!lastWeek) return 100;
-  return Math.round(((thisWeek - lastWeek) / lastWeek) * 100);
+const TIER_CONF = {
+  rising:   { label: 'RISING',   color: T.success,  bg: 'rgba(18,217,138,0.1)',  border: 'rgba(18,217,138,0.3)'  },
+  emerging: { label: 'EMERGING', color: '#f59e0b',   bg: 'rgba(245,158,11,0.1)', border: 'rgba(245,158,11,0.3)'  },
+  stable:   { label: 'STABLE',   color: T.muted,     bg: 'rgba(255,255,255,0.04)', border: T.border              },
+  peaking:  { label: 'PEAKING',  color: '#f87171',   bg: 'rgba(248,113,113,0.08)', border: 'rgba(248,113,113,0.25)'},
+  noise:    { label: 'NOISE',    color: T.subtle,    bg: 'rgba(255,255,255,0.02)', border: T.border               },
+};
+
+function fmtViews(n) {
+  if (!n) return '—';
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000)     return `${Math.round(n / 1_000)}K`;
+  return String(Math.round(n));
 }
 
-function growthLabel(rate) {
-  if (rate >= 100) return { label: `+${rate}% new`, color: T.success };
-  if (rate >= 30)  return { label: `+${rate}%`,     color: T.success };
-  if (rate >= 0)   return { label: `+${rate}%`,     color: T.accent  };
-  return               { label: `${rate}%`,         color: T.muted   };
+function signalCount(bd) {
+  if (!bd) return 0;
+  let n = 0;
+  if ((bd.outperformance?.pts || 0) > 0)          n++;
+  if ((bd.adoption?.pts       || 0) > 0)          n++;
+  if (bd.trajectory?.direction === 'rising')      n++;
+  if ((bd.foreign?.pts        || 0) > 0)          n++;
+  return n;
 }
 
-function NicheTag({ niche, count }) {
+function ConfidenceBadge({ bd }) {
+  const n = signalCount(bd);
+  const conf = n >= 3 ? { label: 'STRONG SIGNAL', color: T.success,  bg: 'rgba(18,217,138,0.12)'  }
+             : n === 2 ? { label: 'EARLY SIGNAL',  color: '#f59e0b',   bg: 'rgba(245,158,11,0.12)'  }
+             :           { label: 'WEAK SIGNAL',   color: T.subtle,    bg: 'rgba(255,255,255,0.06)' };
   return (
     <span style={{
-      fontSize: '0.62rem', padding: '2px 7px', borderRadius: 20,
-      background: 'rgba(157,111,255,0.12)', border: '1px solid rgba(157,111,255,0.25)',
-      color: T.accent, whiteSpace: 'nowrap',
+      fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.06em',
+      padding: '2px 7px', borderRadius: 4,
+      color: conf.color, background: conf.bg,
     }}>
-      {niche} · {count}
+      {conf.label} · {n} signal{n !== 1 ? 's' : ''}
     </span>
   );
 }
 
-function TopicCard({ topic, index }) {
-  const [open, setOpen] = useState(false);
-  const rate    = growthRate(topic.added_this_week, topic.added_last_week);
-  const growth  = growthLabel(rate);
-  const isNew   = topic.added_last_week === 0 && topic.added_this_week > 0;
-  const isCross = topic.niches && topic.niches.length > 1;
+function EvidenceRow({ icon, label, value, sub, valueColor }) {
+  return (
+    <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10, marginBottom: 10 }}>
+      <span style={{ fontSize: '0.8rem', width: 18, flexShrink: 0, marginTop: 1 }}>{icon}</span>
+      <div style={{ flex: 1 }}>
+        <div style={{ fontSize: '0.7rem', color: T.muted, marginBottom: 2 }}>{label}</div>
+        <div style={{ fontSize: '0.82rem', fontWeight: 600, color: valueColor || T.text }}>{value}</div>
+        {sub && <div style={{ fontSize: '0.68rem', color: T.subtle, marginTop: 1 }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
 
-  const badge = isNew
-    ? { label: 'NEW THIS WEEK', color: T.success, bg: T.successDim }
-    : isCross
-    ? { label: 'CROSS-NICHE',   color: T.accent,  bg: T.accentGlow }
-    : topic.added_this_week > 3
-    ? { label: 'FAST MOVING',   color: T.warning, bg: T.warningDim }
-    : null;
+function VideoList({ topic, niche, samples }) {
+  // Video-grounded signals carry their example videos inline (they're guaranteed to match the
+  // topic, since the topic is a phrase from the title). Use them directly; only fall back to a
+  // fetch if none were provided.
+  const [videos, setVideos] = useState(Array.isArray(samples) ? samples : null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (videos !== null) return;
+    setLoading(true);
+    const p = new URLSearchParams({ topic });
+    if (niche) p.set('niche', niche);
+    fetch(`${API}/api/intel/signals/videos?${p}`)
+      .then(r => r.json())
+      .then(d => { setVideos(d.videos || []); setLoading(false); })
+      .catch(() => { setVideos([]); setLoading(false); });
+  }, []);
+
+  if (loading) return <div style={{ fontSize: '0.72rem', color: T.muted, padding: '8px 0' }}>Loading videos…</div>;
+  if (!videos?.length) return <div style={{ fontSize: '0.72rem', color: T.muted, padding: '8px 0' }}>No recent videos found.</div>;
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginTop: 6 }}>
+      {videos.map((v, i) => (
+        <div key={i} style={{
+          padding: '7px 10px', borderRadius: 8,
+          background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}`,
+        }}>
+          <div style={{ fontSize: '0.78rem', color: T.text, marginBottom: 3, lineHeight: 1.35 }}>{v.title}</div>
+          <div style={{ display: 'flex', gap: 12 }}>
+            <span style={{ fontSize: '0.68rem', color: T.accent, fontWeight: 600 }}>{fmtViews(v.views)} views</span>
+            <span style={{ fontSize: '0.68rem', color: T.muted }}>{v.channel_name}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// "Act on it" — sends the topic (with why-it's-trending context) to Copilot, which auto-generates
+// angle ideas tailored to the creator's channel (niche/format/voice), reusing the existing
+// `copilot:open` prompt path so personalization happens through the same DNA-aware chat pipeline.
+// Without a loaded channel there's no DNA to personalize against, so it prompts the user to load one
+// instead of opening a generic chat.
+function ActOnItButton({ prompt, channel, style }) {
+  const [hint, setHint] = useState(false);
+  const handleClick = (e) => {
+    e.stopPropagation();
+    if (!channel?.channel_id) {
+      setHint(true);
+      setTimeout(() => setHint(false), 2600);
+      return;
+    }
+    window.dispatchEvent(new CustomEvent('copilot:open', { detail: { prompt } }));
+  };
+  return (
+    <div style={{ position: 'relative', display: 'inline-flex', flexShrink: 0, ...style }}>
+      <button
+        onClick={handleClick}
+        style={{
+          padding: '4px 11px', borderRadius: 7, cursor: 'pointer', whiteSpace: 'nowrap',
+          background: T.accentGlow, border: `1px solid ${T.accentBorder}`,
+          color: T.accent, fontSize: '0.7rem', fontWeight: 600,
+        }}
+      >
+        ⚡ Act on it
+      </button>
+      {hint && (
+        <div style={{
+          position: 'absolute', bottom: '120%', right: 0, whiteSpace: 'nowrap', zIndex: 5,
+          padding: '5px 10px', borderRadius: 7, fontSize: '0.68rem', fontWeight: 500,
+          background: '#1c1c22', border: `1px solid ${T.border}`, color: T.muted,
+        }}>
+          Open a channel first to get personalized ideas
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SignalCard({ signal, index, activeNiche, channel }) {
+  const [open, setOpen]         = useState(false);
+  const [showVideos, setShowVideos] = useState(false);
+
+  const tier = TIER_CONF[signal.signal_tier] || TIER_CONF.noise;
+  const bd   = signal.score_breakdown;
+  const dir  = signal.vph_direction || 'stable';
+  const dirIcon  = dir === 'rising' ? '↑' : dir === 'falling' ? '↓' : '→';
+  const actPrompt = `"${signal.topic}" is trending in ${signal.niche}` +
+    (signal.channel_count_30d ? ` — ${signal.channel_count_30d} channels are posting about it this month` : '') +
+    (dir === 'rising' ? ' and it\'s still accelerating' : '') + `.` +
+    ` Give me 3 different video angle ideas for how I could cover this on my channel, tailored to my niche and the type of content I usually make.`;
+  const dirColor = dir === 'rising' ? T.success : dir === 'falling' ? '#f87171' : T.muted;
 
   return (
     <motion.div
       layout
-      initial={{ opacity: 0, y: 12 }}
+      initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ delay: index * 0.03, duration: 0.25, ease }}
-      onClick={() => setOpen(o => !o)}
+      transition={{ delay: index * 0.02, duration: 0.22, ease }}
       style={{
-        ...T.glassCard,
-        borderRadius: 14, padding: '14px 16px',
-        cursor: 'pointer', userSelect: 'none',
-        borderColor: open ? 'rgba(157,111,255,0.4)' : undefined,
+        borderRadius: 14, overflow: 'hidden',
+        border: `1px solid ${open ? tier.border : T.border}`,
+        background: open ? tier.bg : 'rgba(255,255,255,0.03)',
+        transition: 'border-color 0.2s, background 0.2s',
       }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-        {/* rank */}
-        <span style={{ fontSize: '0.65rem', color: T.subtle, width: 22, flexShrink: 0, textAlign: 'right' }}>
-          #{index + 1}
-        </span>
+      {/* ── Collapsed row ── */}
+      <div
+        onClick={() => setOpen(o => !o)}
+        style={{
+          padding: '13px 16px', cursor: 'pointer', userSelect: 'none',
+          display: 'flex', alignItems: 'center', gap: 12,
+        }}
+      >
+        {/* tier dot + label */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
+          <span style={{ width: 7, height: 7, borderRadius: '50%', background: tier.color, display: 'inline-block', flexShrink: 0 }} />
+          <span style={{ fontSize: '0.6rem', fontWeight: 700, letterSpacing: '0.07em', color: tier.color, width: 60 }}>
+            {tier.label}
+          </span>
+        </div>
 
         {/* topic name */}
-        <span style={{ flex: 1, fontSize: '0.9rem', color: T.text, fontWeight: 500, textTransform: 'capitalize' }}>
-          {topic.topic}
+        <span style={{ fontSize: '0.88rem', color: T.text, fontWeight: 500, textTransform: 'capitalize', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+          {signal.topic}
         </span>
-
-        {/* badge */}
-        {badge && (
-          <span style={{
-            fontSize: '0.58rem', fontWeight: 700, letterSpacing: '0.05em',
-            padding: '2px 7px', borderRadius: 20,
-            color: badge.color, background: badge.bg,
-            border: `1px solid ${badge.color}40`,
-          }}>
-            {badge.label}
+        {/* region chip — flags trends that are NOT primarily India (e.g. MENA "arabic drama series") */}
+        {signal.region && signal.region !== 'IN' && (
+          <span style={{ fontSize: '0.58rem', fontWeight: 700, color: '#38bdf8', background: 'rgba(56,189,248,0.12)', border: '1px solid rgba(56,189,248,0.3)', borderRadius: 5, padding: '1px 6px', flexShrink: 0 }}>
+            🌍 {signal.region}
           </span>
         )}
+        <span style={{ flex: 1 }} />
 
-        {/* growth */}
-        <span style={{ fontSize: '0.75rem', color: growth.color, fontWeight: 600, minWidth: 48, textAlign: 'right' }}>
-          {growth.label}
-        </span>
+        {/* stats strip */}
+        <div style={{ display: 'flex', gap: 14, flexShrink: 0, alignItems: 'center' }}>
+          <span style={{ fontSize: '0.72rem', color: T.muted }}>
+            {signal.channel_count_30d} ch
+          </span>
+          {signal.avg_outperformance_ratio > 0 && (
+            <span style={{ fontSize: '0.72rem', color: T.accent, fontWeight: 600 }}>
+              {signal.avg_outperformance_ratio.toFixed(1)}×
+            </span>
+          )}
+          <span style={{ fontSize: '0.8rem', color: dirColor, fontWeight: 700 }}>{dirIcon}</span>
+          <span style={{ fontSize: '0.72rem', color: T.subtle, width: 28, textAlign: 'right' }}>
+            {signal.signal_score}
+          </span>
+        </div>
 
-        {/* stats */}
-        <span style={{ fontSize: '0.68rem', color: T.muted, minWidth: 80, textAlign: 'right' }}>
-          {topic.total_channels} channels
-        </span>
+        <ActOnItButton prompt={actPrompt} channel={channel} />
 
-        {/* chevron */}
-        <span style={{ color: T.subtle, fontSize: '0.8rem', transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s' }}>▾</span>
+        <span style={{
+          color: T.subtle, fontSize: '0.75rem', flexShrink: 0,
+          transform: open ? 'rotate(180deg)' : 'none', transition: 'transform 0.2s',
+        }}>▾</span>
       </div>
 
+      {/* ── Expanded evidence panel ── */}
       <AnimatePresence>
         {open && (
           <motion.div
@@ -111,34 +233,97 @@ function TopicCard({ topic, index }) {
             transition={{ duration: 0.2 }}
             style={{ overflow: 'hidden' }}
           >
-            <div style={{ paddingTop: 12, borderTop: `1px solid rgba(255,255,255,0.08)`, marginTop: 12 }}>
-              {/* weekly breakdown */}
-              <div style={{ display: 'flex', gap: 20, marginBottom: 10 }}>
-                {[
-                  { label: 'This week',  val: topic.added_this_week },
-                  { label: 'Last week',  val: topic.added_last_week },
-                  { label: 'This month', val: topic.added_this_month },
-                  { label: 'Total',      val: topic.total_channels  },
-                ].map(s => (
-                  <div key={s.label} style={{ textAlign: 'center' }}>
-                    <div style={{ fontSize: '1rem', fontWeight: 700, color: T.text }}>{s.val}</div>
-                    <div style={{ fontSize: '0.62rem', color: T.muted }}>{s.label}</div>
-                  </div>
-                ))}
+            <div style={{
+              padding: '14px 16px 16px',
+              borderTop: `1px solid rgba(255,255,255,0.07)`,
+            }}>
+
+              {/* confidence + niche */}
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+                <ConfidenceBadge bd={bd} />
+                <span style={{ fontSize: '0.68rem', color: T.muted, background: 'rgba(255,255,255,0.05)', padding: '2px 7px', borderRadius: 4 }}>
+                  {signal.niche}
+                </span>
               </div>
 
-              {/* niche spread */}
-              {topic.niches && topic.niches.length > 0 && (
-                <div>
-                  <div style={{ fontSize: '0.65rem', color: T.muted, marginBottom: 5 }}>
-                    {isCross ? `Spreading across ${topic.niches.length} niches:` : 'Niche:'}
-                  </div>
-                  <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap' }}>
-                    {topic.niches.map(n => (
-                      <NicheTag key={n.niche} niche={n.niche} count={n.channels} />
-                    ))}
-                  </div>
-                </div>
+              <div style={{ fontSize: '0.65rem', fontWeight: 700, color: T.muted, letterSpacing: '0.08em', marginBottom: 10 }}>
+                WHY WE'RE SAYING THIS
+              </div>
+
+              {/* Signal 1 — View performance */}
+              {bd?.outperformance && (
+                <EvidenceRow
+                  icon="👁"
+                  label="View performance"
+                  value={`${signal.channel_count_30d} channels posting · ${bd.outperformance.ratio}× their normal views`}
+                  sub={bd.outperformance.pct_beating > 0
+                    ? `${bd.outperformance.pct_beating}% of videos beat their channel baseline`
+                    : null}
+                  valueColor={bd.outperformance.pts > 0 ? T.success : T.text}
+                />
+              )}
+
+              {/* Signal 3 — Trend direction */}
+              {bd?.trajectory && (
+                <EvidenceRow
+                  icon="📈"
+                  label="Trend direction"
+                  value={
+                    dir === 'rising'  ? 'Views accelerating — still climbing'  :
+                    dir === 'falling' ? 'Views declining — may have peaked'    :
+                    'View pace is holding steady'
+                  }
+                  sub={bd.trajectory.vpd_now > 0 && bd.trajectory.vpd_prior > 0
+                    ? `${fmtViews(bd.trajectory.vpd_prior)} → ${fmtViews(bd.trajectory.vpd_now)} avg views/day`
+                    : null}
+                  valueColor={dir === 'rising' ? T.success : dir === 'falling' ? '#f87171' : T.muted}
+                />
+              )}
+
+              {/* Signal 2 — Adoption */}
+              {bd?.adoption && (
+                <EvidenceRow
+                  icon="📡"
+                  label="Creator adoption"
+                  value={`${bd.adoption.channels_now} channels posted this month`}
+                  sub={bd.adoption.channels_prior > 0
+                    ? `vs ${bd.adoption.channels_prior} last month (${bd.adoption.acceleration > 0 ? '+' : ''}${Math.round(bd.adoption.acceleration * 100)}% change)`
+                    : 'First month of tracking'}
+                  valueColor={bd.adoption.pts > 0 ? T.accent : T.muted}
+                />
+              )}
+
+              {/* Signal 4 — Foreign signal */}
+              {signal.foreign_channel_count_30d > 0 && (
+                <EvidenceRow
+                  icon="🌍"
+                  label="Foreign signal"
+                  value={
+                    signal.foreign_lead_days > 0
+                      ? `US/UK creators picked this up ${signal.foreign_lead_days} days before Indian creators`
+                      : `${signal.foreign_channel_count_30d} US/UK/AU channels posting on this topic`
+                  }
+                  sub={signal.foreign_lead_days == null ? 'Lead days tracking starts ~July 2026' : null}
+                  valueColor={T.accent}
+                />
+              )}
+
+              {/* Example videos toggle */}
+              <div style={{ marginTop: 12 }}>
+                <button
+                  onClick={e => { e.stopPropagation(); setShowVideos(v => !v); }}
+                  style={{
+                    padding: '5px 12px', borderRadius: 7, cursor: 'pointer',
+                    background: 'rgba(255,255,255,0.06)', border: `1px solid ${T.border}`,
+                    color: T.muted, fontSize: '0.72rem', fontWeight: 500,
+                  }}
+                >
+                  {showVideos ? 'Hide videos' : 'See example videos →'}
+                </button>
+              </div>
+
+              {showVideos && (
+                <VideoList topic={signal.topic} niche={signal.niche} samples={signal.samples} />
               )}
             </div>
           </motion.div>
@@ -149,128 +334,267 @@ function TopicCard({ topic, index }) {
 }
 
 export default function TrendDetection({ channel }) {
-  const [topics,      setTopics]      = useState([]);
-  const [loading,     setLoading]     = useState(false);
-  const [error,       setError]       = useState(null);
-  const [niche,       setNiche]       = useState('all');
-  const [tab,         setTab]         = useState('velocity'); // velocity | cross_niche | new_this_week
-
-  const defaultNiche = channel?.niche || 'all';
+  const [signals,   setSignals]   = useState([]);
+  const [coming,    setComing]    = useState([]);
+  const [forYou,    setForYou]    = useState({ direct: [], crossover: [] });
+  const [tierCounts, setTierCounts] = useState({});
+  const [loading,   setLoading]   = useState(false);
+  const [error,     setError]     = useState(null);
+  const [stale,     setStale]     = useState(false);
+  const [niche,     setNiche]     = useState('all');
+  const [activeTier, setActiveTier] = useState('rising');
+  const [sort,      setSort]      = useState('score');
 
   useEffect(() => {
-    if (channel?.niche && niche === 'all') setNiche(channel.niche);
+    if (channel?.niche && niche === 'all') {
+      let n = channel.niche.toLowerCase().replace(/\s+/g, '');
+      // 'business' maps to 'finance' — business topics score as stable but finance has signal
+      if (n === 'business') n = 'finance';
+      if (NICHES.includes(n)) setNiche(n);
+    }
   }, [channel]);
 
-  useEffect(() => {
+  const load = useCallback(() => {
     setLoading(true);
     setError(null);
-    const params = new URLSearchParams({ limit: '80' });
-    if (niche && niche !== 'all') params.set('niche', niche);
-    fetch(`${SCORING_URL}/api/intel/trends/topics?${params}`)
+    setSignals([]);
+    setComing([]);
+    setForYou({ direct: [], crossover: [] });
+    // "For You" — personalized: DIRECT trends in the channel's niche + CROSS-OVER trends angled in.
+    if (activeTier === 'foryou') {
+      if (!channel?.channel_id) { setError('Open a channel to see personalized trends'); setLoading(false); return; }
+      fetch(`${API}/api/intel/trends/for-you?channel_id=${encodeURIComponent(channel.channel_id)}`)
+        .then(r => r.json())
+        .then(d => { setForYou({ direct: d.direct || [], crossover: d.crossover || [] }); setLoading(false); })
+        .catch(e => { setError(e.message); setLoading(false); });
+      return;
+    }
+    // "Coming to India" is a separate precomputed feed (foreign-led topics not yet domestic).
+    if (activeTier === 'coming') {
+      const p = new URLSearchParams({ limit: '40' });
+      if (niche !== 'all') p.set('niche', niche);
+      fetch(`${API}/api/intel/trends/coming-to-india?${p}`)
+        .then(r => r.json())
+        .then(d => { setComing(d.topics || []); setStale(d.data_stale || false); setLoading(false); })
+        .catch(e => { setError(e.message); setLoading(false); });
+      return;
+    }
+    const p = new URLSearchParams({ tier: activeTier, sort, limit: '80' });
+    if (niche !== 'all') p.set('niche', niche);
+    // Video-grounded trends (specific title-phrases; examples always match). Replaces the old
+    // channel-topic /signals feed whose example videos didn't match the topic.
+    fetch(`${API}/api/intel/trends/video-signals?${p}`)
       .then(r => r.json())
-      .then(d => { setTopics(d.topics || []); setLoading(false); })
+      .then(d => {
+        setTierCounts(d.tier_counts || {});
+        setStale(d.data_stale || false);
+        setSignals(d.signals || []);
+        setLoading(false);
+      })
       .catch(e => { setError(e.message); setLoading(false); });
-  }, [niche]);
+  }, [niche, activeTier, sort, channel?.channel_id]);
 
-  const filtered = tab === 'velocity'
-    ? [...topics].sort((a, b) => b.added_this_week - a.added_this_week)
-    : tab === 'new_this_week'
-    ? topics.filter(t => t.added_last_week === 0 && t.added_this_week > 0)
-    : topics.filter(t => t.niches && t.niches.length > 1)
-        .sort((a, b) => b.niches.length - a.niches.length);
+  useEffect(() => { load(); }, [load]);
 
-  const tabs = [
-    { id: 'velocity',     label: '⚡ Fastest growing' },
-    { id: 'new_this_week',label: '✨ New this week'   },
-    { id: 'cross_niche',  label: '↔ Cross-niche'     },
+  const TIERS = [
+    { id: 'foryou',   label: '🎯 For You' },
+    { id: 'rising',   label: 'Rising' },
+    { id: 'emerging', label: 'Emerging' },
+    { id: 'stable',   label: 'Stable' },
+    { id: 'all',      label: 'All' },
+    { id: 'coming',   label: '🌍 Coming to India' },
   ];
 
   return (
-    <div style={{ maxWidth: 820, margin: '0 auto', padding: '0 16px 48px' }}>
+    <div style={{ maxWidth: 860, margin: '0 auto', padding: '0 16px 60px' }}>
 
       {/* header */}
-      <div style={{ marginBottom: 24 }}>
-        <h2 style={{ fontSize: '1.35rem', fontWeight: 700, color: T.text, margin: 0 }}>
-          Trend Detection
-        </h2>
-        <p style={{ fontSize: '0.8rem', color: T.muted, marginTop: 4 }}>
-          Topics gaining momentum across channels in your space — spotted before they go mainstream.
+      <div style={{ marginBottom: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
+          <h2 style={{ fontSize: '1.3rem', fontWeight: 700, color: T.text, margin: 0 }}>
+            Trend Detection
+          </h2>
+          {stale && (
+            <span style={{ fontSize: '0.65rem', color: '#f59e0b', background: 'rgba(245,158,11,0.1)', padding: '2px 8px', borderRadius: 4 }}>
+              data stale — run pipeline to refresh
+            </span>
+          )}
+        </div>
+        <p style={{ fontSize: '0.78rem', color: T.muted, marginTop: 4, marginBottom: 0 }}>
+          Topics gaining momentum in your community — scored from view outperformance, creator adoption, and VPH trajectory.
         </p>
       </div>
 
-      {/* niche picker */}
-      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16 }}>
+      {/* tier tabs */}
+      <div style={{ display: 'flex', gap: 4, marginBottom: 16, background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: 4, border: `1px solid ${T.border}` }}>
+        {TIERS.map(t => {
+          const count = t.id === 'all'
+            ? Object.values(tierCounts).reduce((a, b) => a + b, 0)
+            : (tierCounts[t.id] || 0);
+          const tc = TIER_CONF[t.id] || {};
+          return (
+            <button
+              key={t.id}
+              onClick={() => setActiveTier(t.id)}
+              style={{
+                flex: 1, padding: '7px 10px', borderRadius: 7, fontSize: '0.75rem',
+                cursor: 'pointer', border: 'none', transition: 'all 0.15s',
+                background: activeTier === t.id ? 'rgba(157,111,255,0.18)' : 'transparent',
+                color: activeTier === t.id ? (tc.color || T.accent) : T.muted,
+                fontWeight: activeTier === t.id ? 700 : 400,
+              }}
+            >
+              {t.label} {count > 0 && <span style={{ opacity: 0.6, fontSize: '0.68rem' }}>({count})</span>}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* niche + sort row */}
+      <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', marginBottom: 16, alignItems: 'center' }}>
         {NICHES.map(n => (
           <button
             key={n}
             onClick={() => setNiche(n)}
             style={{
-              padding: '5px 12px', borderRadius: 20, fontSize: '0.72rem', cursor: 'pointer',
-              border: niche === n ? `1px solid ${T.accent}` : `1px solid rgba(255,255,255,0.12)`,
-              background: niche === n ? T.accentGlow : 'rgba(255,255,255,0.04)',
+              padding: '4px 11px', borderRadius: 20, fontSize: '0.7rem', cursor: 'pointer',
+              border: niche === n ? `1px solid ${T.accent}` : `1px solid rgba(255,255,255,0.1)`,
+              background: niche === n ? T.accentGlow : 'rgba(255,255,255,0.03)',
               color: niche === n ? T.accent : T.muted,
               fontWeight: niche === n ? 600 : 400,
-              textTransform: 'capitalize',
-              transition: 'all 0.15s',
+              textTransform: 'capitalize', transition: 'all 0.15s',
             }}
           >
             {n === 'all' ? 'All niches' : n}
           </button>
         ))}
-      </div>
 
-      {/* sub-tabs */}
-      <div style={{ display: 'flex', gap: 4, marginBottom: 20, ...T.glassSurface, borderRadius: 10, padding: 4 }}>
-        {tabs.map(t => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            style={{
-              flex: 1, padding: '7px 12px', borderRadius: 7, fontSize: '0.75rem',
-              cursor: 'pointer', border: 'none',
-              background: tab === t.id ? 'rgba(157,111,255,0.18)' : 'transparent',
-              color: tab === t.id ? T.accent : T.muted,
-              fontWeight: tab === t.id ? 600 : 400,
-              transition: 'all 0.15s',
-            }}
-          >
-            {t.label}
-          </button>
-        ))}
+        <select
+          value={sort}
+          onChange={e => setSort(e.target.value)}
+          style={{
+            marginLeft: 'auto', padding: '4px 10px', borderRadius: 8, fontSize: '0.72rem',
+            background: 'rgba(255,255,255,0.06)', border: `1px solid ${T.border}`,
+            color: T.muted, cursor: 'pointer',
+          }}
+        >
+          <option value="score">Sort: Score</option>
+          <option value="channels">Sort: Channels</option>
+          <option value="ratio">Sort: Ratio</option>
+        </select>
       </div>
 
       {/* content */}
       {loading && (
         <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
-          Loading trends…
+          Loading signals…
         </div>
       )}
 
       {error && (
-        <div style={{ textAlign: 'center', color: T.danger, padding: 40, fontSize: '0.85rem' }}>
-          {error}
+        <div style={{ textAlign: 'center', color: '#f87171', padding: 40, fontSize: '0.85rem' }}>
+          Could not load signals — make sure the server is running.
         </div>
       )}
 
-      {!loading && !error && filtered.length === 0 && (
+      {!loading && !error && !['coming', 'foryou'].includes(activeTier) && signals.length === 0 && (
         <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
-          {tab === 'new_this_week'
-            ? 'No brand-new topics spotted this week yet — check back after more channels are detected.'
-            : tab === 'cross_niche'
-            ? 'No cross-niche topics found for this filter.'
-            : 'No trend data yet. Run the country detection job to populate topics.'}
+          {activeTier === 'rising'
+            ? 'No rising topics found for this filter. Try "All niches" or run the pipeline to refresh signal data.'
+            : 'No topics found for this filter.'}
         </div>
       )}
 
-      {!loading && !error && filtered.length > 0 && (
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={{ fontSize: '0.7rem', color: T.subtle, marginBottom: 4 }}>
-            {filtered.length} topics · click to expand
+      {/* For You — personalized: direct (in-niche) + cross-over (angled) trend ideas */}
+      {!loading && !error && activeTier === 'foryou' && (() => {
+        const both = [...forYou.direct.map(x => ({ ...x, mode: 'direct' })), ...forYou.crossover.map(x => ({ ...x, mode: 'crossover' }))];
+        if (both.length === 0) return (
+          <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
+            No personalized trend ideas yet — run the pipeline to refresh, or the channel may have no matching live trends.
           </div>
-          {filtered.map((topic, i) => (
-            <TopicCard key={topic.topic} topic={topic} index={i} />
+        );
+        return (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: '0.68rem', color: T.subtle, marginBottom: 4 }}>
+              Trending right now that YOU should make — {forYou.direct.length} in your niche, {forYou.crossover.length} cross-over angles.
+            </div>
+            {both.map((it, i) => {
+              const actPrompt = `I want to build on this idea: "${it.title}" (riding the "${it.trend}" trend` +
+                (it.mode === 'crossover' && it.trend_niche ? `, a cross-over from ${it.trend_niche}` : '') + `).` +
+                (it.why ? ` ${it.why}` : '') +
+                ` Give me a few different ways I could angle or open this video, tailored to my channel.`;
+              return (
+                <div key={i} style={{ ...T.glassCard, borderRadius: 12, padding: '12px 14px', border: `1px solid ${it.mode === 'crossover' ? 'rgba(56,189,248,0.25)' : 'rgba(157,111,255,0.25)'}` }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+                    <span style={{ fontSize: '0.6rem', fontWeight: 700, color: it.mode === 'crossover' ? '#38bdf8' : T.accent }}>
+                      {it.mode === 'crossover' ? '🔀 CROSS-OVER' : '🎯 IN YOUR NICHE'}
+                    </span>
+                    <span style={{ fontSize: '0.6rem', color: T.subtle }}>riding: {it.trend}{it.mode === 'crossover' && it.trend_niche ? ` · trending in ${it.trend_niche}` : ''}</span>
+                  </div>
+                  <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text, lineHeight: 1.35 }}>{it.title}</div>
+                  {it.why && <div style={{ fontSize: '0.7rem', color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{it.why}</div>}
+                  <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                    <ActOnItButton prompt={actPrompt} channel={channel} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
+
+      {!loading && !error && signals.length > 0 && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+          <div style={{ fontSize: '0.68rem', color: T.subtle, marginBottom: 4 }}>
+            {signals.length} topics · click any row to see why
+          </div>
+          {signals.map((s, i) => (
+            <SignalCard key={`${s.topic}-${s.niche}`} signal={s} index={i} activeNiche={niche} channel={channel} />
           ))}
         </div>
+      )}
+
+      {/* Coming to India — foreign-led topics not yet domestic */}
+      {!loading && !error && activeTier === 'coming' && (
+        coming.length === 0 ? (
+          <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
+            No foreign-led topics for this filter yet — run the pipeline to refresh, or try “All niches”.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 7 }}>
+            <div style={{ fontSize: '0.68rem', color: T.subtle, marginBottom: 4 }}>
+              {coming.length} topics surging in US/UK with little coverage in India yet — a head start.
+            </div>
+            {coming.map((c, i) => {
+              const actPrompt = `"${c.topic}" is trending abroad (US/UK) but has barely reached India yet — ` +
+                `${c.foreign_ch} foreign channels vs only ${c.domestic_ch} Indian channels covering it` +
+                (c.lead_days > 0 ? `, a ~${c.lead_days} day head start for early movers` : '') + `.` +
+                ` Give me 3 different video angle ideas for how I could be among the first to cover this on my channel, tailored to my niche and content style.`;
+              return (
+                <div key={c.topic} style={{
+                  ...T.glassCard, borderRadius: 12, padding: '12px 14px',
+                  border: '1px solid rgba(56,189,248,0.22)',
+                }}>
+                  <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, marginBottom: 6 }}>
+                    <span style={{ fontSize: '0.85rem', fontWeight: 700, color: T.text, textTransform: 'capitalize' }}>{c.topic}</span>
+                    <span style={{ fontSize: '0.62rem', color: '#38bdf8', fontWeight: 700, textTransform: 'capitalize', flexShrink: 0 }}>{c.niche}</span>
+                  </div>
+                  <div style={{ fontSize: '0.7rem', color: T.muted, marginBottom: c.sample_title ? 6 : 0 }}>
+                    <b style={{ color: T.text }}>{c.foreign_ch}</b> US/UK channels
+                    {' · '}only <b style={{ color: T.text }}>{c.domestic_ch}</b> in India
+                    {c.lead_days > 0 ? ` · ${c.lead_days}d head start` : ''}
+                  </div>
+                  {c.sample_title && (
+                    <div style={{ fontSize: '0.7rem', color: T.subtle, fontStyle: 'italic' }}>e.g. “{c.sample_title}”</div>
+                  )}
+                  <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+                    <ActOnItButton prompt={actPrompt} channel={channel} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )
       )}
     </div>
   );

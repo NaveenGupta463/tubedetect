@@ -43,7 +43,7 @@ const { getApiKey, markExhausted, isQuotaError } = require('./apiKeyManager');
 
 async function ytFetch(endpoint, params) {
   for (let attempt = 0; attempt < 3; attempt++) {
-    const key = getApiKey();
+    const key = getApiKey('discovery');
     if (!key) throw new Error('all_api_keys_exhausted');
     const url = new URL(`${YT_BASE}/${endpoint}`);
     url.searchParams.set('key', key);
@@ -176,7 +176,7 @@ async function suggestChannels(db, niche, opts = {}) {
 // ── YouTube validation ────────────────────────────────────────────────────────
 
 async function validateSuggestions(db, handles) {
-  if (!handles.length || !getYTKey()) return [];
+  if (!handles.length || !getApiKey('discovery')) return [];
 
   const results = [];
   for (const handle of handles) {
@@ -391,7 +391,7 @@ async function runAIDiscoveryCycle(db, {
   if (!process.env.OPENAI_API_KEY) {
     return { skipped: true, reason: 'no_openai_key' };
   }
-  if (!getYTKey()) {
+  if (!getApiKey('discovery')) {
     return { skipped: true, reason: 'no_yt_api_key' };
   }
 

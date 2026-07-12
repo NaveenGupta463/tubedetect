@@ -38,6 +38,19 @@ function run() {
     const full = path.join(BACKUP_DIR, f);
     if (fs.statSync(full).mtimeMs < cutoff) {
       fs.unlinkSync(full);
+      for (const ext of ['-wal', '-shm']) {
+        const sidecar = full + ext;
+        if (fs.existsSync(sidecar)) fs.unlinkSync(sidecar);
+      }
+      pruned++;
+    }
+  }
+
+  for (const f of fs.readdirSync(BACKUP_DIR)) {
+    if (!/^scoring_\d{4}-\d{2}-\d{2}\.db-(wal|shm)$/.test(f)) continue;
+    const dbFile = f.replace(/-(wal|shm)$/, '');
+    if (!fs.existsSync(path.join(BACKUP_DIR, dbFile))) {
+      fs.unlinkSync(path.join(BACKUP_DIR, f));
       pruned++;
     }
   }

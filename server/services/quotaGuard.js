@@ -6,7 +6,7 @@
 // Set QUOTA_DAILY_BUDGET in .env to match your total across all API keys.
 // Default: 115,000 (12 backend keys × 10,000 − 5,000 safety buffer).
 
-const DAILY_LIMIT = parseInt(process.env.QUOTA_DAILY_BUDGET || '115000', 10);
+const DAILY_LIMIT = parseInt(process.env.QUOTA_DAILY_BUDGET || '110000', 10);
 const CUTOFF      = DAILY_LIMIT;
 
 const state = {

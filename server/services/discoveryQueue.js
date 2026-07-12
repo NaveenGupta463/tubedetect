@@ -86,7 +86,7 @@ async function runDiscoveryJob(jobId) {
         if (candidate.discovery_source === 'featured_channels' && quotaGuard.quotaAvailable()) {
           try {
             quotaGuard.recordUsage(1, 'ingest');
-            const qs  = new URLSearchParams({ part: 'contentDetails', id: candidate.channel_id, key: getApiKey() }).toString();
+            const qs  = new URLSearchParams({ part: 'contentDetails', id: candidate.channel_id, key: getApiKey('discovery') }).toString();
             const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?${qs}`);
             const chData = await res.json();
             const uploadsId = chData.items?.[0]?.contentDetails?.relatedPlaylists?.uploads;

@@ -5,6 +5,7 @@ const quotaGuard     = require('../services/quotaGuard');
 const { setLastRun, hoursSinceLastRun } = require('../services/jobState');
 const { withCronRetry } = require('../utils/cronRetry');
 const { fetchVideoFullBatch } = require('../services/youtubeMetrics');
+const { recordPipelineHealth, checkpointWalPassive } = require('../services/pipelineHealth');
 const {
   getAllIngestedVideosForSnapshot,
   getNeverRefreshedVideosForSnapshot,
@@ -66,9 +67,21 @@ function computeVelocity(views, ageHours, channelSubscribers) {
   };
 }
 
+function markSnapshotRefreshAttempt(db, videoId) {
+  db.run(
+    `UPDATE ingested_videos
+     SET last_refreshed_at = datetime('now')
+     WHERE youtube_video_id = ?`,
+    [videoId],
+  );
+}
+
 let _running = false;
 
-async function runSnapshotCycle() {
+async function runSnapshotCycle({ quotaBudget } = {}) {
+  const startedAt = new Date();
+  const SNAPSHOT_BUDGET = quotaBudget || Infinity;
+  let snapshotUsed = 0;
   if (_running) {
     console.warn('[snapshot] Already running — skipping concurrent call');
     return { skipped: true, reason: 'already_running' };
@@ -93,12 +106,16 @@ async function runSnapshotCycle() {
   }
 
   console.log(`[snapshot] Starting cycle — ${videos.length} videos`);
-  let refreshed = 0, newSnapshots = 0;
+  let refreshed = 0, newSnapshots = 0, unavailable = 0;
 
   // Process in batches of 50 (one videos.list call each)
   for (let i = 0; i < videos.length; i += 50) {
     if (!quotaGuard.quotaAvailable()) {
       console.warn('[snapshot] Quota exhausted mid-cycle — stopping');
+      break;
+    }
+    if (snapshotUsed >= SNAPSHOT_BUDGET) {
+      console.warn(`[snapshot] Step budget (${SNAPSHOT_BUDGET}) reached — stopping`);
       break;
     }
 
@@ -113,6 +130,7 @@ async function runSnapshotCycle() {
     try {
       videoMap = await fetchVideoFullBatch(ids);
       quotaGuard.recordUsage(1, 'refresh');
+      snapshotUsed++;
     } catch (e) {
       console.warn('[snapshot] videos.list batch failed:', e.message);
       if (i + 50 < videos.length) await sleep(300);
@@ -124,7 +142,11 @@ async function runSnapshotCycle() {
     try {
       for (const video of batch) {
         const fresh = videoMap.get(video.youtube_video_id);
-        if (!fresh) continue;
+        if (!fresh) {
+          markSnapshotRefreshAttempt(db, video.youtube_video_id);
+          unavailable++;
+          continue;
+        }
 
         upsertIngestedVideo(db, {
           youtube_video_id:    video.youtube_video_id,
@@ -135,6 +157,13 @@ async function runSnapshotCycle() {
           published_at:        video.published_at,
           duration_seconds:    fresh.duration_seconds ?? video.duration_seconds,
           category_id:         fresh.category_id,
+          thumbnail_url:       fresh.thumbnail_url,
+          thumbnail_width:     fresh.thumbnail_width,
+          thumbnail_height:    fresh.thumbnail_height,
+          thumbnail_aspect_ratio: fresh.thumbnail_aspect_ratio,
+          format_type:         fresh.format_type,
+          format_confidence:   fresh.format_confidence,
+          format_reason:       fresh.format_reason,
           views:               fresh.views,
           likes:               fresh.likes,
           comments:            fresh.comments,
@@ -220,9 +249,23 @@ async function runSnapshotCycle() {
   }
 
   const quota = quotaGuard.getStats();
-  console.log(`[snapshot] Cycle complete — refreshed=${refreshed} new_snapshots=${newSnapshots} quota_used=${quota.used}/${quota.cutoff}`);
+  console.log(`[snapshot] Cycle complete — refreshed=${refreshed} unavailable=${unavailable} new_snapshots=${newSnapshots} quota_used=${quota.used}/${quota.cutoff}`);
   setLastRun('snapshot_refresh');
-  return { refreshed, new_snapshots: newSnapshots, pattern_result: patternResult };
+  recordPipelineHealth(db, {
+    job_name:    'snapshot_refresh',
+    status:      'ok',
+    started_at:  startedAt.toISOString(),
+    duration_ms: Date.now() - startedAt.getTime(),
+    metrics: {
+      refreshed,
+      unavailable,
+      new_snapshots: newSnapshots,
+      quota_used:    quota.used,
+      quota_cutoff:  quota.cutoff,
+      pattern_result: patternResult,
+    },
+  });
+  return { refreshed, unavailable, new_snapshots: newSnapshots, pattern_result: patternResult };
 
   } finally {
     _running = false;
@@ -232,6 +275,7 @@ async function runSnapshotCycle() {
 function isSnapshotRunning() { return _running; }
 
 async function runNeverRefreshedSnapshotCycle() {
+  const startedAt = new Date();
   if (_running) {
     console.warn('[snapshot] Already running — skipping concurrent call');
     return { skipped: true, reason: 'already_running' };
@@ -255,7 +299,7 @@ async function runNeverRefreshedSnapshotCycle() {
     }
 
     console.log(`[snapshot] Never-refreshed cycle — ${videos.length} videos`);
-    let refreshed = 0, newSnapshots = 0;
+    let refreshed = 0, newSnapshots = 0, unavailable = 0;
 
     for (let i = 0; i < videos.length; i += 50) {
       if (!quotaGuard.quotaAvailable()) {
@@ -278,7 +322,11 @@ async function runNeverRefreshedSnapshotCycle() {
       try {
         for (const video of batch) {
           const fresh = videoMap.get(video.youtube_video_id);
-          if (!fresh) continue;
+          if (!fresh) {
+            markSnapshotRefreshAttempt(db, video.youtube_video_id);
+            unavailable++;
+            continue;
+          }
 
           upsertIngestedVideo(db, {
             youtube_video_id:    video.youtube_video_id,
@@ -289,6 +337,13 @@ async function runNeverRefreshedSnapshotCycle() {
             published_at:        video.published_at,
             duration_seconds:    fresh.duration_seconds ?? video.duration_seconds,
             category_id:         fresh.category_id,
+            thumbnail_url:       fresh.thumbnail_url,
+            thumbnail_width:     fresh.thumbnail_width,
+            thumbnail_height:    fresh.thumbnail_height,
+            thumbnail_aspect_ratio: fresh.thumbnail_aspect_ratio,
+            format_type:         fresh.format_type,
+            format_confidence:   fresh.format_confidence,
+            format_reason:       fresh.format_reason,
             views:               fresh.views,
             likes:               fresh.likes,
             comments:            fresh.comments,
@@ -337,8 +392,25 @@ async function runNeverRefreshedSnapshotCycle() {
     }
 
     setLastRun('snapshot_refresh');
-    console.log(`[snapshot] Never-refreshed cycle done — refreshed=${refreshed} new_snapshots=${newSnapshots}`);
-    return { refreshed, new_snapshots: newSnapshots, pattern_result: null };
+    console.log(`[snapshot] Never-refreshed cycle done — refreshed=${refreshed} unavailable=${unavailable} new_snapshots=${newSnapshots}`);
+    {
+      const quota = quotaGuard.getStats();
+      recordPipelineHealth(db, {
+        job_name:    'snapshot_never_refreshed',
+        status:      'ok',
+        started_at:  startedAt.toISOString(),
+        duration_ms: Date.now() - startedAt.getTime(),
+        metrics: {
+          refreshed,
+          unavailable,
+          new_snapshots: newSnapshots,
+          quota_used:    quota.used,
+          quota_cutoff:  quota.cutoff,
+        },
+      });
+      checkpointWalPassive(db, 'snapshot-never');
+    }
+    return { refreshed, unavailable, new_snapshots: newSnapshots, pattern_result: null };
   } finally {
     _running = false;
   }
@@ -348,6 +420,7 @@ async function runNeverRefreshedSnapshotCycle() {
 //   60d–365d old → every 2 months (last_refreshed_at < now - 60 days)
 //   365d+        → every 6 months (last_refreshed_at < now - 180 days)
 async function runOlderVideoSnapshotCycle() {
+  const startedAt = new Date();
   if (_running) {
     console.warn('[snapshot-older] Main cycle running — skipping');
     return { skipped: true, reason: 'main_running' };
@@ -406,6 +479,13 @@ async function runOlderVideoSnapshotCycle() {
             published_at:        video.published_at,
             duration_seconds:    fresh.duration_seconds ?? video.duration_seconds,
             category_id:         fresh.category_id,
+            thumbnail_url:       fresh.thumbnail_url,
+            thumbnail_width:     fresh.thumbnail_width,
+            thumbnail_height:    fresh.thumbnail_height,
+            thumbnail_aspect_ratio: fresh.thumbnail_aspect_ratio,
+            format_type:         fresh.format_type,
+            format_confidence:   fresh.format_confidence,
+            format_reason:       fresh.format_reason,
             views:               fresh.views,
             likes:               fresh.likes,
             comments:            fresh.comments,
@@ -454,6 +534,21 @@ async function runOlderVideoSnapshotCycle() {
     }
 
     console.log(`[snapshot-older] Done — refreshed=${refreshed}`);
+    {
+      const quota = quotaGuard.getStats();
+      recordPipelineHealth(db, {
+        job_name:    'snapshot_older',
+        status:      'ok',
+        started_at:  startedAt.toISOString(),
+        duration_ms: Date.now() - startedAt.getTime(),
+        metrics: {
+          refreshed,
+          quota_used:   quota.used,
+          quota_cutoff: quota.cutoff,
+        },
+      });
+      checkpointWalPassive(db, 'snapshot-older');
+    }
     return { refreshed };
   } finally {
     _running = false;
@@ -472,12 +567,7 @@ function startSnapshotCron() {
   });
   console.log('[Snapshot Cron] Older-video refresh scheduled — daily at 02:00 UTC');
 
-  if (hoursSinceLastRun('snapshot_refresh') > 23) {
-    console.log('[Snapshot Cron] Missed window detected — catch-up run in 2m');
-    setTimeout(() => {
-      withCronRetry(runSnapshotCycle, 'snapshot-catchup', { maxAttempts: 3, retryDelayMs: 20 * 60 * 1000 });
-    }, 120_000);
-  }
+  // No startup catch-up — run via: node pipeline.js
 }
 
 module.exports = { startSnapshotCron, runSnapshotCycle, runNeverRefreshedSnapshotCycle, runOlderVideoSnapshotCycle, isSnapshotRunning };

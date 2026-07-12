@@ -1,7 +1,7 @@
 const express   = require('express');
 const Anthropic  = require('@anthropic-ai/sdk');
 const router     = express.Router();
-const { getDb }  = require('../db/init');
+const { getDb, runWithRetry } = require('../db/init');
 const { dispatch, detectCreatorFormat } = require('../services/copilotTools');
 const { classify }                      = require('../services/intentClassifier');
 const { compilePolicy, mergeConfigs, buildPromptSection, extractPlaceholders } = require('../services/policyCompiler');
@@ -9,7 +9,9 @@ const { route, isBriefComplete }        = require('../services/stateRouter');
 const { runScan }                       = require('../services/scanRules');
 const { parseBrief, buildFollowUp }     = require('../services/briefParser');
 const { search }                        = require('../services/webSearch');
+const { searchPapers, isResearchRelevantNiche } = require('../services/researchGrounding');
 const { canAfford, deduct, classifyAction, estimateMaxCost } = require('../services/creditService');
+const { resolveCreatorPeerContext }     = require('../services/creatorPeerContext');
 const crypto = require('crypto');
 
 const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
@@ -123,6 +125,29 @@ const TOOLS = [
       required: ['topic'],
     },
   },
+  {
+    name: 'getChannelEvolution',
+    description: 'Get a channel\'s performance evolution over the last 30 or 90 days: view change %, upload frequency change, topics covered, viral spikes. Use when the user asks "how has my channel changed", "am I growing or shrinking", "what happened to my views", "show my channel evolution".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        channel_id: { type: 'string',  description: 'Channel ID (auto-filled from context)' },
+        period:     { type: 'string',  description: '30d or 90d (default: 30d)', enum: ['30d', '90d'] },
+      },
+    },
+  },
+  {
+    name: 'getTopicTrend',
+    description: 'Look up community-wide stats for a topic: how many channels post about it, average views, trend direction. Use when the user asks "is X topic trending", "how popular is X in my niche", "what is the community doing with X topic", "is X saturated".',
+    input_schema: {
+      type: 'object',
+      properties: {
+        topic:  { type: 'string', description: 'The topic to look up (e.g. "stoicism", "personal finance", "fitness motivation")' },
+        period: { type: 'string', description: '30d or 90d (default: 30d)', enum: ['30d', '90d'] },
+      },
+      required: ['topic'],
+    },
+  },
 ];
 
 // ── Language instruction builder ─────────────────────────────────────────────
@@ -154,7 +179,7 @@ Always address the audience with "aap" forms — respectful Hinglish, not street
 }
 
 // ── System prompt builder ─────────────────────────────────────────────────────
-function buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, brief, webContext) {
+function buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, brief, webContext, researchContext) {
   const formatLabel = creatorFormat === 'short' ? 'YouTube Shorts creator'
     : creatorFormat === 'mixed' ? 'creator who makes both Shorts and long-form videos'
     : 'long-form creator';
@@ -220,6 +245,14 @@ Do NOT fall back to generic script templates — mirror this creator's actual vo
     webContextSection = `\nVERIFIED CURRENT DATA — fetched live from the web for this request:\n${webContext.answer}\n${sourceLines ? `Sources:\n${sourceLines}` : ''}\nUse the above data to ground statistics, figures, and facts in your response. For any specific claim NOT covered by the data above, still mark it with [VERIFY: describe what to check].`;
   }
 
+  let researchSection = '';
+  if (researchContext?.papers?.length) {
+    const lines = researchContext.papers.slice(0, 4).map((p, i) =>
+      `  ${i + 1}. "${p.title}" (${p.year || 'n.d.'}, ${p.citationCount} citations) — ${(p.abstract || 'no abstract').slice(0, 200)}\n     URL: ${p.url}`
+    ).join('\n');
+    researchSection = `\nRESEARCH GROUNDING — real academic papers fetched for this question:\n${lines}\nYou may mark a claim as "CITED" ONLY if the source URL is copied EXACTLY from the list above and the claim is explicitly supported by the abstract text shown. Never write a citation URL from memory.`;
+  }
+
   const overrideSection = isOverride ? `
 OVERRIDE MODE ACTIVE — the creator has explicitly requested generation despite policy restrictions.
 - Generate the content as requested.
@@ -235,6 +268,7 @@ ${langInstruction}
 ${voiceSection}
 ${policySection}
 ${webContextSection}
+${researchSection}
 ${briefSection}
 ${overrideSection}
 
@@ -306,6 +340,8 @@ Evidence objects — include ONLY when the answer or a script/outline contains s
 - { "claim": "exact text of the claim", "status": "UNVERIFIED", "source": null, "confidence": 0.0–1.0 }
   → Use for specific figures, dates, or stats you stated from your own knowledge but cannot confirm are accurate.
   → Data returned from tool calls (peer counts, avg views, subscriber counts) is sourced from our database — do NOT mark tool data as UNVERIFIED.
+- { "claim": "exact text of the claim", "status": "CITED", "source": "<exact URL from RESEARCH GROUNDING above>", "confidence": 0.7–1.0 }
+  → Use ONLY when RESEARCH GROUNDING papers were supplied AND the claim is directly supported by one of them. Copy the URL exactly — never invent one.
 Only include evidence for factual claims in scripts, outlines, or research answers — not for conversational turns.
 Leave evidence as [] for topic/channel/opportunity queries.
 
@@ -317,6 +353,8 @@ Card types you can include:
 - { "type": "video", "data": { "title": "...", "views": "...", "channel_name": "...", "date": "..." } }
 - { "type": "outline", "data": { "topic": "...", "format": "short-form|long-form", "hook": "...", "sections": [{ "title": "...", "brief": "...", "why": "one sentence on why this section works for the audience" }], "titles": ["...", "...", "..."], "cta": "..." } }
 - { "type": "script", "data": { "topic": "...", "part": "body|ending", "sections": [{ "title": "...", "script": "..." }], "cta": "..." } }
+- { "type": "evolution", "data": { "channel_id": "...", "period": "30d", "view_change_pct": N, "upload_delta": N, "avg_views": N, "video_count": N, "topics": ["..."], "notable_event": null } } — use after getChannelEvolution tool returns data
+- { "type": "topic_drift", "data": { "topic": "...", "period": "30d", "channel_count": N, "avg_views": N, "velocity_trend": "stable|rising|falling" } } — use after getTopicTrend tool returns data
 
 Action types you can include (1-3 max):
 - { "type": "track_niche",       "label": "Track this topic",           "payload": { "niche": "..." } }
@@ -422,8 +460,10 @@ router.post('/chat', async (req, res) => {
     );
     const routeResult = route(thread, classifyResult, compiledPolicy);
 
-    // Persist/update thread state
-    db.run(
+    // Persist/update thread state. Retries on SQLITE_BUSY — a long batch job (pipeline.js) holding
+    // the write lock past the busy_timeout window shouldn't fail the whole chat turn.
+    runWithRetry(
+      db,
       `INSERT INTO workspace_threads (thread_id, channel_id, topic, state, niche, secondary_niche, mode, brief, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
        ON CONFLICT(thread_id) DO UPDATE SET
@@ -523,13 +563,21 @@ router.post('/chat', async (req, res) => {
       }
     }
 
-    // ── Web search — fetch live facts for sensitive niches ────────────────────
-    let webContext = null;
-    if (compiledPolicy.config?.needsWeb) {
-      webContext = await search(message, compiledPolicy.niche).catch(() => null);
+    // ── Web search + research grounding — both optional, run in parallel ──────
+    let webContext = null, researchContext = null, citableUrls = new Set();
+    const wantsWeb      = !!compiledPolicy.config?.needsWeb;
+    const wantsResearch = isResearchRelevantNiche(compiledPolicy.niche);
+    if (wantsWeb || wantsResearch) {
+      const [webRes, papersRes] = await Promise.allSettled([
+        wantsWeb      ? search(message, compiledPolicy.niche)  : Promise.resolve(null),
+        wantsResearch ? searchPapers(message, { db, limit: 4 }) : Promise.resolve(null),
+      ]);
+      webContext = webRes.status === 'fulfilled' ? webRes.value : null;
+      const papers = papersRes.status === 'fulfilled' ? papersRes.value : null;
+      if (papers?.length) { researchContext = { papers }; citableUrls = new Set(papers.map(p => p.url)); }
     }
 
-    const systemPrompt = buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, thread?.brief, webContext);
+    const systemPrompt = buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, thread?.brief, webContext, researchContext);
 
     // Build message history. Strip any leading assistant turns — Anthropic requires
     // messages to start with 'user'. The frontend greeting is assistant-initiated
@@ -662,11 +710,20 @@ router.post('/chat', async (req, res) => {
           creditResult = { balance, deducted, action: creditAction };
         }
 
+        // Guardrail: a "CITED" claim is only trustworthy if its URL is one we actually fetched this
+        // turn — strip any URL Claude didn't really receive so a citation can never be invented.
+        const sanitizedEvidence = (Array.isArray(parsed.evidence) ? parsed.evidence : []).map(ev => {
+          if (ev.status === 'CITED' && !citableUrls.has(ev.source)) {
+            return { ...ev, status: 'UNVERIFIED', source: null };
+          }
+          return ev;
+        });
+
         return res.json({
           answer,
           cards:        Array.isArray(parsed.cards)    ? parsed.cards    : [],
           actions:      Array.isArray(parsed.actions)  ? parsed.actions  : [],
-          evidence:     Array.isArray(parsed.evidence) ? parsed.evidence : [],
+          evidence:     sanitizedEvidence,
           placeholders,
           credits:      creditResult,
           thread_state: {
@@ -726,6 +783,198 @@ router.post('/chat', async (req, res) => {
   } catch (err) {
     console.error('[copilot/chat]', err);
     res.status(500).json({ error: err.message || 'Internal server error' });
+  }
+});
+
+// ── GET /api/copilot/suggestions/:channelId ──────────────────────────────────
+// Returns community-trending and niche-trending topic suggestions for WhatToPost screen.
+router.get('/suggestions/:channelId', (req, res) => {
+  try {
+    const db        = getDb();
+    const channelId = req.params.channelId;
+
+    const channel = db.get('SELECT * FROM ingested_channels WHERE channel_id = ?', [channelId]);
+    if (!channel) return res.status(404).json({ error: 'Channel not found' });
+
+    const niche = channel.primary_niche || channel.niche;
+
+    // ── Community trending (peer graph) ──────────────────────────────────────
+    const { resolvePeers } = require('../services/copilotPeerHelper');
+    const peerContext = resolveCreatorPeerContext(db, channelId, {
+      niche,
+      userSubs: channel.channel_subscribers || 0,
+    });
+    const profilePeerIds = (peerContext.peerIds || []).filter(id => id !== channelId);
+    const peerIds = (profilePeerIds.length
+      ? profilePeerIds
+      : resolvePeers(db, channel, { exclude_channel_id: channelId, limit: 150 })
+    ).slice(0, 150);
+    const nicheScopeIds = profilePeerIds.slice(0, 300);
+
+    let communityTopics   = [];
+    let communityVideos   = [];
+
+    if (peerIds.length > 0) {
+      const ph = peerIds.map(() => '?').join(',');
+
+      communityTopics = db.all(`
+        SELECT
+          jt.value                        AS topic,
+          COUNT(DISTINCT ic.channel_id)   AS peer_count,
+          CAST(AVG(iv.views) AS INTEGER)  AS avg_views,
+          SUM(iv.views)                   AS total_views
+        FROM ingested_channels ic,
+             json_each(ic.inferred_topics) jt
+        JOIN ingested_videos iv ON iv.channel_id = ic.channel_id
+        WHERE ic.channel_id IN (${ph})
+          AND iv.published_at > datetime('now', '-30 days')
+          AND iv.views > 0
+          AND iv.is_short = 0
+        GROUP BY jt.value
+        HAVING peer_count >= 2
+        ORDER BY avg_views DESC
+        LIMIT 12
+      `, peerIds);
+
+      communityVideos = db.all(`
+        SELECT iv.title, iv.views, iv.published_at, ic.channel_name, ic.channel_id
+        FROM ingested_videos iv
+        JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+        WHERE iv.channel_id IN (${ph})
+          AND iv.published_at > datetime('now', '-14 days')
+          AND iv.views > 3000
+          AND iv.is_short = 0
+        ORDER BY iv.views DESC
+        LIMIT 10
+      `, peerIds);
+    }
+
+    // ── Niche trending (all channels in same niche, last 30 days) ────────────
+    let nicheTopics  = [];
+    let nicheVideos  = [];
+
+    if (nicheScopeIds.length > 0) {
+      const sph = nicheScopeIds.map(() => '?').join(',');
+      nicheTopics = db.all(`
+        SELECT
+          jt.value                        AS topic,
+          COUNT(DISTINCT ic.channel_id)   AS channel_count,
+          CAST(AVG(iv.views) AS INTEGER)  AS avg_views,
+          SUM(iv.views)                   AS total_views
+        FROM ingested_channels ic,
+             json_each(ic.inferred_topics) jt
+        JOIN ingested_videos iv ON iv.channel_id = ic.channel_id
+        WHERE ic.channel_id IN (${sph})
+          AND iv.published_at > datetime('now', '-30 days')
+          AND iv.views > 0
+          AND iv.is_short = 0
+          AND (ic.ignore_from_benchmarks IS NULL OR ic.ignore_from_benchmarks = 0)
+        GROUP BY jt.value
+        HAVING channel_count >= 2
+        ORDER BY avg_views DESC
+        LIMIT 12
+      `, nicheScopeIds);
+
+      nicheVideos = db.all(`
+        SELECT iv.title, iv.views, iv.published_at, ic.channel_name, ic.channel_id,
+               ic.channel_subscribers
+        FROM ingested_videos iv
+        JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+        WHERE iv.channel_id IN (${sph})
+          AND iv.published_at > datetime('now', '-14 days')
+          AND iv.views > 5000
+          AND iv.is_short = 0
+          AND (ic.ignore_from_benchmarks IS NULL OR ic.ignore_from_benchmarks = 0)
+        ORDER BY iv.views DESC
+        LIMIT 10
+      `, nicheScopeIds);
+    } else if (niche) {
+      nicheTopics = db.all(`
+        SELECT
+          jt.value                        AS topic,
+          COUNT(DISTINCT ic.channel_id)   AS channel_count,
+          CAST(AVG(iv.views) AS INTEGER)  AS avg_views,
+          SUM(iv.views)                   AS total_views
+        FROM ingested_channels ic,
+             json_each(ic.inferred_topics) jt
+        JOIN ingested_videos iv ON iv.channel_id = ic.channel_id
+        WHERE COALESCE(ic.primary_niche, ic.niche) = ?
+          AND ic.channel_id != ?
+          AND iv.published_at > datetime('now', '-30 days')
+          AND iv.views > 0
+          AND iv.is_short = 0
+          AND (ic.ignore_from_benchmarks IS NULL OR ic.ignore_from_benchmarks = 0)
+        GROUP BY jt.value
+        HAVING channel_count >= 3
+        ORDER BY avg_views DESC
+        LIMIT 12
+      `, [niche, channelId]);
+
+      nicheVideos = db.all(`
+        SELECT iv.title, iv.views, iv.published_at, ic.channel_name, ic.channel_id,
+               ic.channel_subscribers
+        FROM ingested_videos iv
+        JOIN ingested_channels ic ON ic.channel_id = iv.channel_id
+        WHERE COALESCE(ic.primary_niche, ic.niche) = ?
+          AND ic.channel_id != ?
+          AND iv.published_at > datetime('now', '-14 days')
+          AND iv.views > 5000
+          AND iv.is_short = 0
+          AND (ic.ignore_from_benchmarks IS NULL OR ic.ignore_from_benchmarks = 0)
+        ORDER BY iv.views DESC
+        LIMIT 10
+      `, [niche, channelId]);
+    }
+
+    function fmt(n) {
+      if (!n) return '0';
+      if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+      if (n >= 1_000)     return `${(n / 1_000).toFixed(0)}K`;
+      return String(n);
+    }
+
+    res.json({
+      channel_name: channel.channel_name,
+      niche,
+      peer_pool:    peerIds.length,
+      peer_source:  peerContext.peer_source || 'legacy',
+      csp_primary:  peerContext.csp_primary || null,
+      format_profile: peerContext.fp_result?.format_profile || channel.format_profile || null,
+      profile_scoped_niche: nicheScopeIds.length > 0,
+      community: {
+        topics: communityTopics.map(t => ({
+          topic:      t.topic,
+          peer_count: t.peer_count,
+          avg_views:  fmt(t.avg_views),
+          avg_views_raw: t.avg_views,
+        })),
+        hot_videos: communityVideos.map(v => ({
+          title:        v.title,
+          views:        fmt(v.views),
+          views_raw:    v.views,
+          channel_name: v.channel_name,
+          date:         v.published_at?.slice(0, 10),
+        })),
+      },
+      niche_wide: {
+        topics: nicheTopics.map(t => ({
+          topic:         t.topic,
+          channel_count: t.channel_count,
+          avg_views:     fmt(t.avg_views),
+          avg_views_raw: t.avg_views,
+        })),
+        hot_videos: nicheVideos.map(v => ({
+          title:        v.title,
+          views:        fmt(v.views),
+          views_raw:    v.views,
+          channel_name: v.channel_name,
+          date:         v.published_at?.slice(0, 10),
+        })),
+      },
+    });
+  } catch (e) {
+    console.error('[copilot/suggestions]', e);
+    res.status(500).json({ error: e.message });
   }
 });
 

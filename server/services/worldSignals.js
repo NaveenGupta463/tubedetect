@@ -24,8 +24,8 @@ function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
         ic.channel_name,
         ic.niche,
         ic.inferred_topics
-      FROM video_growth_snapshots s7
-      JOIN video_growth_snapshots s30 ON s30.video_id = s7.video_id AND s30.bucket = '30d'
+      FROM video_growth_snapshots s7 INDEXED BY idx_vgs_bucket_views
+      JOIN video_growth_snapshots s30 INDEXED BY idx_vgs_video_bucket ON s30.video_id = s7.video_id AND s30.bucket = '30d'
       JOIN ingested_videos iv         ON iv.youtube_video_id = s7.video_id
       JOIN ingested_channels ic       ON ic.channel_id = iv.channel_id
       WHERE s7.bucket = '7d'
@@ -140,10 +140,12 @@ function clusterTitles(spikes) {
 
 // ── Option B: Google Trends ───────────────────────────────────────────────────
 
-async function getTrendSignals(topics, { geo = 'IN', timeoutMs = 8000 } = {}) {
+async function getTrendSignals(topics, { geo = 'IN', timeoutMs = 1500, maxTopics = 2 } = {}) {
   const results = [];
+  const attempted = topics.slice(0, maxTopics);
+  let failures = 0;
 
-  for (const topic of topics.slice(0, 3)) {
+  for (const topic of attempted) {
     try {
       const raw = await Promise.race([
         googleTrends.relatedQueries({ keyword: topic, geo }),
@@ -165,8 +167,12 @@ async function getTrendSignals(topics, { geo = 'IN', timeoutMs = 8000 } = {}) {
 
       results.push(...rising);
     } catch (_) {
-      // Google Trends is flaky — silently skip on timeout or block
+      // Google Trends is flaky — skip this topic but report once below.
+      failures++;
     }
+  }
+  if (failures > 0) {
+    console.warn(`[worldSignals] Google Trends lookup failed for ${failures}/${attempted.length} topics (timeout or block)`);
   }
 
   // Deduplicate by topic name
@@ -178,13 +184,73 @@ async function getTrendSignals(topics, { geo = 'IN', timeoutMs = 8000 } = {}) {
   });
 }
 
+// ── Google Trends persistence ─────────────────────────────────────────────────
+// Trends lookups are async and flaky, so they cannot run inside the synchronous
+// computeWhatToPost path. Instead every successful fetch is persisted here and
+// the WTP scorer reads recent rows (≤48h) as a bounded score boost.
+
+function ensureGoogleTrendsTable(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS google_trends_signals (
+    topic        TEXT NOT NULL,
+    parent_topic TEXT,
+    geo          TEXT NOT NULL DEFAULT 'IN',
+    trend_value  INTEGER,
+    fetched_at   TEXT NOT NULL DEFAULT (datetime('now')),
+    PRIMARY KEY (topic, geo)
+  )`);
+}
+
+function persistTrendSignals(db, signals, { geo = 'IN' } = {}) {
+  if (!db || !Array.isArray(signals) || signals.length === 0) return 0;
+  let written = 0;
+  try {
+    ensureGoogleTrendsTable(db);
+    for (const s of signals) {
+      const topic = String(s.topic || '').toLowerCase().trim();
+      if (!topic) continue;
+      db.run(
+        `INSERT INTO google_trends_signals (topic, parent_topic, geo, trend_value, fetched_at)
+         VALUES (?, ?, ?, ?, datetime('now'))
+         ON CONFLICT(topic, geo) DO UPDATE SET
+           parent_topic = excluded.parent_topic,
+           trend_value  = excluded.trend_value,
+           fetched_at   = datetime('now')`,
+        [topic, s.parent_topic || null, geo, Number(s.trend_value) || 0],
+      );
+      written++;
+    }
+  } catch (e) {
+    console.warn('[worldSignals] persisting Google Trends signals failed:', e.message);
+  }
+  return written;
+}
+
+function readRecentTrendSignals(db, { geo = 'IN', maxAgeHours = 48, limit = 40 } = {}) {
+  const map = new Map();
+  if (!db) return map;
+  try {
+    db.all(
+      `SELECT topic, parent_topic, trend_value, fetched_at
+       FROM google_trends_signals
+       WHERE geo = ? AND fetched_at >= datetime('now', ?)
+       ORDER BY trend_value DESC LIMIT ?`,
+      [geo, `-${Math.max(1, Math.round(maxAgeHours))} hours`, limit],
+    ).forEach(r => map.set(String(r.topic || '').toLowerCase(), r));
+  } catch (_) {
+    // Table absent until the first successful fetch — boost simply stays off.
+  }
+  return map;
+}
+
 // ── Combined entry point ──────────────────────────────────────────────────────
 
-async function getWorldSignals(db, { channel_id, topics = [] }) {
+async function getWorldSignals(db, { channel_id, topics = [], trendTimeoutMs = 1500, trendTopicLimit = 2 }) {
   const [velocitySpikes, trendSignals] = await Promise.all([
     Promise.resolve(getVelocitySpikes(db, topics)),
-    getTrendSignals(topics),
+    getTrendSignals(topics, { timeoutMs: trendTimeoutMs, maxTopics: trendTopicLimit }),
   ]);
+
+  if (trendSignals.length) persistTrendSignals(db, trendSignals);
 
   return {
     velocity: velocitySpikes,
@@ -192,4 +258,4 @@ async function getWorldSignals(db, { channel_id, topics = [] }) {
   };
 }
 
-module.exports = { getWorldSignals };
+module.exports = { getWorldSignals, getTrendSignals, persistTrendSignals, readRecentTrendSignals };

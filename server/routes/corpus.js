@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const express  = require('express');
 const router   = express.Router();
@@ -11,11 +11,12 @@ const {
   upsertCorpusChannel,
   promoteCorpusChannelTraining,
   demoteCorpusChannelTraining,
-  upsertDiscoveryEdge,
 } = require('../db/corpusQueries');
 const { evaluateChannelQuality }  = require('../services/qualityAgent');
 const { promoteToTrainingCorpus } = require('../services/trainingAgent');
 const { runCorpusCycle, getSchedulerStatus, getRunHistory } = require('../services/corpusScheduler');
+const { buildRichNicheEdges } = require('../services/nicheEdgeBuilder');
+const cache = require('../services/queryCache');
 
 function adminOnly(req, res, next) {
   const envToken = process.env.ADMIN_TOKEN;
@@ -25,7 +26,7 @@ function adminOnly(req, res, next) {
   next();
 }
 
-// ── Stats ─────────────────────────────────────────────────────────────────────
+// â”€â”€ Stats â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/stats', adminOnly, (req, res) => {
   try {
@@ -37,7 +38,7 @@ router.get('/corpus/stats', adminOnly, (req, res) => {
   }
 });
 
-// ── Channel list ──────────────────────────────────────────────────────────────
+// â”€â”€ Channel list â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/channels', adminOnly, (req, res) => {
   try {
@@ -59,7 +60,7 @@ router.get('/corpus/channels', adminOnly, (req, res) => {
   }
 });
 
-// ── Quality distribution ──────────────────────────────────────────────────────
+// â”€â”€ Quality distribution â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/quality-distribution', adminOnly, (req, res) => {
   try {
@@ -86,7 +87,7 @@ router.get('/corpus/quality-distribution', adminOnly, (req, res) => {
   }
 });
 
-// ── Training set ──────────────────────────────────────────────────────────────
+// â”€â”€ Training set â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/training-set', adminOnly, (req, res) => {
   try {
@@ -100,7 +101,7 @@ router.get('/corpus/training-set', adminOnly, (req, res) => {
   }
 });
 
-// ── Discovery graph ───────────────────────────────────────────────────────────
+// â”€â”€ Discovery graph â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/discovery-graph', adminOnly, (req, res) => {
   try {
@@ -117,7 +118,7 @@ router.get('/corpus/discovery-graph', adminOnly, (req, res) => {
   }
 });
 
-// ── Single channel quality evaluation ────────────────────────────────────────
+// â”€â”€ Single channel quality evaluation â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/evaluate-channel/:id', adminOnly, (req, res) => {
   try {
@@ -131,7 +132,7 @@ router.post('/corpus/evaluate-channel/:id', adminOnly, (req, res) => {
   }
 });
 
-// ── Promote channel to training corpus ───────────────────────────────────────
+// â”€â”€ Promote channel to training corpus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/promote/:id', adminOnly, (req, res) => {
   try {
@@ -143,7 +144,7 @@ router.post('/corpus/promote/:id', adminOnly, (req, res) => {
   }
 });
 
-// ── Force-promote (bypass quality gate) ──────────────────────────────────────
+// â”€â”€ Force-promote (bypass quality gate) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/force-promote/:id', adminOnly, (req, res) => {
   try {
@@ -155,7 +156,7 @@ router.post('/corpus/force-promote/:id', adminOnly, (req, res) => {
   }
 });
 
-// ── Demote channel from training corpus ──────────────────────────────────────
+// â”€â”€ Demote channel from training corpus â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/demote/:id', adminOnly, (req, res) => {
   try {
@@ -168,7 +169,7 @@ router.post('/corpus/demote/:id', adminOnly, (req, res) => {
   }
 });
 
-// ── Sync ingested_channels → corpus_channels (one-time migration) ─────────────
+// â”€â”€ Sync ingested_channels â†’ corpus_channels (one-time migration) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/sync-from-ingested', adminOnly, (req, res) => {
   try {
@@ -180,7 +181,7 @@ router.post('/corpus/sync-from-ingested', adminOnly, (req, res) => {
   }
 });
 
-// ── Scheduler status ──────────────────────────────────────────────────────────
+// â”€â”€ Scheduler status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/scheduler/status', adminOnly, (req, res) => {
   try {
@@ -192,11 +193,12 @@ router.get('/corpus/scheduler/status', adminOnly, (req, res) => {
   }
 });
 
-// ── Manual scheduler trigger ──────────────────────────────────────────────────
+// â”€â”€ Manual scheduler trigger â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/scheduler/run', adminOnly, async (req, res) => {
   try {
     const b = req.body ?? {};
+    const growthMode             = b.growth_mode === true;
     const allowSearch            = b.allow_search             === true;
     const allowAIDiscovery       = b.allow_ai_discovery       === true;
     const allowCulturalExpansion = b.allow_cultural_expansion === true;
@@ -213,24 +215,66 @@ router.post('/corpus/scheduler/run', adminOnly, async (req, res) => {
     const allowPunjabiSearch     = b.allow_punjabi_search     === true;
     const allowVideoSearch       = b.allow_video_search       === true;
     const quotaBudget = b.quota_budget
-      ? Math.min(4000, Math.max(100, parseInt(b.quota_budget, 10)))
+      ? Math.min(50000, Math.max(100, parseInt(b.quota_budget, 10)))
       : undefined;
     const mode = ['discover', 'promote', 'full'].includes(b.mode) ? b.mode : 'full';
-    const result = await runCorpusCycle({
-      allowSearch, allowAIDiscovery, allowCulturalExpansion,
-      allowHindiSearch, allowTamilSearch, allowTeluguSearch,
-      allowBengaliSearch, allowKannadaSearch, allowMalayalamSearch,
-      allowSpanishSearch, allowPortugueseSearch, allowIndonesianSearch,
-      allowArabicSearch, allowPunjabiSearch, allowVideoSearch,
-      quotaBudget, mode,
-    });
+
+    const envKeys = [
+      'CREATOR_GRAPH_RESOLVE_QUOTA',
+      'CREATOR_GRAPH_HANDLE_CAP',
+      'CORPUS_LIGHT_INGEST_LIMIT',
+      'CORPUS_NICHE_CLASSIFY_LIMIT',
+      'CORPUS_QUALITY_EVAL_LIMIT',
+      'CORPUS_SKIP_PRIORITY_RESCORE',
+      'CORPUS_GROWTH_ONLY',
+      'CORPUS_DISCOVERY_SEARCH_FRACTION',
+    ];
+    const prevEnv = Object.fromEntries(envKeys.map(k => [k, process.env[k]]));
+
+    let result;
+    try {
+      if (growthMode) {
+        process.env.CREATOR_GRAPH_RESOLVE_QUOTA = String(Math.min(5000, Math.floor((quotaBudget ?? 50000) * 0.1)));
+        process.env.CREATOR_GRAPH_HANDLE_CAP = '1200';
+        process.env.CORPUS_LIGHT_INGEST_LIMIT = '3000';
+        process.env.CORPUS_NICHE_CLASSIFY_LIMIT = '3000';
+        process.env.CORPUS_QUALITY_EVAL_LIMIT = '5000';
+        process.env.CORPUS_SKIP_PRIORITY_RESCORE = '1';
+        process.env.CORPUS_GROWTH_ONLY = '1';
+        process.env.CORPUS_DISCOVERY_SEARCH_FRACTION = '0.6';
+      }
+
+      result = await runCorpusCycle({
+        allowSearch: growthMode ? true : allowSearch,
+        allowAIDiscovery: growthMode ? true : allowAIDiscovery,
+        allowCulturalExpansion,
+        allowHindiSearch: growthMode ? true : allowHindiSearch,
+        allowTamilSearch: growthMode ? true : allowTamilSearch,
+        allowTeluguSearch: growthMode ? true : allowTeluguSearch,
+        allowBengaliSearch: growthMode ? true : allowBengaliSearch,
+        allowKannadaSearch: growthMode ? true : allowKannadaSearch,
+        allowMalayalamSearch: growthMode ? true : allowMalayalamSearch,
+        allowSpanishSearch: growthMode ? false : allowSpanishSearch,
+        allowPortugueseSearch: growthMode ? false : allowPortugueseSearch,
+        allowIndonesianSearch: growthMode ? false : allowIndonesianSearch,
+        allowArabicSearch: growthMode ? true : allowArabicSearch,
+        allowPunjabiSearch: growthMode ? true : allowPunjabiSearch,
+        allowVideoSearch: growthMode ? true : allowVideoSearch,
+        quotaBudget, mode,
+      });
+    } finally {
+      for (const [k, v] of Object.entries(prevEnv)) {
+        if (v == null) delete process.env[k];
+        else process.env[k] = v;
+      }
+    }
     res.json({ ok: true, result });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ── Niche gap report ──────────────────────────────────────────────────────────
+// â”€â”€ Niche gap report â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/niche-gaps', adminOnly, (req, res) => {
   try {
@@ -252,7 +296,7 @@ router.get('/corpus/niche-gaps', adminOnly, (req, res) => {
   }
 });
 
-// ── Embedding queue status ────────────────────────────────────────────────────
+// â”€â”€ Embedding queue status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/embedding-queue', adminOnly, (req, res) => {
   try {
@@ -270,68 +314,18 @@ router.get('/corpus/embedding-queue', adminOnly, (req, res) => {
   }
 });
 
-// ── Build niche-proximity edges (zero quota) ──────────────────────────────────
+// â”€â”€ Build niche-proximity edges (zero quota) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.post('/corpus/build-niche-edges', adminOnly, (req, res) => {
   try {
-    const db       = getDb();
-    const before   = db.get('SELECT COUNT(*) AS n FROM corpus_discovery_graph').n;
-    const channels = db.all(`
-      SELECT channel_id, niche, subscriber_count FROM corpus_channels
-      WHERE niche IS NOT NULL AND niche != 'other'
-        AND subscriber_count IS NOT NULL AND subscriber_count > 0
-      ORDER BY niche, subscriber_count
-    `);
-
-    const byNiche = {};
-    for (const ch of channels) (byNiche[ch.niche] = byNiche[ch.niche] || []).push(ch);
-
-    const NEIGHBOURS = 8;
-    const half       = Math.ceil(NEIGHBOURS / 2);
-    const edges      = [];
-
-    for (const members of Object.values(byNiche)) {
-      for (let i = 0; i < members.length; i++) {
-        const subs  = members[i].subscriber_count;
-        const start = Math.max(0, i - half);
-        const end   = Math.min(members.length - 1, i + half);
-        let count   = 0;
-        for (let j = start; j <= end && count < NEIGHBOURS; j++) {
-          if (j === i) continue;
-          const logRatio   = Math.abs(Math.log10((subs + 1) / (members[j].subscriber_count + 1)));
-          const confidence = parseFloat(Math.max(0.2, 0.65 - logRatio * 0.1).toFixed(2));
-          edges.push({ src: members[i].channel_id, tgt: members[j].channel_id, confidence });
-          count++;
-        }
-      }
-    }
-
-    // Batch all writes in a single transaction — critical for DELETE journal mode on Windows
-    db.run('BEGIN');
-    try {
-      for (const e of edges) {
-        upsertDiscoveryEdge(db, {
-          source_channel_id: e.src,
-          target_channel_id: e.tgt,
-          relationship_type: 'niche_size_peer',
-          confidence:        e.confidence,
-          discovered_via:    'niche_proximity_miner',
-        });
-      }
-      db.run('COMMIT');
-    } catch (inner) {
-      db.run('ROLLBACK');
-      throw inner;
-    }
-
-    const after = db.get('SELECT COUNT(*) AS n FROM corpus_discovery_graph').n;
-    res.json({ ok: true, written: edges.length, before, after, net_new: after - before, niches: Object.keys(byNiche).length });
+    const db = getDb();
+    res.json(buildRichNicheEdges(db));
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
 });
 
-// ── Corpus composition dashboard ─────────────────────────────────────────────
+// â”€â”€ Corpus composition dashboard â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 router.get('/corpus/composition', adminOnly, (req, res) => {
   try {
@@ -406,7 +400,7 @@ router.get('/corpus/composition', adminOnly, (req, res) => {
   }
 });
 
-// ── Seen-channel capture (fires on every user channel search) ─────────────────
+// â”€â”€ Seen-channel capture (fires on every user channel search) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // POST /api/corpus/seen-channel
 // Body: raw YouTube API channel object from the frontend.
 // Saves to corpus_channels so it gets evaluated + clustered on next runs.
@@ -467,7 +461,7 @@ router.post('/corpus/seen-channel', (req, res) => {
   }
 });
 
-// ── Community inference (real-time, no save) ──────────────────────────────────
+// â”€â”€ Community inference (real-time, no save) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 // GET /api/intel/community/infer?niche=fitness&subscribers=420000&language=hi
 // Returns the best-matching community for a channel we haven't seen before.
 router.get('/intel/community/infer', (req, res) => {
@@ -479,7 +473,11 @@ router.get('/intel/community/infer', (req, res) => {
 
     if (!niche) return res.status(400).json({ ok: false, error: 'niche required' });
 
-    // Subscriber range: ±1 order of magnitude (0.2x – 5x)
+    const cacheKey = `community:infer:${niche}:${Math.floor(subscribers / 100000)}:${language || ''}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return res.json(cached);
+
+    // Subscriber range: Â±1 order of magnitude (0.2x â€“ 5x)
     const lo = Math.max(0, Math.floor(subscribers * 0.2));
     const hi = Math.ceil(subscribers * 5);
 
@@ -522,18 +520,20 @@ router.get('/intel/community/infer', (req, res) => {
     }
 
     if (!row) {
-      // No corpus community found — count ingested peers by niche as fallback
+      // No corpus community found â€” count ingested peers by niche as fallback
       const ingestedPeers = db.get(
         `SELECT COUNT(*) AS n FROM ingested_channels
          WHERE niche = ? AND ingest_enabled = 1`,
         [niche],
       );
-      return res.json({
-        ok:          true,
+      const result = {
+        ok:           true,
         community_id: null,
-        peer_count:  Math.max(0, (ingestedPeers?.n ?? 1) - 1), // exclude self
-        reason:      'inferred_from_ingested',
-      });
+        peer_count:   Math.max(0, (ingestedPeers?.n ?? 1) - 1),
+        reason:       'inferred_from_ingested',
+      };
+      cache.set(cacheKey, result, 30 * 60 * 1000);
+      return res.json(result);
     }
 
     // Peer stats for the matched community
@@ -554,15 +554,17 @@ router.get('/intel/community/infer', (req, res) => {
       [row.community_id],
     );
 
-    res.json({
-      ok:           true,
-      community_id: row.community_id,
-      peer_count:   peers?.size ?? 0,
-      top_niche:    topNiche?.niche ?? niche,
-      avg_subscribers:  Math.round(peers?.avg_subscribers ?? 0),
-      max_subscribers:  peers?.max_subscribers ?? 0,
-      min_subscribers:  peers?.min_subscribers ?? 0,
-    });
+    const result = {
+      ok:              true,
+      community_id:    row.community_id,
+      peer_count:      peers?.size ?? 0,
+      top_niche:       topNiche?.niche ?? niche,
+      avg_subscribers: Math.round(peers?.avg_subscribers ?? 0),
+      max_subscribers: peers?.max_subscribers ?? 0,
+      min_subscribers: peers?.min_subscribers ?? 0,
+    };
+    cache.set(cacheKey, result, 30 * 60 * 1000);
+    res.json(result);
   } catch (e) {
     console.error('[community-infer]', e.message);
     res.status(500).json({ ok: false, error: e.message });

@@ -286,6 +286,15 @@ const SCHEMA = `
     likes               INTEGER,
     comments            INTEGER,
     channel_subscribers INTEGER,
+    is_short           INTEGER NOT NULL DEFAULT 0,
+    thumbnail_url       TEXT,
+    thumbnail_width     INTEGER,
+    thumbnail_height    INTEGER,
+    thumbnail_aspect_ratio REAL,
+    format_type         TEXT    NOT NULL DEFAULT 'unknown',
+    format_confidence   TEXT    NOT NULL DEFAULT 'low',
+    format_reason       TEXT,
+    ingest_source       TEXT,
     ingested_at         TEXT    NOT NULL DEFAULT (datetime('now')),
     last_refreshed_at   TEXT
   );
@@ -293,6 +302,7 @@ const SCHEMA = `
   CREATE INDEX IF NOT EXISTS idx_iv_channel   ON ingested_videos(channel_id);
   CREATE INDEX IF NOT EXISTS idx_iv_niche     ON ingested_videos(niche);
   CREATE INDEX IF NOT EXISTS idx_iv_published ON ingested_videos(published_at);
+  CREATE INDEX IF NOT EXISTS idx_iv_snapshot_due ON ingested_videos(published_at, last_refreshed_at, youtube_video_id);
 
   CREATE TABLE IF NOT EXISTS video_growth_snapshots (
     id                           TEXT PRIMARY KEY,
@@ -312,6 +322,7 @@ const SCHEMA = `
 
   CREATE INDEX IF NOT EXISTS idx_vgs_video_id ON video_growth_snapshots(video_id);
   CREATE INDEX IF NOT EXISTS idx_vgs_bucket   ON video_growth_snapshots(bucket);
+  CREATE INDEX IF NOT EXISTS idx_vgs_video_bucket ON video_growth_snapshots(video_id, bucket);
 
   CREATE TABLE IF NOT EXISTS niche_benchmarks (
     id              TEXT    PRIMARY KEY,
@@ -703,6 +714,52 @@ const SCHEMA = `
     report_json           TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_cqs_ran_at ON cluster_quality_snapshots(ran_at DESC);
+
+  CREATE TABLE IF NOT EXISTS creator_discovery_candidates (
+    candidate_key               TEXT    PRIMARY KEY,
+    handle                      TEXT,
+    candidate_type              TEXT    NOT NULL DEFAULT 'handle',
+    score                       REAL    NOT NULL DEFAULT 0,
+    total_mentions              INTEGER NOT NULL DEFAULT 0,
+    distinct_source_channels    INTEGER NOT NULL DEFAULT 0,
+    recent_mention_count        INTEGER NOT NULL DEFAULT 0,
+    title_collab_count          INTEGER NOT NULL DEFAULT 0,
+    description_mention_count   INTEGER NOT NULL DEFAULT 0,
+    high_quality_source_count   INTEGER NOT NULL DEFAULT 0,
+    thin_pool_relevance         REAL    NOT NULL DEFAULT 0,
+    status                      TEXT    NOT NULL DEFAULT 'pending',
+    resolved_channel_id         TEXT,
+    resolved_title              TEXT,
+    resolved_subscriber_count   INTEGER,
+    resolved_video_count        INTEGER,
+    resolved_country            TEXT,
+    resolved_language           TEXT,
+    rejection_reason            TEXT,
+    created_at                  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at                  TEXT    NOT NULL DEFAULT (datetime('now')),
+    resolved_at                 TEXT,
+    admitted_at                 TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_cdc_status    ON creator_discovery_candidates(status);
+  CREATE INDEX IF NOT EXISTS idx_cdc_score     ON creator_discovery_candidates(score DESC);
+  CREATE INDEX IF NOT EXISTS idx_cdc_type      ON creator_discovery_candidates(candidate_type);
+  CREATE INDEX IF NOT EXISTS idx_cdc_resolved  ON creator_discovery_candidates(resolved_channel_id);
+
+  CREATE TABLE IF NOT EXISTS creator_discovery_edges (
+    id                INTEGER PRIMARY KEY AUTOINCREMENT,
+    candidate_key     TEXT    NOT NULL,
+    source_channel_id TEXT,
+    source_video_id   TEXT,
+    evidence_type     TEXT    NOT NULL,
+    evidence_text     TEXT,
+    source_niche      TEXT,
+    observed_at       TEXT,
+    created_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (candidate_key) REFERENCES creator_discovery_candidates(candidate_key)
+  );
+  CREATE INDEX IF NOT EXISTS idx_cde_candidate ON creator_discovery_edges(candidate_key);
+  CREATE INDEX IF NOT EXISTS idx_cde_source_ch ON creator_discovery_edges(source_channel_id);
+  CREATE INDEX IF NOT EXISTS idx_cde_type      ON creator_discovery_edges(evidence_type);
 `;
 
 module.exports = SCHEMA;

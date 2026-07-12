@@ -151,6 +151,7 @@ export const ROUTES = {
   semanticClusters:      `${SCORING_URL}/api/semantic/clusters`,
   semanticCoverage:      `${SCORING_URL}/api/semantic/coverage`,
   semanticNearest:       `${SCORING_URL}/api/semantic/nearest`,
+  researchPapers:        `${SCORING_URL}/api/research/papers`,
   semanticEmbedTitle:    `${SCORING_URL}/api/semantic/embed-title`,
   semanticCacheStats:    `${SCORING_URL}/api/semantic/cache/stats`,
   adminSemanticIngest:   `${SCORING_URL}/api/admin/semantic/ingest/trigger`,
