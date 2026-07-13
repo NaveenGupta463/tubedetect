@@ -1089,7 +1089,7 @@ function PlaceholderPanel({ placeholders }) {
 const EVIDENCE_STATUS_STYLE = {
   PLACEHOLDER: { bg: 'rgba(255,179,0,0.07)',  border: 'rgba(255,179,0,0.22)',  label: '#FFBA00', text: 'NEEDS VERIFICATION' },
   UNVERIFIED:  { bg: 'rgba(255,100,100,0.06)', border: 'rgba(255,100,100,0.2)', label: '#FF7070', text: 'UNVERIFIED'          },
-  VERIFIED_WEB:{ bg: 'rgba(18,217,138,0.06)', border: 'rgba(18,217,138,0.2)', label: T.success, text: 'VERIFIED'             },
+  CITED:       { bg: 'rgba(18,217,138,0.06)', border: 'rgba(18,217,138,0.2)', label: T.success, text: 'CITED'                },
 };
 
 function EvidencePanel({ evidence }) {
@@ -1121,6 +1121,11 @@ function EvidencePanel({ evidence }) {
                 <span style={{ marginLeft: 6, fontSize: '0.65rem', color: T.accent }}>
                   — {ev.source}
                 </span>
+              )}
+              {ev.supporting_quote && (
+                <div style={{ marginTop: 4, fontSize: '0.68rem', color: T.muted, fontStyle: 'italic', lineHeight: 1.4 }}>
+                  ↳ "{ev.supporting_quote}"
+                </div>
               )}
             </div>
           </div>

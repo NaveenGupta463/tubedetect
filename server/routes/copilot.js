@@ -10,6 +10,7 @@ const { runScan }                       = require('../services/scanRules');
 const { parseBrief, buildFollowUp }     = require('../services/briefParser');
 const { search }                        = require('../services/webSearch');
 const { searchPapers, isResearchRelevantNiche } = require('../services/researchGrounding');
+const { verifyClaims } = require('../services/claimVerifier');
 const { canAfford, deduct, classifyAction, estimateMaxCost } = require('../services/creditService');
 const { resolveCreatorPeerContext }     = require('../services/creatorPeerContext');
 const crypto = require('crypto');
@@ -605,6 +606,12 @@ router.post('/chat', async (req, res) => {
     // for a "$240 million" figure the article never mentioned) — checking the claim's own numbers
     // against the text we actually got back catches that class of fabrication.
     let webContext = null, researchContext = null, citableUrls = new Set(), groundingText = '';
+    // groundingByUrl maps a specific citable URL -> the actual text we have FOR THAT source, so the
+    // verification pass below can check "does THIS source support THIS claim" rather than "does the
+    // claim match ANYTHING we've seen" (Tavily's basic search returns one synthesized answer shared
+    // across several source links, not per-page text, so multiple URLs legitimately map to the same
+    // answer text — that's the best granularity available without paying for full-page extraction).
+    const groundingByUrl = new Map();
     const wantsWeb      = !!compiledPolicy.config?.needsWeb;
     const wantsResearch = isResearchRelevantNiche(compiledPolicy.niche);
     if (wantsWeb || wantsResearch) {
@@ -614,9 +621,16 @@ router.post('/chat', async (req, res) => {
       ]);
       webContext = webRes.status === 'fulfilled' ? webRes.value : null;
       const papers = papersRes.status === 'fulfilled' ? papersRes.value : null;
-      if (papers?.length) { researchContext = { papers }; citableUrls = new Set(papers.map(p => p.url)); }
-      if (webContext?.answer) groundingText += ' ' + webContext.answer;
-      if (papers?.length) groundingText += ' ' + papers.map(p => p.abstract || '').join(' ');
+      if (papers?.length) {
+        researchContext = { papers };
+        citableUrls = new Set(papers.map(p => p.url));
+        for (const p of papers) if (p.url) groundingByUrl.set(p.url, p.abstract || '');
+        groundingText += ' ' + papers.map(p => p.abstract || '').join(' ');
+      }
+      if (webContext?.answer) {
+        groundingText += ' ' + webContext.answer;
+        for (const s of (webContext.sources || [])) if (s?.url) groundingByUrl.set(s.url, webContext.answer);
+      }
     }
 
     const systemPrompt = buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, thread?.brief, webContext, researchContext);
@@ -766,11 +780,31 @@ router.post('/chat', async (req, res) => {
           return ev;
         });
 
+        // Dedicated verification pass: for claims that survived the cheap checks, a SEPARATE model
+        // call (no creative stakes, just auditing) checks whether the specific source text actually
+        // supports the specific claim, and extracts the real supporting quote to show the creator.
+        // Best-effort — if it fails/times out, leave the cheap-check result as-is rather than block.
+        let finalEvidence = sanitizedEvidence;
+        const toVerify = sanitizedEvidence.filter(ev => ev.status === 'CITED' && groundingByUrl.has(ev.source));
+        if (toVerify.length) {
+          const results = await verifyClaims(toVerify.map(ev => ({ claim: ev.claim, sourceText: groundingByUrl.get(ev.source) }))).catch(() => null);
+          if (results) {
+            let vi = 0;
+            finalEvidence = sanitizedEvidence.map(ev => {
+              if (ev.status !== 'CITED' || !groundingByUrl.has(ev.source)) return ev;
+              const r = results[vi++];
+              if (!r) return ev;
+              if (!r.supported) return { ...ev, status: 'UNVERIFIED', source: null };
+              return { ...ev, supporting_quote: r.quote || null };
+            });
+          }
+        }
+
         return res.json({
           answer,
           cards:        Array.isArray(parsed.cards)    ? parsed.cards    : [],
           actions:      Array.isArray(parsed.actions)  ? parsed.actions  : [],
-          evidence:     sanitizedEvidence,
+          evidence:     finalEvidence,
           placeholders,
           credits:      creditResult,
           thread_state: {
@@ -811,7 +845,7 @@ router.post('/chat', async (req, res) => {
             // not just whether its URL happens to be one we fetched.
             if (block.name === 'searchWeb' && result?.answer) {
               groundingText += ' ' + result.answer;
-              if (Array.isArray(result.sources)) for (const s of result.sources) if (s?.url) citableUrls.add(s.url);
+              if (Array.isArray(result.sources)) for (const s of result.sources) if (s?.url) { citableUrls.add(s.url); groundingByUrl.set(s.url, result.answer); }
             }
           } catch (err) {
             console.error(`[copilot] tool=${block.name} threw:`, err.message);
