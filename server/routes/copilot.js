@@ -659,7 +659,11 @@ router.post('/chat', async (req, res) => {
 
       const apiParams = {
         model:      'claude-sonnet-4-6',
-        max_tokens: 4096,
+        // A full body script (7+ sections, evidence, actions) can genuinely need more than 4096
+        // output tokens. Observed live: a body-script response landed right at that ceiling and the
+        // model coped by nesting its real content as a JSON-in-text blob inside "answer" instead of
+        // properly populating "cards" — the JSON never broke, it just degraded format under pressure.
+        max_tokens: 8192,
         system:     systemPrompt,
         messages:   loopMessages,
       };
@@ -693,6 +697,20 @@ router.post('/chat', async (req, res) => {
         if (!parsed) {
           const prose = raw.replace(/```[\s\S]*?```/g, '').trim();
           parsed = { answer: prose, cards: [], actions: [] };
+        }
+
+        // 4. Recovery: the outer JSON can parse "successfully" but still be wrong — observed live on
+        // a long body script, where the model nested its ENTIRE real response (its own answer/cards)
+        // as a second JSON blob inside the outer "answer" text field, leaving the outer "cards" empty.
+        // If that's what happened, unwrap the inner object and use it instead of the empty shell.
+        if ((!Array.isArray(parsed.cards) || parsed.cards.length === 0) && typeof parsed.answer === 'string') {
+          const inner = parsed.answer.match(/\{[\s\S]*"cards"[\s\S]*\}/);
+          if (inner) {
+            try {
+              const innerParsed = JSON.parse(inner[0]);
+              if (Array.isArray(innerParsed.cards) && innerParsed.cards.length > 0) parsed = innerParsed;
+            } catch (_) {}
+          }
         }
 
         const rawAnswer = parsed.answer || "I found some data but couldn't format a response. Try asking again.";

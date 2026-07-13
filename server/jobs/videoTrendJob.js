@@ -190,6 +190,7 @@ const PHRASE_STOP = new Set([
   'needs','let','lets','want','wants','every','gift','free','gone','back','bye','get','gets','got',
   'make','makes','made','put','give','giving','take','takes','went','goes','going','look','looks',
   'looking','tried','try','trying','wait','end','like','love','life','last','main','tera','sath',
+  'happens','happen','happened','happening', // "what happens to your body when..." collapses to "happens <topic>"
   // romanised Hindi filler / verbs
   'kar','rahe','raha','rahi','hain','tha','thi','gaya','gayi','hoga','karo','karta','karti','mera',
   'mere','meri','teri','liye','kaise','kyun','kyu','kyon','jab','tab','phir','abhi','sirf','bahut',
