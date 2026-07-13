@@ -1235,6 +1235,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
   const [cacheMeta,          setCacheMeta]         = useState(null);
   const [cacheRefreshing,    setCacheRefreshing]   = useState(false);
   const [nicheCategory,      setNicheCategory]     = useState(null);
+  const [aiPending,          setAiPending]         = useState(false);
   const [noActiveNarratives, setNoActiveNarratives]= useState(false);
   const [loading,       setLoading]      = useState(false);
   const [error,         setError]        = useState(null);
@@ -1396,6 +1397,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
 
     function applyWtpData(data, { allowPoll = true } = {}) {
       setNicheCategory(data.niche_category || 'A');
+      setAiPending(!!data.ai_pending);
       setIdeas(data.ideas || []);
       setOriginalBets(data.original_bets || null);
       setNoActiveNarratives(!!data.no_active_narratives);
@@ -2052,13 +2054,17 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
             textAlign: 'center', padding: '60px 20px',
           }}
         >
-          <div style={{ fontSize: '1.6rem', marginBottom: 14 }}>📡</div>
+          <div style={{ fontSize: '1.6rem', marginBottom: 14 }}>{aiPending ? '⏳' : '📡'}</div>
           <div style={{ fontWeight: 700, color: T.text, marginBottom: 6, fontSize: '0.9rem' }}>
-            No community data yet
+            {aiPending ? 'Generating your ideas…' : 'No community data yet'}
           </div>
           <div style={{ fontSize: '0.76rem', color: T.muted, lineHeight: 1.6, maxWidth: 340, margin: '0 auto' }}>
-            This channel's community needs videos in the database to generate ideas.
-            Run the pipeline to ingest more channels in this niche.
+            {aiPending ? (
+              "This is a fresh channel, so we're generating ideas from its upload history for the first time — this can take up to 20 seconds. It'll appear automatically, no need to refresh."
+            ) : (
+              <>This channel's community needs videos in the database to generate ideas.
+              Run the pipeline to ingest more channels in this niche.</>
+            )}
           </div>
         </motion.div>
       )}
