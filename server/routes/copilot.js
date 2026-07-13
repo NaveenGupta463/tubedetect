@@ -290,7 +290,7 @@ ${overrideSection}
 Your job is to answer the creator's questions using the tools available. Always:
 1. Call the most relevant tool(s) to gather real data before answering.
 2. For database-lookup tools (findPeers, findTopics, getChannelEvolution, etc.): call AT MOST 2 per question — do not chain more than 2 calls.
-   EXCEPTION — searchWeb: when drafting a script/outline that needs several distinct real-world facts (case studies, stats, quotes), call searchWeb once PER FACT needed, not once total. Batch all the searchWeb calls you need into the SAME turn when they're independent of each other (you don't need one result before deciding the next query) — this uses your tool budget efficiently. Prefer calling searchWeb for a specific checkable fact over leaving a [VERIFY: ...] marker; only fall back to a marker if the search genuinely returns nothing useful.
+   EXCEPTION — searchWeb: each call is a real, billed web search, capped at 5 PER REQUEST — it will start returning errors after that. So be selective: search for the 3-5 facts that matter MOST (the ones a creator would most need to get right or that anchor the whole script — a named case study, a headline stat), not every number that appears in the outline. For lower-stakes or supporting claims, use a [VERIFY: ...] marker instead of spending a search on them. Batch the searches you do make into the SAME turn when they're independent of each other.
 3. Once you have data from any tool, immediately synthesise and respond. Even if data is limited or peers are few, give the best answer you can.
 4. Speak directly to the creator ("your peers", "you could post about...").
 5. Be concise. One punchy insight is worth more than five bullet points.
@@ -607,8 +607,10 @@ router.post('/chat', async (req, res) => {
     let loopMessages  = [...messages];
     let iterations    = 0;
     let toolRounds    = 0;        // how many tool_use rounds have completed
+    let searchWebCalls = 0;       // real Tavily calls made this request — hard cost cap, not just a prompt suggestion
     const MAX_ITERATIONS = 6;    // 2 tool rounds + synthesis = at most 5; 6 is safe headroom
     const MAX_TOOL_ROUNDS = 3;   // after this many rounds, force synthesis via tool_choice:none — headroom for fact-heavy scripts that call searchWeb, review a result, then search again
+    const MAX_SEARCHWEB_CALLS = 5; // ceiling on real Tavily calls per request (observed 19 calls/38 credits with no cap — this bounds worst-case cost)
 
     while (iterations < MAX_ITERATIONS) {
       iterations++;
@@ -766,7 +768,15 @@ router.post('/chat', async (req, res) => {
 
           let result;
           try {
-            result = await dispatch(db, block.name, block.input, channel_id, creatorFormat);
+            // Hard cost cap: searchWeb makes a REAL, billed Tavily call. Check BEFORE dispatching so
+            // an exceeded budget never reaches the network — this must be enforced in code, not just
+            // requested in the prompt (a prompt instruction alone let one request make 19 calls).
+            if (block.name === 'searchWeb' && searchWebCalls >= MAX_SEARCHWEB_CALLS) {
+              result = { error: `Search budget for this request is used up (${MAX_SEARCHWEB_CALLS} searches). Use a [VERIFY: ...] marker for any remaining facts instead of searching further.` };
+            } else {
+              if (block.name === 'searchWeb') searchWebCalls++;
+              result = await dispatch(db, block.name, block.input, channel_id, creatorFormat);
+            }
             console.log(`[copilot] tool=${block.name} input=${JSON.stringify(block.input)} result_keys=${Object.keys(result).join(',')}`);
             // searchWeb's real sources are citable too — not just the pre-fetch research papers.
             if (block.name === 'searchWeb' && Array.isArray(result?.sources)) {

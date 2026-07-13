@@ -1,7 +1,9 @@
 // Tavily-powered web search for verified facts.
-// Used before generation when compiledPolicy.config.needsWeb === true.
+// Used before generation when compiledPolicy.config.needsWeb === true, and by the searchWeb tool.
 // Returns { answer, sources } or null on failure.
-// Free tier: 1,000 searches/month at tavily.com
+// Free tier: 1,000 credits/month at tavily.com. search_depth 'basic' = 1 credit/query, 'advanced' =
+// 2 credits/query — use 'basic' unless a specific caller genuinely needs deeper research, since the
+// searchWeb tool can call this many times per request and cost multiplies fast.
 
 const TAVILY_API = 'https://api.tavily.com/search';
 
@@ -20,7 +22,7 @@ async function search(query, niche = 'general') {
       body: JSON.stringify({
         api_key:        apiKey,
         query:          query,
-        search_depth:   'advanced',
+        search_depth:   'basic',
         include_answer: true,
         max_results:    5,
       }),
