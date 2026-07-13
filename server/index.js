@@ -111,11 +111,13 @@ try {
   });
 
   // Kill requests that hang longer than their allowed time.
-  // Copilot/AI routes get 90s (Claude streaming can take 40-60s).
+  // Copilot/AI routes get 150s — Claude streaming alone is 40-60s, but the agentic loop can now
+  // call searchWeb multiple times across multiple tool rounds (real Tavily calls + extra Claude
+  // round-trips per round), so a fact-heavy script can legitimately take longer than a single pass.
   // All other routes get 20s.
   app.use((req, res, next) => {
     const isAiRoute = req.path.startsWith('/api/copilot') || req.path.match(/\/api\/repair\/[^/]+\/ai$/);
-    const timeout = isAiRoute ? 90000 : 20000;
+    const timeout = isAiRoute ? 150000 : 20000;
     res.setTimeout(timeout, () => {
       if (!res.headersSent) res.status(503).json({ error: 'Request timed out' });
     });
