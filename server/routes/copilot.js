@@ -175,7 +175,11 @@ BANNED WORDS — NEVER use these (they are crude/disrespectful informal forms):
   ✗ tumhe / tumko → use "aapko" instead
 Always address the audience with "aap" forms — respectful Hinglish, not street slang.`;
   }
-  return ''; // English — no special instruction needed
+  return `
+LANGUAGE — ENGLISH MODE:
+The creator has selected English for this session. Write ALL drafts, hooks, outlines, scripts, and titles in plain English.
+- This applies even if the voice profile, sample sentences, or recent video titles shown to you below are in Hindi, Hinglish, or another language — those describe the creator's STYLE (tone, pacing, structure) to imitate, not the language to write in. Translate the style, not the words.
+- Do NOT mix in Hindi/Hinglish words or phrases "for flavor." Write fully in English unless the creator's own message explicitly asks for another language.`;
 }
 
 // ── System prompt builder ─────────────────────────────────────────────────────
