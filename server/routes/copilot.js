@@ -148,6 +148,17 @@ const TOOLS = [
       required: ['topic'],
     },
   },
+  {
+    name: 'searchWeb',
+    description: 'Search the live web for a SPECIFIC real-world fact, case study, statistic, quote, or example — things no internal tool can answer (a company\'s funding round, a government stat, a VC\'s quote, a real 2024-2025 example of something). Use ONE targeted query per distinct fact you need — call it multiple times (once per fact) rather than one vague query. This is for business/news/market facts; it does NOT search academic papers.',
+    input_schema: {
+      type: 'object',
+      properties: {
+        query: { type: 'string', description: 'A specific, narrow search query for exactly one fact — e.g. "NASSCOM India IT sector employment 2025" not "India tech industry stats"' },
+      },
+      required: ['query'],
+    },
+  },
 ];
 
 // ── Language instruction builder ─────────────────────────────────────────────
@@ -278,7 +289,8 @@ ${overrideSection}
 
 Your job is to answer the creator's questions using the tools available. Always:
 1. Call the most relevant tool(s) to gather real data before answering.
-2. Call AT MOST 2 tools per question — do not chain more than 2 tool calls.
+2. For database-lookup tools (findPeers, findTopics, getChannelEvolution, etc.): call AT MOST 2 per question — do not chain more than 2 calls.
+   EXCEPTION — searchWeb: when drafting a script/outline that needs several distinct real-world facts (case studies, stats, quotes), call searchWeb once PER FACT needed, not once total. Batch all the searchWeb calls you need into the SAME turn when they're independent of each other (you don't need one result before deciding the next query) — this uses your tool budget efficiently. Prefer calling searchWeb for a specific checkable fact over leaving a [VERIFY: ...] marker; only fall back to a marker if the search genuinely returns nothing useful.
 3. Once you have data from any tool, immediately synthesise and respond. Even if data is limited or peers are few, give the best answer you can.
 4. Speak directly to the creator ("your peers", "you could post about...").
 5. Be concise. One punchy insight is worth more than five bullet points.
@@ -344,8 +356,8 @@ Evidence objects — include ONLY when the answer or a script/outline contains s
 - { "claim": "exact text of the claim", "status": "UNVERIFIED", "source": null, "confidence": 0.0–1.0 }
   → Use for specific figures, dates, or stats you stated from your own knowledge but cannot confirm are accurate.
   → Data returned from tool calls (peer counts, avg views, subscriber counts) is sourced from our database — do NOT mark tool data as UNVERIFIED.
-- { "claim": "exact text of the claim", "status": "CITED", "source": "<exact URL from RESEARCH GROUNDING above>", "confidence": 0.7–1.0 }
-  → Use ONLY when RESEARCH GROUNDING papers were supplied AND the claim is directly supported by one of them. Copy the URL exactly — never invent one.
+- { "claim": "exact text of the claim", "status": "CITED", "source": "<exact URL from RESEARCH GROUNDING above OR a searchWeb tool result>", "confidence": 0.7–1.0 }
+  → Use ONLY when the claim is directly supported by a paper from RESEARCH GROUNDING or a source returned by the searchWeb tool. Copy the URL exactly — never invent one. If you can't find a matching real URL, use UNVERIFIED instead.
 Only include evidence for factual claims in scripts, outlines, or research answers — not for conversational turns.
 Leave evidence as [] for topic/channel/opportunity queries.
 
@@ -596,7 +608,7 @@ router.post('/chat', async (req, res) => {
     let iterations    = 0;
     let toolRounds    = 0;        // how many tool_use rounds have completed
     const MAX_ITERATIONS = 6;    // 2 tool rounds + synthesis = at most 5; 6 is safe headroom
-    const MAX_TOOL_ROUNDS = 2;   // after this many rounds, force synthesis via tool_choice:none
+    const MAX_TOOL_ROUNDS = 3;   // after this many rounds, force synthesis via tool_choice:none — headroom for fact-heavy scripts that call searchWeb, review a result, then search again
 
     while (iterations < MAX_ITERATIONS) {
       iterations++;
@@ -754,8 +766,12 @@ router.post('/chat', async (req, res) => {
 
           let result;
           try {
-            result = dispatch(db, block.name, block.input, channel_id, creatorFormat);
+            result = await dispatch(db, block.name, block.input, channel_id, creatorFormat);
             console.log(`[copilot] tool=${block.name} input=${JSON.stringify(block.input)} result_keys=${Object.keys(result).join(',')}`);
+            // searchWeb's real sources are citable too — not just the pre-fetch research papers.
+            if (block.name === 'searchWeb' && Array.isArray(result?.sources)) {
+              for (const s of result.sources) if (s?.url) citableUrls.add(s.url);
+            }
           } catch (err) {
             console.error(`[copilot] tool=${block.name} threw:`, err.message);
             result = { error: err.message };

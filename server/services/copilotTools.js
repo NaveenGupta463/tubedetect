@@ -1,4 +1,5 @@
 const { resolvePeers } = require('./copilotPeerHelper');
+const { search } = require('./webSearch');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -508,7 +509,7 @@ function trackNiche(db, { niche, channel_id }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // Dispatch
 // ─────────────────────────────────────────────────────────────────────────────
-function dispatch(db, toolName, input, contextChannelId, creatorFormat = 'long') {
+async function dispatch(db, toolName, input, contextChannelId, creatorFormat = 'long') {
   const withCtx = (fn, key = 'channel_id') => {
     if (contextChannelId) input[key] = contextChannelId;
     input._format = creatorFormat;
@@ -527,6 +528,7 @@ function dispatch(db, toolName, input, contextChannelId, creatorFormat = 'long')
     case 'writeEnding':         return withCtx(writeEnding);
     case 'getChannelEvolution': return withCtx(getChannelEvolution);
     case 'getTopicTrend':       return getTopicTrend(db, input);
+    case 'searchWeb':           return searchWeb(input);
     default:                    return { error: `Unknown tool: ${toolName}` };
   }
 }
@@ -625,4 +627,11 @@ function _formatTopicRow(row, period) {
   return result;
 }
 
-module.exports = { dispatch, detectCreatorFormat, findChannels, findPeers, findTopics, compareChannels, findOpportunity, trackNiche, draftOutline, writeBody, writeEnding, getChannelEvolution, getTopicTrend };
+async function searchWeb({ query }) {
+  if (!query) return { error: 'query is required' };
+  const result = await search(query, 'general').catch(() => null);
+  if (!result) return { error: 'No results found for this query (or web search is unavailable right now). Fall back to a [VERIFY: ...] marker for this fact.' };
+  return { answer: result.answer, sources: result.sources };
+}
+
+module.exports = { dispatch, detectCreatorFormat, findChannels, findPeers, findTopics, compareChannels, findOpportunity, trackNiche, draftOutline, writeBody, writeEnding, getChannelEvolution, getTopicTrend, searchWeb };
