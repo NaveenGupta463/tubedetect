@@ -355,6 +355,7 @@ Card types you can include:
 - { "type": "script", "data": { "topic": "...", "part": "body|ending", "sections": [{ "title": "...", "script": "..." }], "cta": "..." } }
 - { "type": "evolution", "data": { "channel_id": "...", "period": "30d", "view_change_pct": N, "upload_delta": N, "avg_views": N, "video_count": N, "topics": ["..."], "notable_event": null } } — use after getChannelEvolution tool returns data
 - { "type": "topic_drift", "data": { "topic": "...", "period": "30d", "channel_count": N, "avg_views": N, "velocity_trend": "stable|rising|falling" } } — use after getTopicTrend tool returns data
+- { "type": "idea_list", "data": { "ideas": [{ "title": "...", "why": "one sentence on why this angle works" }, ...] } } — use when asked for MULTIPLE distinct angle/idea OPTIONS to pick from (e.g. "give me 3 angles for X", "what are some ways I could cover this"). List 2-5 short ideas. Do NOT write the ideas only in "answer" text — put them in this card so they render as a scannable list. Keep "answer" to the framing/context sentence(s); the ideas themselves belong here, not in the outline card (that's for ONE fully fleshed-out topic).
 
 Action types you can include (1-3 max):
 - { "type": "track_niche",       "label": "Track this topic",           "payload": { "niche": "..." } }

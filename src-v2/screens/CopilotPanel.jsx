@@ -565,6 +565,30 @@ function TopicDriftCard({ data }) {
   );
 }
 
+function IdeaListCard({ data }) {
+  const ideas = Array.isArray(data.ideas) ? data.ideas : [];
+  if (!ideas.length) return null;
+  return (
+    <div style={{
+      padding: '10px 14px', borderRadius: 10, marginBottom: 6,
+      background: 'rgba(255,255,255,0.03)', border: `1px solid ${T.border}`,
+    }}>
+      {ideas.map((idea, i) => (
+        <div key={i} style={{
+          display: 'flex', gap: 10, padding: '8px 0',
+          borderTop: i > 0 ? `1px solid ${T.border}` : 'none',
+        }}>
+          <span style={{ fontSize: '0.8rem', fontWeight: 700, color: T.accent, flexShrink: 0 }}>{i + 1}.</span>
+          <div>
+            <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text, lineHeight: 1.35 }}>{idea.title}</div>
+            {idea.why && <div style={{ fontSize: '0.72rem', color: T.muted, marginTop: 3, lineHeight: 1.4 }}>{idea.why}</div>}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function renderCard(card, idx, onAction, placeholders) {
   if (card.type === 'script') {
     const count = (placeholders || []).filter(p => p.type === 'override').length;
@@ -579,6 +603,7 @@ function renderCard(card, idx, onAction, placeholders) {
     case 'outline':     return <OutlineCard     key={idx} data={card.data} placeholders={placeholders} />;
     case 'evolution':   return <EvolutionCard   key={idx} data={card.data} onAction={onAction} />;
     case 'topic_drift': return <TopicDriftCard  key={idx} data={card.data} />;
+    case 'idea_list':    return <IdeaListCard    key={idx} data={card.data} />;
     default:            return null;
   }
 }
