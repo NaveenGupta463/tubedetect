@@ -431,6 +431,24 @@ function buildBriefPrompt(compiledPolicy, classifyResult) {
   return `Before I can write your ${nicheLabel} script, I need a few details about your video.\n\nPlease share:\n${fieldList}`;
 }
 
+// Extracts number-like tokens from a claim (currency amounts, percentages, plain figures — with
+// Indian units) so a CITED claim's actual substance can be checked against real search-result text,
+// not just its URL. A URL being real doesn't mean the number attached to it is — the model can (and
+// has, observed live) cite a genuine article that never mentions the figure it's "citing" for.
+function extractNumericTokens(text) {
+  const matches = String(text || '').match(/\$?\d[\d,]*(\.\d+)?\s*(million|billion|crore|lakh|%|percent)?/gi) || [];
+  return matches
+    .map(m => m.replace(/[^0-9.]/g, ''))
+    .filter(n => n && n.length >= 2); // skip tiny numbers (years like "24", section numbers) — too likely to false-match
+}
+
+function claimIsGrounded(claim, groundingText) {
+  const tokens = extractNumericTokens(claim);
+  if (!tokens.length) return true; // no checkable figure — fall back to the URL check only
+  const haystack = String(groundingText || '');
+  return tokens.some(t => haystack.includes(t));
+}
+
 // ── POST /api/copilot/chat ────────────────────────────────────────────────────
 router.post('/chat', async (req, res) => {
   try {
@@ -581,7 +599,12 @@ router.post('/chat', async (req, res) => {
     }
 
     // ── Web search + research grounding — both optional, run in parallel ──────
-    let webContext = null, researchContext = null, citableUrls = new Set();
+    // groundingText accumulates the ACTUAL TEXT of every search result this request receives — used
+    // below to check a CITED claim's real content (not just its URL) is genuinely supported. A real
+    // URL doesn't guarantee the claim attached to it is true (observed: model cited a real article
+    // for a "$240 million" figure the article never mentioned) — checking the claim's own numbers
+    // against the text we actually got back catches that class of fabrication.
+    let webContext = null, researchContext = null, citableUrls = new Set(), groundingText = '';
     const wantsWeb      = !!compiledPolicy.config?.needsWeb;
     const wantsResearch = isResearchRelevantNiche(compiledPolicy.niche);
     if (wantsWeb || wantsResearch) {
@@ -592,6 +615,8 @@ router.post('/chat', async (req, res) => {
       webContext = webRes.status === 'fulfilled' ? webRes.value : null;
       const papers = papersRes.status === 'fulfilled' ? papersRes.value : null;
       if (papers?.length) { researchContext = { papers }; citableUrls = new Set(papers.map(p => p.url)); }
+      if (webContext?.answer) groundingText += ' ' + webContext.answer;
+      if (papers?.length) groundingText += ' ' + papers.map(p => p.abstract || '').join(' ');
     }
 
     const systemPrompt = buildSystemPrompt(channel, lang, creatorFormat, voiceProfile, compiledPolicy, isOverride, thread?.brief, webContext, researchContext);
@@ -729,10 +754,13 @@ router.post('/chat', async (req, res) => {
           creditResult = { balance, deducted, action: creditAction };
         }
 
-        // Guardrail: a "CITED" claim is only trustworthy if its URL is one we actually fetched this
-        // turn — strip any URL Claude didn't really receive so a citation can never be invented.
+        // Guardrail: a "CITED" claim is only trustworthy if (a) its URL is one we actually fetched
+        // this turn, AND (b) the claim's own numbers actually appear in the text that search returned
+        // — a real URL doesn't prove the specific figure attached to it is real (observed live: a
+        // genuine article cited for a "$240 million" figure it never mentioned). Either check failing
+        // downgrades to UNVERIFIED.
         const sanitizedEvidence = (Array.isArray(parsed.evidence) ? parsed.evidence : []).map(ev => {
-          if (ev.status === 'CITED' && !citableUrls.has(ev.source)) {
+          if (ev.status === 'CITED' && (!citableUrls.has(ev.source) || !claimIsGrounded(ev.claim, groundingText))) {
             return { ...ev, status: 'UNVERIFIED', source: null };
           }
           return ev;
@@ -779,8 +807,11 @@ router.post('/chat', async (req, res) => {
             }
             console.log(`[copilot] tool=${block.name} input=${JSON.stringify(block.input)} result_keys=${Object.keys(result).join(',')}`);
             // searchWeb's real sources are citable too — not just the pre-fetch research papers.
-            if (block.name === 'searchWeb' && Array.isArray(result?.sources)) {
-              for (const s of result.sources) if (s?.url) citableUrls.add(s.url);
+            // Also accumulate the actual result TEXT so we can check a claim's real content later,
+            // not just whether its URL happens to be one we fetched.
+            if (block.name === 'searchWeb' && result?.answer) {
+              groundingText += ' ' + result.answer;
+              if (Array.isArray(result.sources)) for (const s of result.sources) if (s?.url) citableUrls.add(s.url);
             }
           } catch (err) {
             console.error(`[copilot] tool=${block.name} threw:`, err.message);
