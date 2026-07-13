@@ -257,7 +257,7 @@ async function generateBetTitles(db, channelId, meta = {}) {
   void peerOpps;
   if (!fresh) fresh = '(none — build strictly from this channel\'s own franchises and recurring guests below)';
 
-  const user = `CHANNEL: ${meta.channel_name} | niche=${niche} format=${meta.format_type || '?'} archetype=${meta.content_archetype || '?'} lang=${meta.primary_language || '?'}
+  const header = `CHANNEL: ${meta.channel_name} | niche=${niche} format=${meta.format_type || '?'} archetype=${meta.content_archetype || '?'} lang=${meta.primary_language || '?'}
 ${scriptHint ? `LANGUAGE: this channel posts in ${scriptHint} — write ALL titles in ${scriptHint}, matching their style.\n` : ''}${fmtGuidance ? fmtGuidance + '\n' : ''}FRANCHISES (recurring): ${franchises.join(', ') || '(none detected)'}
 ${guestDriven ? `RECURRING GUESTS — bring one back for a NEW topic that stays WITHIN their established area (do NOT move a guest onto an unrelated subject):\n${guestContext}` : ''}
 
@@ -266,19 +266,35 @@ ${[...new Set([...recent, ...top, ...spread])].slice(0, 34).map(t => `- ${t}`).j
 
 FRESH OPPORTUNITIES:
 ${fresh}
-${Array.isArray(meta.audienceRequests) && meta.audienceRequests.length ? `
-AUDIENCE IS ASKING (real requests pulled from this channel's own comment sections — treat these as genuine signal, same trust level as FRANCHISES):
-${meta.audienceRequests.map(r => `- ${r.phrase} (asked across ${r.video_count} videos, e.g. "${r.sample_quote}")`).join('\n')}
-` : ''}${meta.redditDiscussion ? `
-WHAT PEOPLE DISCUSS ELSEWHERE (community signal, live web search):
-${meta.redditDiscussion}
-` : ''}
-Propose ${meta.limit || 6} NEW concepts as JSON.`;
+`;
 
   // generate with one retry on parse failure (the model intermittently returns non-JSON)
-  let arr = null;
-  for (let attempt = 0; attempt < 2 && !arr; attempt++) {
-    try { arr = await callAI(user); } catch (_) { arr = null; }
+  async function callAIWithRetry(user) {
+    let a = null;
+    for (let attempt = 0; attempt < 2 && !a; attempt++) {
+      try { a = await callAI(user); } catch (_) { a = null; }
+    }
+    return a;
+  }
+
+  const total = meta.limit || 6;
+  const hasAud = Array.isArray(meta.audienceRequests) && meta.audienceRequests.length;
+  const hasReddit = !!meta.redditDiscussion;
+
+  let arr;
+  if (!hasAud && !hasReddit) {
+    arr = await callAIWithRetry(header + `Propose ${total} NEW concepts as JSON.`) || [];
+  } else {
+    // Prompt-only steering (soft AND hard "mandatory split" instructions) proved unreliable — the
+    // model kept drawing every idea from whichever source dominated, ignoring explicit quotas. So the
+    // split is enforced in CODE instead: two independent calls, each asked for an exact count from
+    // ONE source only, merged before the shared quality-gate filters (below) run on the combined set.
+    const half = Math.ceil(total / 2);
+    const audienceBlock = `${hasAud ? `\nAUDIENCE IS ASKING (real requests pulled from this channel's own comment sections — treat these as genuine signal):\n${meta.audienceRequests.map(r => `- ${r.phrase} (asked across ${r.video_count} videos, e.g. "${r.sample_quote}")`).join('\n')}\n` : ''}${hasReddit ? `\nWHAT PEOPLE DISCUSS ELSEWHERE (community signal, live web search):\n${meta.redditDiscussion}\n` : ''}`;
+    const userFranchise = header + `Propose EXACTLY ${half} NEW concepts as JSON, built strictly from this channel's own FRANCHISES / RECURRING GUESTS / FRESH OPPORTUNITIES above. Spread across DIFFERENT franchises — do not fixate on one theme.`;
+    const userAudience = header + audienceBlock + `Propose EXACTLY ${total - half} NEW concepts as JSON, each grounded in a DIFFERENT item from AUDIENCE IS ASKING / WHAT PEOPLE DISCUSS ELSEWHERE above — spread across distinct requests, at most 2 concepts may share the same underlying issue. Ignore FRANCHISES/RECURRING GUESTS for this batch.`;
+    const [arrF, arrA] = await Promise.all([callAIWithRetry(userFranchise), callAIWithRetry(userAudience)]);
+    arr = [...(arrF || []), ...(arrA || [])];
   }
   if (!Array.isArray(arr) || !arr.length) return null;
 
