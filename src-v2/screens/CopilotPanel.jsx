@@ -565,7 +565,7 @@ function TopicDriftCard({ data }) {
   );
 }
 
-function IdeaListCard({ data }) {
+function IdeaListCard({ data, onAction }) {
   const ideas = Array.isArray(data.ideas) ? data.ideas : [];
   if (!ideas.length) return null;
   return (
@@ -579,9 +579,29 @@ function IdeaListCard({ data }) {
           borderTop: i > 0 ? `1px solid ${T.border}` : 'none',
         }}>
           <span style={{ fontSize: '0.8rem', fontWeight: 700, color: T.accent, flexShrink: 0 }}>{i + 1}.</span>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text, lineHeight: 1.35 }}>{idea.title}</div>
             {idea.why && <div style={{ fontSize: '0.72rem', color: T.muted, marginTop: 3, lineHeight: 1.4 }}>{idea.why}</div>}
+            {onAction && (
+              <div style={{ display: 'flex', gap: 5, marginTop: 7 }}>
+                <button
+                  onClick={() => onAction({ type: 'draft_outline', label: 'Draft video outline', payload: { topic: idea.title } })}
+                  style={{
+                    padding: '3px 9px', borderRadius: 5, cursor: 'pointer', border: 'none',
+                    background: 'rgba(157,111,255,0.15)', color: T.accent,
+                    fontSize: '0.68rem', fontWeight: 600,
+                  }}
+                >Build this angle →</button>
+                <button
+                  onClick={() => onAction({ type: 'save_idea', label: 'Save this idea', payload: { topic: idea.title } })}
+                  style={{
+                    padding: '3px 9px', borderRadius: 5, cursor: 'pointer', border: 'none',
+                    background: 'rgba(255,255,255,0.06)', color: T.muted,
+                    fontSize: '0.68rem', fontWeight: 500,
+                  }}
+                >Save</button>
+              </div>
+            )}
           </div>
         </div>
       ))}
@@ -603,7 +623,7 @@ function renderCard(card, idx, onAction, placeholders) {
     case 'outline':     return <OutlineCard     key={idx} data={card.data} placeholders={placeholders} />;
     case 'evolution':   return <EvolutionCard   key={idx} data={card.data} onAction={onAction} />;
     case 'topic_drift': return <TopicDriftCard  key={idx} data={card.data} />;
-    case 'idea_list':    return <IdeaListCard    key={idx} data={card.data} />;
+    case 'idea_list':    return <IdeaListCard    key={idx} data={card.data} onAction={onAction} />;
     default:            return null;
   }
 }
