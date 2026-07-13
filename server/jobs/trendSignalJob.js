@@ -24,7 +24,7 @@ const NICHE_RULES = [
   ['sports',       ['cricket', 'ipl', 'football', 'kabaddi', 'badminton', 'hockey', 'sports highlight', 'sports news', 'match preview', 'match review', 'player performance', 'player interaction', 'sports update', 'player profile']],
   ['news',         ['breaking news', 'regional news', 'local news', 'weather', 'crime report', 'crime news', 'local incident', 'community event', 'government decision', 'natural disaster', 'accident', 'local crime', 'public safety', 'live news', 'live coverage', 'live update', 'regional event', 'news update', 'news coverage', 'flood', 'cyclone', 'earthquake', 'monsoon', 'fire incident', 'road accident', 'train accident', 'village news', 'district news', 'state news']],
   ['politics',     ['politics', 'political', 'politician', 'election', 'parliament', 'governance', 'lok sabha', 'rajya sabha', 'protest', 'india-pakistan', 'minister', 'bjp', 'congress', 'government scam', 'local governance', 'government policy', 'foreign policy', 'national security', 'diplomatic', 'diplomacy', 'geopolitics', 'geopolitical', 'middle east', 'conflict', 'international relations', 'world war', 'civil war', 'war news', 'military operation', 'bilateral', 'us-iran', 'iran', 'israel', 'gaza', 'ukraine', 'russia', 'sanction', 'united nations', 'legal case', 'court case', 'high court', 'supreme court', 'judiciary', 'court verdict']],
-  ['comedy',       ['comedy skit', 'comedy clip', 'comedy scene', 'comedy sketch', 'stand-up', 'prank', 'funny', 'meme', 'parody', 'roast', 'joke']],
+  ['comedy',       ['comedy skit', 'comedy clip', 'comedy scene', 'comedy sketch', 'stand-up', 'prank', 'funny', 'meme', 'parody', 'roast video', 'comedy roast', 'celebrity roast', 'roast battle', 'roast session', 'joke']],
   ['entertainment',['bollywood', 'celebrity', 'movie trailer', 'movie review', 'film review', 'actor', 'actress', 'web series', 'ott', 'gossip', 'reality show', 'award show', 'reaction', 'cinema', 'tollywood', 'kollywood', 'marathi television', 'devotional', 'bhajan', 'family and social', 'celebrity', 'celebrities', 'celebrity interview', 'celebrity gossip', 'drama series', 'drama show', 'tv serial', 'web show', 'short film', 'film industry', 'entertainment news', 'rich poor', 'poor rich', 'rich vs poor', 'poor vs rich', 'relatable skit', 'situation comedy']],
   ['music',        ['music', 'song', 'bhojpuri', 'punjabi', 'hindi song', 'singer', 'folk song', 'rap', 'album', 'dance video', 'music video', 'devotional song', 'music review']],
   ['gaming',       ['gaming', 'gameplay', 'esport', 'bgmi', 'freefire', 'pubg', 'minecraft', 'live stream', 'game review', 'game update', 'game tips']],
@@ -38,7 +38,7 @@ const NICHE_RULES = [
   ['health',       ['health', 'medical', 'doctor', 'diet', 'wellness', 'ayurveda', 'ayurvedic', 'disease', 'treatment', 'mental health', 'healthcare', 'medicine', 'nutrition', 'symptoms', 'cure', 'remedy']],
   ['lifestyle',    ['lifestyle', 'fashion', 'beauty', 'skincare', 'hair care', 'makeup', 'self improvement', 'motivation', 'productivity', 'personal development', 'relationship', 'wedding', 'daily life', 'daily routine', 'vlog', 'morning routine', 'night routine', 'room tour', 'day in life', 'minimalism', 'self help']],
   ['science',      ['science', 'physics', 'chemistry', 'biology', 'astronomy', 'space', 'research', 'scientific', 'discovery', 'experiment']],
-  ['philosophy',   ['philosophy', 'spiritual', 'meditation', 'mindfulness', 'consciousness', 'religion', 'stoic', 'wisdom', 'life lessons', 'astrology', 'horoscope', 'zodiac', 'numerology', 'tarot']],
+  ['philosophy',   ['philosophy', 'spiritual', 'meditation', 'mindfulness', 'consciousness', 'religion', 'stoic', 'wisdom', 'life lessons', 'astrology', 'horoscope', 'zodiac', 'numerology', 'tarot', 'allah', 'namaz', 'islamic prayer', 'dua', 'prayer']],
 ];
 
 // Match keywords on WORD BOUNDARIES (+ optional plural), not raw substring — otherwise short
@@ -47,9 +47,17 @@ const NICHE_RULES = [
 // words in NICHE_RULES so \b matching still catches them. Regexes are compiled once per niche.
 function _escRe(s) { return s.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'); }
 const _NICHE_RULES_RE = NICHE_RULES.map(([niche, kws]) => [niche, new RegExp('\\b(' + kws.map(_escRe).join('|') + ')s?\\b', 'i')]);
+// 'doctor' is a legitimate, common health keyword ("doctor explains", "ask a doctor") — removing it
+// would lose real matches. But "Doctor Doom"/"Doctor Who"/"Doctor Strange" are fictional characters,
+// not health content. Guard the specific known collisions rather than dropping the keyword entirely.
+const DOCTOR_FICTION_RE = /\bdoctor\s+(doom|who|strange|octopus|manhattan)\b/i;
 function classifyTopicNiche(topic) {
   const t = String(topic || '').toLowerCase();
-  for (const [niche, re] of _NICHE_RULES_RE) if (re.test(t)) return niche;
+  const skipHealthDoctor = DOCTOR_FICTION_RE.test(t);
+  for (const [niche, re] of _NICHE_RULES_RE) {
+    if (niche === 'health' && skipHealthDoctor) continue;
+    if (re.test(t)) return niche;
+  }
   return 'other';
 }
 

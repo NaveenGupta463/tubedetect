@@ -224,8 +224,27 @@ function confidentNiche(nCount) {
   const [topNiche, topC] = entries[0];
   // Trust a real plurality (≥40% of covering channels own it — e.g. "Messi" is ~sports 0.43); below
   // that the topic is genuinely cross-niche (food barely led "meta glasses" at 0.25) → 'general'.
-  if (topC / total >= 0.4) return topNiche;
+  // ALSO require an absolute minimum of 4 channels backing the winning niche — a percentage alone can
+  // look confident on a thin sample ("Worth Penny": finance 3/7 = 43%, but 3 channels is noise, not
+  // evidence). 4 matches the topic's own MINCH floor, so a unanimous 4-channel topic still qualifies.
+  if (topC / total >= 0.4 && topC >= 4) return topNiche;
   return 'general';
+}
+
+// A phrase-keyword hit used to win unconditionally over channel evidence, even when the keyword is a
+// coincidental homonym. Proof case: "Ghee Roast" (a cooking dish) matched comedy's bare 'roast'
+// keyword and got classified 'comedy' despite 71% of its covering channels (10/14) being food
+// channels. Now channel evidence can override the keyword ONLY when it's both strong (≥60% — well
+// above confidentNiche's 40% bar) AND disagrees with a DIFFERENT niche than the keyword match — so a
+// genuine keyword match with no strong contradiction (the normal case) still wins as before.
+function resolveNiche(phraseNiche, nCount) {
+  if (!phraseNiche || phraseNiche === 'other') return confidentNiche(nCount);
+  const entries = Object.entries(nCount).sort((a, b) => b[1] - a[1]);
+  if (!entries.length) return phraseNiche;
+  const total = entries.reduce((s, [, c]) => s + c, 0);
+  const [topNiche, topC] = entries[0];
+  if (topNiche !== phraseNiche && topC >= 4 && topC / total >= 0.6) return topNiche;
+  return phraseNiche;
 }
 const titleCase = s => s.replace(/\b\w/g, c => c.toUpperCase());
 
@@ -340,7 +359,7 @@ async function runVideoTrendJob(opts = {}) {
     const nicheSpread = nicheDist.length;
     return {
       topic, words: topic.split(' '), vidIds: e.vidIds,
-      niche: (phraseNiche && phraseNiche !== 'other') ? phraseNiche : confidentNiche(e.nCount),
+      niche: resolveNiche(phraseNiche, e.nCount),
       region: domClass(e.rCount),
       niche_spread: nicheSpread,
       niches: nicheDist.slice(0, 8).map(([n, c]) => ({ niche: n, channels: c })),
