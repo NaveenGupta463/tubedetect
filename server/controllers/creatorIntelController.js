@@ -31,6 +31,8 @@ const { attachIdeaKeys } = require('../services/wtpOutcomeTracker');
 const { maybeLazyReclassify } = require('../services/lazyReclassify');
 const { persistCreatorIdeaDnaForPipeline } = require('../services/creatorIdeaDnaPipeline');
 const { generateOriginalBets, generateGuestPitches } = require('../services/wtpIdeaGenerator');
+const { mineAudienceRequests } = require('../services/commentMiner');
+const { search: webSearch } = require('../services/webSearch');
 const { computeCommunityHot } = require('../services/communityHot');
 const { resolveCreatorPeerContext } = require('../services/creatorPeerContext');
 const { readLatestCreatorDnaSnapshot } = require('../services/creatorIdeaDna');
@@ -1506,7 +1508,22 @@ async function whatToPostHandler(req, res) {
       // Stream A — AI-generate the DNA Original Bets (channel DNA × region signal × novelty gate).
       try {
         const _meta = db.get(`SELECT channel_name, region, COALESCE(primary_niche,niche) AS niche, format_type, format_profile, content_archetype, primary_language FROM ingested_channels WHERE channel_id=?`, [_wtpChannelId]) || {};
-        const _gen = await generateOriginalBets(db, _wtpChannelId, _betScaffold, { ..._meta, limit: parseInt(process.env.WTP_BET_LIMIT ?? '20', 10) });
+        // Audience signal beyond upload-history DNA: what viewers actually ask for in comments, and
+        // what's being discussed elsewhere for this niche (Tavily/searchWeb infra, already built).
+        // Both best-effort/independent — run in parallel, either can fail without blocking the other
+        // or the bet generation itself.
+        const [_audRes, _redditRes] = await Promise.allSettled([
+          mineAudienceRequests(db, _wtpChannelId),
+          _meta.niche ? webSearch(`${_meta.niche} community questions reddit discussion`, _meta.niche) : Promise.resolve(null),
+        ]);
+        const _audienceRequests = _audRes.status === 'fulfilled' ? _audRes.value?.requests : null;
+        const _redditDiscussion = _redditRes.status === 'fulfilled' ? _redditRes.value?.answer : null;
+        const _gen = await generateOriginalBets(db, _wtpChannelId, _betScaffold, {
+          ..._meta,
+          limit: parseInt(process.env.WTP_BET_LIMIT ?? '20', 10),
+          audienceRequests: _audienceRequests || [],
+          redditDiscussion: _redditDiscussion || null,
+        });
         if (_gen && _gen.length) {
           if (result.original_bets && !Array.isArray(result.original_bets)) result.original_bets = { ...result.original_bets, ideas: _gen, status: 'ready', source: 'ai_generated' };
           else result.original_bets = _gen;

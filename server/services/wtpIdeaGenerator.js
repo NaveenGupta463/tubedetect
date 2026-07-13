@@ -266,7 +266,13 @@ ${[...new Set([...recent, ...top, ...spread])].slice(0, 34).map(t => `- ${t}`).j
 
 FRESH OPPORTUNITIES:
 ${fresh}
-
+${Array.isArray(meta.audienceRequests) && meta.audienceRequests.length ? `
+AUDIENCE IS ASKING (real requests pulled from this channel's own comment sections — treat these as genuine signal, same trust level as FRANCHISES):
+${meta.audienceRequests.map(r => `- ${r.phrase} (asked across ${r.video_count} videos, e.g. "${r.sample_quote}")`).join('\n')}
+` : ''}${meta.redditDiscussion ? `
+WHAT PEOPLE DISCUSS ELSEWHERE (community signal, live web search):
+${meta.redditDiscussion}
+` : ''}
 Propose ${meta.limit || 6} NEW concepts as JSON.`;
 
   // generate with one retry on parse failure (the model intermittently returns non-JSON)
