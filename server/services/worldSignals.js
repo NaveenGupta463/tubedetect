@@ -4,15 +4,21 @@
 // Google Trends rising queries (Option B) for a channel's topic DNA.
 
 const googleTrends = require('google-trends-api');
+const cache = require('./queryCache');
 
 // ── Option A: Internal velocity spikes ───────────────────────────────────────
 // Finds videos where the 7d views_per_hour is significantly higher than 30d,
 // indicating a current acceleration spike.
 
-function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
-  try {
-    // Get videos with both 7d and 30d snapshots where 7d velocity > 30d velocity * 1.5
-    const spikes = db.all(`
+// The raw spike query is entirely channel-independent (topicKeywords only affects
+// the per-channel filtering/clustering below) but was re-run from scratch on EVERY
+// /world-signals request with no cache -- an unscoped JOIN across video_growth_snapshots
+// (ORDER BY on a computed ratio, so no index can serve the sort) that got very slow
+// under concurrent write load from the ingestion worker (observed 40s+, sometimes
+// timing out entirely). Caching the raw result for a few minutes turns every request
+// except the rare cold one into a fast in-memory read + cheap per-channel JS filtering.
+function _fetchRawSpikes(db) {
+  return cache.wrap('world_signals_raw_spikes', () => db.all(`
       SELECT
         s7.video_id,
         s7.views_per_hour   AS vph_7d,
@@ -35,10 +41,14 @@ function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
         AND s7.views_per_hour > s30.views_per_hour * 1.5
         AND s7.views > 5000
         AND iv.title IS NOT NULL
-      ORDER BY (s7.views_per_hour / s30.views_per_hour) DESC
-      LIMIT 300
-    `);
+      ORDER BY s7.views DESC
+      LIMIT 2000
+    `), 10 * 60 * 1000);
+}
 
+function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
+  try {
+    const spikes = _fetchRawSpikes(db);
     if (!spikes.length) return [];
 
     // Score each spike by relevance to the channel's topics
@@ -61,6 +71,9 @@ function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
         topic_match:  topicMatch,
       };
     }).filter(s => s.topic_match > 0);
+    // SQL now orders by views (indexed) instead of the computed ratio -- rank by actual
+    // velocity ratio here in JS, on the already-bounded 2000-row candidate set.
+    scored.sort((a, b) => b.velocity_ratio - a.velocity_ratio);
 
     // Cluster into topics by extracting key noun phrases (top words from titles)
     const topicClusters = clusterTitles(scored.slice(0, limit));
