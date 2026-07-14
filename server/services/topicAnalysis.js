@@ -131,6 +131,13 @@ function getVelocity(pairs) {
 // but on any caller-supplied set of channel IDs. Callers supply userPhraseSet
 // so already-covered topics are filtered out before scoring.
 
+// Sale/deal/sponsored-product titles ("Flipkart GOAT Sale", "Before Watching This",
+// "SOLARA Cold Press Juicer") aren't genuine topical content -- they're ad copy that happens to
+// recur across a few channels because the same sponsor/affiliate campaign ran on all of them. Left
+// unfiltered they flood adjacent-niche suggestions with product names irrelevant to any channel's
+// actual content, regardless of what niche the posting channel is classified under.
+const SPONSORED_TITLE_RE = /\b(sale|deal|deals|discount|coupon|% ?off|price drop|before (you buy|watching this)|don'?t buy .* before|flipkart|amazon (sale|deal)|affiliate|sponsored|#ad\b)\b/i;
+
 function analyzeTopics(db, channelIds, userPhraseSet, userSubs, communitySize, opts = {}) {
   const { maxResults = 10, minChannels = 2, minScore = 0 } = opts;
   if (!channelIds.length) return [];
@@ -173,6 +180,7 @@ function analyzeTopics(db, channelIds, userPhraseSet, userSubs, communitySize, o
   const nowMs    = Date.now();
 
   for (const video of videos) {
+    if (SPONSORED_TITLE_RE.test(video.title)) continue;
     const phrases     = extractPhrases(video.title);
     const seenThisVid = new Set();
     const ageDays     = (nowMs - new Date(video.published_at).getTime()) / 86400000;
@@ -256,6 +264,7 @@ function analyzeTopics(db, channelIds, userPhraseSet, userSubs, communitySize, o
       act_now:           trend_status === 'rising' && saturation_pct < 30,
       expected_low,
       expected_high,
+      _topVideoId:       b.videos[0]?.youtube_video_id || null,
       examples:          b.videos.slice(0, 3).map(v => ({
         title: v.title, views: v.views, channel_name: v.channel_name || 'Unknown',
       })),
@@ -264,13 +273,21 @@ function analyzeTopics(db, channelIds, userPhraseSet, userSubs, communitySize, o
 
   gaps.sort((a, b) => b.score - a.score);
 
-  const deduped   = [];
-  const usedWords = new Set();
+  const deduped     = [];
+  const usedWords   = new Set();
+  // Different n-gram windows over the SAME title ("Every Kitchen" / "Solara Cold" both from one
+  // "...Every Kitchen Needs! SOLARA Cold Press Juicer" video) don't share words with each other, so
+  // the word-overlap check below misses them. Catch it directly: skip a topic whose #1 example is
+  // the exact same video already used as another topic's #1 example.
+  const usedTopVideo = new Set();
   for (const gap of gaps) {
+    if (gap._topVideoId && usedTopVideo.has(gap._topVideoId)) continue;
     const words   = gap.topic.toLowerCase().split(' ');
     const overlap = words.filter(w => usedWords.has(w)).length;
     if (overlap >= words.length - 1) continue;
     words.forEach(w => usedWords.add(w));
+    if (gap._topVideoId) usedTopVideo.add(gap._topVideoId);
+    delete gap._topVideoId;
     deduped.push(gap);
     if (deduped.length >= maxResults) break;
   }
