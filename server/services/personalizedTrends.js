@@ -35,13 +35,28 @@ RULES:
 - Do NOT force weird angles onto tiny/hyper-local trends — those can be skipped.
 - Write the title in the creator's LANGUAGE/script and match their FORMAT (shorts = one punchy hook; long-form = a fuller concept).
 - Never invent a trend not in the lists. Use the exact trend topic string.
+- YEARS: today's date is given below. Do NOT write any year in a title unless it exactly matches the CURRENT year given, or literally appears in that trend's own sample title. Do not default to a year from memory/training (e.g. writing "2024" for a trend that is actually happening in the current year) — if unsure, omit the year entirely; a title with no year is always safe.
 Return ONLY a JSON array: [{"trend":"<exact trend topic>","mode":"direct"|"crossover","title":"<the video title>","why":"<one line: why it fits this creator AND rides the trend>"}]`;
+
+// The model reliably hallucinates a training-data year (e.g. "2024") into generated titles even
+// when the real trend samples explicitly show the current year — a prompt instruction alone wasn't
+// trusted to fix this consistently (same lesson learned elsewhere this session), so strip any year
+// token that isn't the actual current year and doesn't literally appear in the trend's own sample title.
+function _stripWrongYear(title, sampleTitle) {
+  const curYear = String(new Date().getFullYear());
+  return String(title || '').replace(/\b(19|20)\d{2}\b/g, (yr) => {
+    if (yr === curYear) return yr;
+    if (sampleTitle && String(sampleTitle).includes(yr)) return yr;
+    return '';
+  }).replace(/\s{2,}/g, ' ').replace(/\s+([.,!?])/g, '$1').trim();
+}
 
 async function _bridge(me, recent, direct, cross) {
   const client = _ai();
   if (!client) return null;
   const fmt = t => `- ${t.topic}${(() => { try { const s = JSON.parse(t.samples_json || '[]')[0]; return s ? ` (e.g. "${String(s.title).slice(0, 70)}")` : ''; } catch { return ''; } })()}`;
-  const user = `CREATOR: ${me.channel_name} | niche=${me.niche} | format=${me.format_profile || '?'} | language=${me.primary_language || '?'} | region=${me.region || '?'}
+  const user = `TODAY'S DATE: ${new Date().toISOString().slice(0, 10)} (current year: ${new Date().getFullYear()})
+CREATOR: ${me.channel_name} | niche=${me.niche} | format=${me.format_profile || '?'} | language=${me.primary_language || '?'} | region=${me.region || '?'}
 RECENT VIDEOS (their voice/style — match it):
 ${recent.slice(0, 8).map(t => `- ${t}`).join('\n')}
 
@@ -97,7 +112,9 @@ async function getPersonalizedTrends(db, channelId, { force = false } = {}) {
     for (const b of bridged) {
       const t = meta.get(b.trend); if (!t || !b.title) continue;
       let sample = null; try { sample = JSON.parse(t.samples_json || '[]')[0] || null; } catch (_) {}
-      const item = { title: b.title, why: b.why || null, trend: t.topic, trend_niche: t.niche, trend_score: t.signal_score, sample };
+      const title = _stripWrongYear(b.title, sample?.title);
+      if (!title) continue;
+      const item = { title, why: b.why || null, trend: t.topic, trend_niche: t.niche, trend_score: t.signal_score, sample };
       if (b.mode === 'crossover') out.crossover.push(item); else out.direct.push(item);
     }
   }
