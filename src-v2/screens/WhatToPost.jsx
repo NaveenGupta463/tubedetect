@@ -824,7 +824,6 @@ function SourceSection({ src, subtitle, ideas, saved, onSave, onAct, loading, em
 // ── Community Hot Section ─────────────────────────────────────────────────────
 
 function CommunityHotSection({ data, loading }) {
-  const [expandedTopic, setExpandedTopic] = useState(null);
   if (!loading && (!data || !data.items?.length)) return null;
 
   return (
@@ -859,28 +858,17 @@ function CommunityHotSection({ data, loading }) {
       )}
 
       {!loading && data?.items?.map((item, i) => {
-        const expanded = expandedTopic === item.topic;
         return (
           <motion.div
             key={item.topic}
-            role="button"
-            tabIndex={0}
             initial={{ opacity: 0, y: 8 }}
             animate={{ opacity: 1, y: 0 }}
             whileHover={{ y: -2, borderColor: 'rgba(245,158,11,0.32)' }}
             transition={{ duration: 0.25, delay: i * 0.04, ease: [0.16, 1, 0.3, 1] }}
-            onClick={() => setExpandedTopic(expanded ? null : item.topic)}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
-                setExpandedTopic(expanded ? null : item.topic);
-              }
-            }}
             style={{
               ...T.glassCard, borderRadius: 12,
-              border: `1px solid ${expanded ? 'rgba(245,158,11,0.36)' : T.border}`,
+              border: `1px solid ${T.border}`,
               padding: '14px 16px', marginBottom: 10,
-              cursor: 'pointer',
               outline: 'none',
             }}
           >
@@ -951,40 +939,28 @@ function CommunityHotSection({ data, loading }) {
               ))}
             </div>
 
-            <AnimatePresence initial={false}>
-              {expanded && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  transition={{ duration: 0.18 }}
-                  style={{ overflow: 'hidden' }}
-                >
-                  <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
-                    <div style={{ fontSize: '0.64rem', fontWeight: 800, color: '#f59e0b', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
-                      Why this is hot
+            <div style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${T.border}` }}>
+              <div style={{ fontSize: '0.64rem', fontWeight: 800, color: '#f59e0b', letterSpacing: '0.06em', textTransform: 'uppercase', marginBottom: 6 }}>
+                Why this is hot
+              </div>
+              <div style={{ fontSize: '0.73rem', color: T.muted, lineHeight: 1.55, marginBottom: 10 }}>
+                {item.why || `${item.channel_count} peer channels are getting traction on this topic right now.`}
+              </div>
+              {(item.examples || []).length > 0 && (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  {item.examples.slice(0, 3).map((ex, k) => (
+                    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
+                      <span style={{ fontSize: '0.7rem', color: T.text, lineHeight: 1.35, flex: 1 }}>
+                        {ex.title}
+                      </span>
+                      <span style={{ fontSize: '0.68rem', color: T.success, fontWeight: 700, flexShrink: 0 }}>
+                        {fmtV(ex.views)}
+                      </span>
                     </div>
-                    <div style={{ fontSize: '0.73rem', color: T.muted, lineHeight: 1.55, marginBottom: 10 }}>
-                      {item.why || `${item.channel_count} peer channels are getting traction on this topic right now.`}
-                    </div>
-                    {(item.examples || []).length > 0 && (
-                      <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
-                        {item.examples.slice(0, 3).map((ex, k) => (
-                          <div key={k} style={{ display: 'flex', justifyContent: 'space-between', gap: 10, alignItems: 'flex-start' }}>
-                            <span style={{ fontSize: '0.7rem', color: T.text, lineHeight: 1.35, flex: 1 }}>
-                              {ex.title}
-                            </span>
-                            <span style={{ fontSize: '0.68rem', color: T.success, fontWeight: 700, flexShrink: 0 }}>
-                              {fmtV(ex.views)}
-                            </span>
-                          </div>
-                        ))}
-                      </div>
-                    )}
-                  </div>
-                </motion.div>
+                  ))}
+                </div>
               )}
-            </AnimatePresence>
+            </div>
           </motion.div>
         );
       })}
