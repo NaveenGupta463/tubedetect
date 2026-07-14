@@ -84,6 +84,7 @@ const SOURCE = {
   adjacent: { color: '#8b5cf6', bg: 'rgba(139,92,246,0.1)', border: 'rgba(139,92,246,0.25)', icon: '↔', label: 'Adjacent Niche' },
   global:   { color: '#3b82f6', bg: 'rgba(59,130,246,0.1)', border: 'rgba(59,130,246,0.25)',  icon: '🌐', label: 'Global Signal' },
   trends:   { color: '#f97316', bg: 'rgba(249,115,22,0.1)', border: 'rgba(249,115,22,0.25)',  icon: '📈', label: 'Trending in India' },
+  community:{ color: '#ec4899', bg: 'rgba(236,72,153,0.1)', border: 'rgba(236,72,153,0.25)', icon: '💬', label: 'Audience & Community' },
 };
 
 // ── Engine tag badges (exam_demand) ──────────────────────────────────────────
@@ -1254,6 +1255,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
   const [dismissedMainKeys, setDismissedMainKeys] = useState(new Set());
   const [communityHot,     setCommunityHot]     = useState(null);
   const [loadingCommunity, setLoadingCommunity] = useState(false);
+  const [communityDiscussion, setCommunityDiscussion] = useState(null);
   const [worldSignals,     setWorldSignals]     = useState(null);
   const [loadingWorld,     setLoadingWorld]     = useState(false);
   const [currentEvents,    setCurrentEvents]    = useState(null);
@@ -1405,6 +1407,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
       setCreatorMode(data.creator_mode || null);
       setFormatProfile(data.format_profile || null);
       setOutputEngine(data.output_engine || null);
+      if (data.community_discussion) setCommunityDiscussion(data.community_discussion);
       if (data.podcast_intel) setPodcastIntel(data.podcast_intel);
       if (data.guest_intel_active) setGuestIntelActive(true);
       if (data.podcast_intel_peer_source) setPodcastPeerSrc(data.podcast_intel_peer_source);
@@ -2108,6 +2111,67 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
               Show {Math.min(5, filteredBetPool.length - visibleBetCount)} more ideas from your DNA
             </motion.button>
           )}
+        </div>
+      )}
+
+      {/* ── Community discussion — real audience comments + Reddit/Quora signal ── */}
+      {!loading && !error && (
+        (communityDiscussion?.audience_requests?.length > 0) || communityDiscussion?.reddit_quora
+      ) && (
+        <div style={{ marginTop: 40 }}>
+          <SectionHeader
+            src="community"
+            subtitle="What your viewers actually asked for, and what's being discussed on Reddit/Quora"
+            count={0}
+          />
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: 12 }}>
+            {communityDiscussion.audience_requests?.length > 0 && (
+              <div style={{ ...T.glassCard, borderRadius: 13, padding: '14px 16px' }}>
+                <div style={{ fontSize: '0.7rem', fontWeight: 700, color: SOURCE.community.color, marginBottom: 10 }}>
+                  AUDIENCE IS ASKING (your comment sections)
+                </div>
+                {communityDiscussion.audience_requests.slice(0, 8).map((r, i) => (
+                  <div key={i} style={{ marginBottom: 10, paddingBottom: 10, borderBottom: i < communityDiscussion.audience_requests.length - 1 ? `1px solid ${T.border}` : 'none' }}>
+                    <div style={{ fontSize: '0.78rem', color: T.text, fontWeight: 600 }}>{r.phrase}</div>
+                    <div style={{ fontSize: '0.68rem', color: T.muted, marginTop: 3 }}>
+                      asked across {r.video_count} video{r.video_count !== 1 ? 's' : ''}{r.sample_quote ? ` — "${r.sample_quote}"` : ''}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+            {communityDiscussion.reddit_quora && (
+              <div style={{ ...T.glassCard, borderRadius: 13, padding: '14px 16px' }}>
+                <div style={{ fontSize: '0.7rem', fontWeight: 700, color: SOURCE.community.color, marginBottom: 10 }}>
+                  WHAT REDDIT / QUORA IS DISCUSSING
+                </div>
+                <div style={{ fontSize: '0.78rem', color: T.text, lineHeight: 1.6 }}>
+                  {communityDiscussion.reddit_quora.summary}
+                </div>
+                {communityDiscussion.reddit_quora.sources?.length > 0 && (
+                  <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                    {communityDiscussion.reddit_quora.sources.map((s, i) => (
+                      <a
+                        key={i}
+                        href={s.url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        style={{
+                          fontSize: '0.66rem', color: SOURCE.community.color,
+                          background: SOURCE.community.bg, border: `1px solid ${SOURCE.community.border}`,
+                          borderRadius: 6, padding: '3px 8px', textDecoration: 'none',
+                          maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        }}
+                        title={s.title || s.url}
+                      >
+                        {s.title || s.url}
+                      </a>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       )}
 
