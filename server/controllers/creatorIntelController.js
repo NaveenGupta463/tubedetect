@@ -33,6 +33,33 @@ const { persistCreatorIdeaDnaForPipeline } = require('../services/creatorIdeaDna
 const { generateOriginalBets, generateGuestPitches } = require('../services/wtpIdeaGenerator');
 const { mineAudienceRequests } = require('../services/commentMiner');
 const { search: webSearch } = require('../services/webSearch');
+
+// Reddit/Quora community-discussion signal for WTP, cached per NICHE (not per channel — shared
+// across every channel in a niche, and the query itself is niche-scoped anyway). Without this,
+// the Tavily call re-ran on every request AND every ai_pending poll retry, repeatedly pushing the
+// enrichment chain past AI_BUDGET_MS and starving refineWtpRecommendations (the step that builds
+// the adjacent-niche ideas deck) — a persistent regression, not just a one-off cold-start miss.
+const NICHE_DISCUSSION_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+function _ensureNicheDiscussionCache(db) {
+  db.exec(`CREATE TABLE IF NOT EXISTS niche_discussion_cache (
+    niche TEXT PRIMARY KEY, payload_json TEXT NOT NULL, computed_at TEXT NOT NULL, expires_at TEXT NOT NULL)`);
+}
+async function getNicheDiscussion(db, niche) {
+  if (!niche) return null;
+  try {
+    _ensureNicheDiscussionCache(db);
+    const cached = db.get(`SELECT payload_json FROM niche_discussion_cache WHERE niche=? AND expires_at>datetime('now')`, [niche]);
+    if (cached) { try { return JSON.parse(cached.payload_json); } catch (_) {} }
+    const res = await webSearch(`${niche} community questions discussion`, niche, { includeDomains: ['reddit.com', 'quora.com'] });
+    if (res) {
+      try {
+        db.run(`INSERT INTO niche_discussion_cache (niche,payload_json,computed_at,expires_at) VALUES (?,?,datetime('now'),?) ON CONFLICT(niche) DO UPDATE SET payload_json=excluded.payload_json, computed_at=excluded.computed_at, expires_at=excluded.expires_at`,
+          [niche, JSON.stringify(res), new Date(Date.now() + NICHE_DISCUSSION_TTL_MS).toISOString()]);
+      } catch (_) {}
+    }
+    return res;
+  } catch (_) { return null; }
+}
 const { computeCommunityHot } = require('../services/communityHot');
 const { resolveCreatorPeerContext } = require('../services/creatorPeerContext');
 const { readLatestCreatorDnaSnapshot } = require('../services/creatorIdeaDna');
@@ -1505,46 +1532,55 @@ async function whatToPostHandler(req, res) {
     // now with ai_pending:true and let enrichment finish in the BACKGROUND to warm the caches;
     // the client re-polls and the next fetch is a fast cache hit with the full AI output.
     const _enrich = (async () => {
-      // Stream A — AI-generate the DNA Original Bets (channel DNA × region signal × novelty gate).
-      try {
-        const _meta = db.get(`SELECT channel_name, region, COALESCE(primary_niche,niche) AS niche, format_type, format_profile, content_archetype, primary_language FROM ingested_channels WHERE channel_id=?`, [_wtpChannelId]) || {};
-        // Audience signal beyond upload-history DNA: what viewers actually ask for in comments, and
-        // what's being discussed elsewhere for this niche (Tavily/searchWeb infra, already built).
-        // Both best-effort/independent — run in parallel, either can fail without blocking the other
-        // or the bet generation itself.
-        const [_audRes, _redditRes] = await Promise.allSettled([
-          mineAudienceRequests(db, _wtpChannelId),
-          _meta.niche ? webSearch(`${_meta.niche} community questions reddit discussion`, _meta.niche) : Promise.resolve(null),
-        ]);
-        const _audienceRequests = _audRes.status === 'fulfilled' ? _audRes.value?.requests : null;
-        const _redditDiscussion = _redditRes.status === 'fulfilled' ? _redditRes.value?.answer : null;
-        const _gen = await generateOriginalBets(db, _wtpChannelId, _betScaffold, {
-          ..._meta,
-          limit: parseInt(process.env.WTP_BET_LIMIT ?? '20', 10),
-          audienceRequests: _audienceRequests || [],
-          redditDiscussion: _redditDiscussion || null,
-        });
-        if (_gen && _gen.length) {
-          if (result.original_bets && !Array.isArray(result.original_bets)) result.original_bets = { ...result.original_bets, ideas: _gen, status: 'ready', source: 'ai_generated' };
-          else result.original_bets = _gen;
-        }
-      } catch (_) { /* leave bets blank (no mad-libs) on any failure */ }
-      // Guest pitches — for net-new guests, attach a channel-fitted topic + fit line.
-      try {
-        const _guests = result?.podcast_intel?.guests;
-        if (Array.isArray(_guests) && _guests.length) {
-          const _gmeta = db.get(`SELECT channel_name, COALESCE(primary_niche,niche) AS niche FROM ingested_channels WHERE channel_id=?`, [_wtpChannelId]) || {};
-          const _pitches = await generateGuestPitches(db, _wtpChannelId, _guests, { ..._gmeta, target_lanes: result.podcast_intel.target_lanes || [] });
-          if (_pitches) {
-            for (const g of _guests) {
-              const p = _pitches[g.name];
-              if (p) { g.suggested_topic = p.topic; g.fit_reason = p.fit; }
-            }
-            const _withTopic = _guests.filter(g => g.suggested_topic);
-            if (_withTopic.length) result.podcast_intel.guests = _withTopic;
+      // Streams A and B are independent (different result fields, no shared input) — run them
+      // concurrently so their latency doesn't stack, leaving more of the AI_BUDGET_MS window for
+      // the refiner (last step) to actually run instead of being starved on every request.
+      const _streamA = (async () => {
+        // AI-generate the DNA Original Bets (channel DNA × region signal × novelty gate).
+        try {
+          const _meta = db.get(`SELECT channel_name, region, COALESCE(primary_niche,niche) AS niche, format_type, format_profile, content_archetype, primary_language FROM ingested_channels WHERE channel_id=?`, [_wtpChannelId]) || {};
+          // Audience signal beyond upload-history DNA: what viewers actually ask for in comments, and
+          // what's being discussed elsewhere for this niche (Tavily/searchWeb infra, already built).
+          // Both best-effort/independent — run in parallel, either can fail without blocking the other
+          // or the bet generation itself. Both are cached (comment-mining per-channel, discussion
+          // per-niche) so this is a cache hit, not a fresh network call, on every request after the first.
+          const [_audRes, _redditRes] = await Promise.allSettled([
+            mineAudienceRequests(db, _wtpChannelId),
+            getNicheDiscussion(db, _meta.niche),
+          ]);
+          const _audienceRequests = _audRes.status === 'fulfilled' ? _audRes.value?.requests : null;
+          const _redditDiscussion = _redditRes.status === 'fulfilled' ? _redditRes.value?.answer : null;
+          const _gen = await generateOriginalBets(db, _wtpChannelId, _betScaffold, {
+            ..._meta,
+            limit: parseInt(process.env.WTP_BET_LIMIT ?? '20', 10),
+            audienceRequests: _audienceRequests || [],
+            redditDiscussion: _redditDiscussion || null,
+          });
+          if (_gen && _gen.length) {
+            if (result.original_bets && !Array.isArray(result.original_bets)) result.original_bets = { ...result.original_bets, ideas: _gen, status: 'ready', source: 'ai_generated' };
+            else result.original_bets = _gen;
           }
-        }
-      } catch (_) { /* leave guests unchanged on any failure */ }
+        } catch (_) { /* leave bets blank (no mad-libs) on any failure */ }
+      })();
+      const _streamB = (async () => {
+        // Guest pitches — for net-new guests, attach a channel-fitted topic + fit line.
+        try {
+          const _guests = result?.podcast_intel?.guests;
+          if (Array.isArray(_guests) && _guests.length) {
+            const _gmeta = db.get(`SELECT channel_name, COALESCE(primary_niche,niche) AS niche FROM ingested_channels WHERE channel_id=?`, [_wtpChannelId]) || {};
+            const _pitches = await generateGuestPitches(db, _wtpChannelId, _guests, { ..._gmeta, target_lanes: result.podcast_intel.target_lanes || [] });
+            if (_pitches) {
+              for (const g of _guests) {
+                const p = _pitches[g.name];
+                if (p) { g.suggested_topic = p.topic; g.fit_reason = p.fit; }
+              }
+              const _withTopic = _guests.filter(g => g.suggested_topic);
+              if (_withTopic.length) result.podcast_intel.guests = _withTopic;
+            }
+          }
+        } catch (_) { /* leave guests unchanged on any failure */ }
+      })();
+      await Promise.allSettled([_streamA, _streamB]);
       // AI synthesis refiner (primary generator; lifts recs 1.56→3.45/5 on the audit).
       const refined = refineOff ? result : await refineWtpRecommendations(db, result, req.query);
       return _applyFloor(refined);

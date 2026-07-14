@@ -7,7 +7,7 @@
 
 const TAVILY_API = 'https://api.tavily.com/search';
 
-async function search(query, niche = 'general') {
+async function search(query, niche = 'general', opts = {}) {
   const apiKey = process.env.TAVILY_API_KEY;
   if (!apiKey) {
     console.warn('[webSearch] TAVILY_API_KEY not set — skipping web search');
@@ -15,21 +15,27 @@ async function search(query, niche = 'general') {
   }
 
   let response;
+  const ac = new AbortController();
+  const timer = setTimeout(() => ac.abort(), 8000);
   try {
     response = await fetch(TAVILY_API, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      signal: ac.signal,
       body: JSON.stringify({
         api_key:        apiKey,
         query:          query,
         search_depth:   'basic',
         include_answer: true,
         max_results:    5,
+        ...(Array.isArray(opts.includeDomains) && opts.includeDomains.length ? { include_domains: opts.includeDomains } : {}),
       }),
     });
   } catch (err) {
     console.warn('[webSearch] fetch failed:', err.message);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
 
   if (!response.ok) {
