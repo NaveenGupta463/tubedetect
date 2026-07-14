@@ -1550,15 +1550,6 @@ async function whatToPostHandler(req, res) {
           ]);
           const _audienceRequests = _audRes.status === 'fulfilled' ? _audRes.value?.requests : null;
           const _redditDiscussion = _redditRes.status === 'fulfilled' ? _redditRes.value?.answer : null;
-          const _redditSources = _redditRes.status === 'fulfilled' ? _redditRes.value?.sources : null;
-          // Visible panel: same signal that feeds bet generation above, also surfaced directly so
-          // the user can see it's real (not just baked invisibly into Original DNA Bets titles).
-          if ((Array.isArray(_audienceRequests) && _audienceRequests.length) || _redditDiscussion) {
-            result.community_discussion = {
-              audience_requests: (_audienceRequests || []).map(r => ({ phrase: r.phrase, video_count: r.video_count, sample_quote: r.sample_quote })),
-              reddit_quora: _redditDiscussion ? { summary: _redditDiscussion, sources: (_redditSources || []).slice(0, 5) } : null,
-            };
-          }
           const _gen = await generateOriginalBets(db, _wtpChannelId, _betScaffold, {
             ..._meta,
             limit: parseInt(process.env.WTP_BET_LIMIT ?? '20', 10),
