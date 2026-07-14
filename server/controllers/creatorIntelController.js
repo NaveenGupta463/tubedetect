@@ -1340,10 +1340,35 @@ async function worldSignalsHandler(req, res) {
     }
 
     const channel = db.get(
-      'SELECT inferred_topics FROM ingested_channels WHERE channel_id = ?', [channel_id],
+      'SELECT inferred_topics, COALESCE(primary_niche,niche) AS niche FROM ingested_channels WHERE channel_id = ?', [channel_id],
     );
     let topics = [];
     try { topics = JSON.parse(channel?.inferred_topics || '[]'); } catch (_) {}
+    // ~3% of channels (incl. this one) have no inferred_topics yet. getVelocitySpikes treats an
+    // empty topic list as "match everything" -- with no keywords that meant showing every viral
+    // video globally (World Cup clips, movie trailers, TV soap episodes) regardless of niche.
+    // Derive a lightweight fallback from the channel's own recent titles so there's still something
+    // real to filter against instead of failing open.
+    if (!topics.length) {
+      const ownTitlesRaw = db.all(`SELECT title FROM ingested_videos WHERE channel_id=? ORDER BY published_at DESC LIMIT 15`, [channel_id]).map(r => r.title).filter(Boolean);
+      // Dedupe near-identical/republished titles first -- otherwise one duplicated title inflates
+      // its generic words (e.g. "effects" in a title repeated twice) into a false recurring "topic".
+      const seenTitle = new Set();
+      const ownTitles = ownTitlesRaw.filter(t => {
+        const key = t.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, '').replace(/\s+/g, ' ').trim();
+        if (seenTitle.has(key)) return false;
+        seenTitle.add(key);
+        return true;
+      });
+      const freq = {};
+      for (const t of ownTitles) {
+        for (const w of String(t).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').split(/\s+/)) {
+          if (w.length >= 4 && !STOPWORDS.has(w)) freq[w] = (freq[w] || 0) + 1;
+        }
+      }
+      topics = Object.entries(freq).filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([w]) => w);
+      if (!topics.length && channel?.niche) topics = [String(channel.niche).toLowerCase()];
+    }
 
     const { getWorldSignals } = require('../services/worldSignals');
     const signals = await getWorldSignals(db, { channel_id, topics });

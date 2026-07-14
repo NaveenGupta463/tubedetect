@@ -51,14 +51,16 @@ function getVelocitySpikes(db, topicKeywords, { limit = 60 } = {}) {
     const spikes = _fetchRawSpikes(db);
     if (!spikes.length) return [];
 
-    // Score each spike by relevance to the channel's topics
+    // Score each spike by relevance to the channel's topics. No keywords means we have no basis to
+    // judge relevance -- fail CLOSED (show nothing) rather than open (show every viral video
+    // globally regardless of niche), which is what happened before this fix.
     const topicSet = new Set(topicKeywords.map(t => t.toLowerCase()));
+    if (!topicSet.size) return [];
 
     const scored = spikes.map(s => {
       const titleLower  = (s.title || '').toLowerCase();
       const peerTopics  = (() => { try { return JSON.parse(s.inferred_topics || '[]'); } catch(_) { return []; } })();
-      const topicMatch  = topicSet.size === 0 ? 1
-        : [...topicSet].some(t => titleLower.includes(t) || peerTopics.some(pt => (pt||'').toLowerCase() === t)) ? 1 : 0;
+      const topicMatch  = [...topicSet].some(t => titleLower.includes(t) || peerTopics.some(pt => (pt||'').toLowerCase() === t)) ? 1 : 0;
 
       const velocityRatio = s.vph_30d > 0 ? s.vph_7d / s.vph_30d : 1;
 
