@@ -248,6 +248,27 @@ function resolveNiche(phraseNiche, nCount) {
 }
 const titleCase = s => s.replace(/\b\w/g, c => c.toUpperCase());
 
+// Shared scorer for a topic's adoption + momentum, used by both the per-phrase pass and the
+// entity-merged story pass so the two never drift. MAGNITUDE term: an exceptionally broad AND still-
+// growing story (many distinct channels, positive acceleration) is a major trend even when its accel
+// RATIO is modest because it was already large last window — without this a 200-channel breaking story
+// sits below tiny brand-new blips that merely maxed the novelty terms. Gated on accel>0 so evergreen
+// high-footprint clusters (old-song compilations, perennial genres) are NOT vaulted.
+function scoreTopic(chNow, accel, avgViews) {
+  let score = 0;
+  if (chNow >= 4) score += 20;
+  if (chNow >= 8) score += 15;
+  if (accel >= 0.5) score += 20;
+  if (accel >= 1.0) score += 10;
+  score += Math.min(35, Math.round(Math.log10(avgViews + 1) * 6)); // momentum
+  // Require GENUINE growth (≥20%), not merely accel>0: a perennial phrase ("year old","happy birthday")
+  // covered by hundreds of channels every month barely grows (accel≈0.05) and must NOT be vaulted; a
+  // real breaking story (a protest, a war, a climaxing tournament) grows far faster and earns the floor.
+  if (accel >= 0.2 && chNow >= 80) score = 100;
+  else if (accel >= 0.2 && chNow >= 40) score = Math.min(100, score + 6);
+  return Math.max(0, Math.min(100, score));
+}
+
 async function runVideoTrendJob(opts = {}) {
   const db = getDb();
   const start = Date.now();
@@ -318,13 +339,7 @@ async function runVideoTrendJob(opts = {}) {
     const chPrior = priorCh.get(topic)?.size || 0;
     const accel = chPrior > 0 ? (chNow - chPrior) / chPrior : (chNow >= MINCH ? 1 : 0);
     const avgViews = Math.round(e.vids.reduce((s, v) => s + (v.views || 0), 0) / e.vids.length);
-    let score = 0;
-    if (chNow >= 4) score += 20;
-    if (chNow >= 8) score += 15;
-    if (accel >= 0.5) score += 20;
-    if (accel >= 1.0) score += 10;
-    score += Math.min(35, Math.round(Math.log10(avgViews + 1) * 6)); // momentum
-    score = Math.max(0, Math.min(100, score));
+    let score = scoreTopic(chNow, accel, avgViews);
     let tier = chPrior === 0 && chNow >= MINCH ? 'rising'
       : score >= 70 ? 'rising' : score >= 50 ? 'emerging' : score >= 35 ? 'stable' : 'noise';
     // Recency guard: a past spike still inside the 30d window (e.g. a festival ~3 weeks ago)
@@ -358,7 +373,7 @@ async function runVideoTrendJob(opts = {}) {
     const nicheDist = Object.entries(e.nCount).filter(([, c]) => c >= 2).sort((a, b) => b[1] - a[1]);
     const nicheSpread = nicheDist.length;
     return {
-      topic, words: topic.split(' '), vidIds: e.vidIds,
+      topic, words: topic.split(' '), vidIds: e.vidIds, chanSet: new Set(e.chans.keys()),
       niche: resolveNiche(phraseNiche, e.nCount),
       region: domClass(e.rCount),
       niche_spread: nicheSpread,
@@ -405,9 +420,139 @@ async function runVideoTrendJob(opts = {}) {
     if (!merged) { kept.push(e); for (const s of eStems) { let arr = tokenIdx.get(s); if (!arr) { arr = []; tokenIdx.set(s, arr); } arr.push(e); } }
   }
 
+  // ── Entity-anchored merge — collapse a big multi-angle NEWS story ───────────────────────────────
+  // A major breaking story (a protest, a scandal) fragments into many phrases that share a DISTINCTIVE
+  // proper-noun anchor ("Sonam Wangchuk"/"Wangchuk Jantar"/"Mantar Delhi"/"CJP Protest") but are
+  // extracted from DIFFERENT videos (each covers a different angle: hunger strike, removal, lathi
+  // charge, health). The video-overlap same-event merge above therefore can't join them, and each
+  // fragment carries only a slice of the footprint — so the single biggest real story in the corpus
+  // scatters into dozens of mid-ranked rows and never surfaces. Here we cluster the survivors by
+  // (shared distinctive anchor token) AND (covering-channel overlap): fragments of one ongoing story
+  // are covered by largely the SAME channels even when the specific videos differ, while two genuinely
+  // different stories that merely share a word ("Narendra Modi" vs "Lalit Modi") are covered by
+  // different channels and stay apart. We UNION the channel footprints so the merged story ranks by
+  // its true reach and recompute its score, vaulting it to the top where it belongs.
+  const ENT_OVERLAP = opts.entityOverlap ?? 0.4; // ≥40% of the smaller topic's channels also cover the other
+  // Generic words that must NOT act as a story anchor (they co-occur across unrelated news): the anchor
+  // has to be a distinctive entity, not a topic category.
+  const ANCHOR_STOP = new Set(['police','protest','protests','delhi','india','indian','news','student',
+    'students','march','city','court','case','minister','ministry','govt','government','party','leader',
+    'people','woman','video','viral','live','update','support','rally','arrest','arrested','death',
+    'attack','issue','crisis','matter','public','national','breaking','clash','action','order','statement']);
+  // Scope to NEWS EVENTS: the "one event shatters into many phrases from different videos" problem is a
+  // breaking-news phenomenon. In sports/music/entertainment a shared word ("world"/"cup","bhojpuri") +
+  // shared genre channels would collapse GENUINELY DISTINCT trends (World Cup vs a war; different songs;
+  // different matches) into a category blob — those are handled by the video-overlap merge + LLM
+  // canonicalizer. Only news-adjacent niches participate, and a cluster only becomes a merged story if it
+  // actually contains a news/politics fragment; a story's general/education/health angles (a viral
+  // "Sonam Wangchuk" edit, "NEET protest") get absorbed, but a pure-general word-blob ("year old") does not.
+  const MERGE_NICHES = new Set(['news', 'politics', 'geopolitics', 'general', 'education', 'health']);
+  const canMerge = e => MERGE_NICHES.has(e.niche);
+  const isNews = e => e.niche === 'news' || e.niche === 'politics' || e.niche === 'geopolitics';
+  const anchorsOf = e => new Set(e.words.map(stem).filter(s => s.length >= 4 && !ANCHOR_STOP.has(s)));
+  // GREEDY clustering against each cluster's accumulated channel UNION — deliberately NOT transitive
+  // union-find. Union-find chains A→B→C whenever consecutive pairs look related, so a bridging phrase
+  // ("world war") silently fused football's "World Cup" into the "Iran War" story. Growing biggest-first
+  // and testing a fragment's overlap against the cluster's WHOLE footprint means a fragment can't join a
+  // cluster whose channels it doesn't broadly share, even if it shares a word with one member.
+  const order = kept.map((_, i) => i).sort((a, b) => kept[b].chanSet.size - kept[a].chanSet.size);
+  const clist = []; // { tokens:Set, chans:Set, members:[idx], hasNews }
+  const singles = []; // fragments not eligible to merge (sports/music/… niches) → pass through unchanged
+  for (const i of order) {
+    const e = kept[i];
+    if (!canMerge(e)) { singles.push(i); continue; }
+    const toks = anchorsOf(e);
+    let best = null, bestOv = 0;
+    for (const c of clist) {
+      let shares = false; for (const t of toks) if (c.tokens.has(t)) { shares = true; break; }
+      if (!shares) continue;                            // must share a distinctive anchor with the cluster
+      let n = 0; for (const ch of e.chanSet) if (c.chans.has(ch)) n++;
+      const ov = e.chanSet.size ? n / e.chanSet.size : 0; // fragment's channels covered by the cluster union
+      if (ov >= ENT_OVERLAP && ov > bestOv) { best = c; bestOv = ov; }
+    }
+    if (best) {
+      best.members.push(i);
+      for (const ch of e.chanSet) best.chans.add(ch);
+      for (const t of toks) best.tokens.add(t);
+      best.hasNews = best.hasNews || isNews(e);
+    } else {
+      clist.push({ tokens: toks, chans: new Set(e.chanSet), members: [i], hasNews: isNews(e) });
+    }
+  }
+  // Emit a cluster as one merged story only when it's a genuine news event (has ≥1 news/politics member
+  // AND >1 fragment); everything else stays a singleton.
+  const clusters = new Map();
+  let cid = 0;
+  for (const s of singles) clusters.set('s' + s, [s]);
+  for (const c of clist) {
+    if (c.members.length > 1 && c.hasNews) clusters.set('c' + (cid++), c.members);
+    else for (const m of c.members) clusters.set('s' + m, [m]);
+  }
+  const kept2 = [];
+  const mergeReport = [];
+  let entityMerged = 0;
+  for (const members of clusters.values()) {
+    if (members.length === 1) { kept2.push(kept[members[0]]); continue; }
+    const ms = members.map(i => kept[i]).sort((a, b) => b.channel_count_now - a.channel_count_now || b.signal_score - a.signal_score);
+    const survivor = ms[0];
+    const chanUnion = new Set(), priorUnion = new Set(), nAgg = {}, rAgg = {};
+    let pooledSamples = [], vidCount = 0, maxAvg = 0;
+    for (const m of ms) {
+      m.chanSet.forEach(c => chanUnion.add(c));
+      (priorCh.get(m.topic) || new Set()).forEach(c => priorUnion.add(c));
+      (m.niches || []).forEach(({ niche, channels }) => { nAgg[niche] = (nAgg[niche] || 0) + channels; });
+      rAgg[m.region] = (rAgg[m.region] || 0) + m.channel_count_now;
+      pooledSamples = pooledSamples.concat(m.samples || []);
+      vidCount += m.video_count || 0;
+      if (m.avg_views > maxAvg) maxAvg = m.avg_views;
+    }
+    const chNow = chanUnion.size, chPrior = priorUnion.size;
+    const accel = chPrior > 0 ? (chNow - chPrior) / chPrior : 1;
+    const score = scoreTopic(chNow, accel, maxAvg);
+    const tier = (chPrior === 0 && chNow >= MINCH) ? 'rising' : score >= 70 ? 'rising' : score >= 50 ? 'emerging' : score >= 35 ? 'stable' : 'noise';
+    const nicheDist = Object.entries(nAgg).sort((a, b) => b[1] - a[1]);
+    const samples = (() => { // re-diversify pooled examples: at most 2 per channel
+      const out = [], perCh = {};
+      for (const v of pooledSamples.sort((a, b) => b.views - a.views)) {
+        const key = v.channel_name || v.video_id;
+        if ((perCh[key] || 0) >= 2) continue; perCh[key] = (perCh[key] || 0) + 1;
+        out.push(v); if (out.length >= 6) break;
+      }
+      return out;
+    })();
+    kept2.push({
+      ...survivor,
+      niche: resolveNiche(classifyTopicNiche(survivor.topic), nAgg),
+      region: domClass(rAgg) || survivor.region,
+      channel_count_now: chNow, channel_count_prior: chPrior,
+      video_count: vidCount, avg_views: maxAvg, accel_pct: Math.round(accel * 100),
+      signal_score: score, signal_tier: tier,
+      niche_spread: nicheDist.length, niches: nicheDist.slice(0, 8).map(([niche, channels]) => ({ niche, channels })),
+      samples,
+    });
+    entityMerged += members.length - 1;
+    mergeReport.push({ canonical: survivor.topic, chNow, score, tier, niche: kept2[kept2.length - 1].niche, members: ms.map(m => `${m.topic} (${m.channel_count_now}ch/${m.signal_score})`) });
+  }
+  const kept3 = kept2.filter(e => e.signal_tier !== 'noise')
+    .sort((a, b) => b.signal_score - a.signal_score || b.channel_count_now - a.channel_count_now);
+  console.log(`[videoTrend] Entity-anchor merge: collapsed ${entityMerged} fragment rows into ${mergeReport.length} multi-fragment stories`);
+
+  if (opts.dryRun) {
+    mergeReport.sort((a, b) => b.chNow - a.chNow);
+    console.log('\n[videoTrend] DRY RUN — table NOT written. Top merged stories:');
+    for (const r of mergeReport.slice(0, 12)) {
+      console.log(`\n● ${r.canonical}  [${r.niche} · ${r.tier} · score ${r.score} · ${r.chNow} channels]`);
+      r.members.slice(0, 12).forEach(m => console.log(`    - ${m}`));
+      if (r.members.length > 12) console.log(`    …+${r.members.length - 12} more fragments`);
+    }
+    console.log('\n[videoTrend] DRY RUN — new top-15 overall:');
+    kept3.slice(0, 15).forEach((e, i) => console.log(`${String(i + 1).padStart(2)}. [${e.signal_score}] ${String(e.channel_count_now).padStart(3)}ch  ${titleCase(e.topic)}  (${e.niche})`));
+    return { dryRun: true, entity_merged: entityMerged, stories: mergeReport.length, topics: kept3.length };
+  }
+
   const ins = `INSERT OR REPLACE INTO video_trend_signals (topic,niche,region,channel_count_now,channel_count_prior,video_count,avg_views,accel_pct,signal_score,signal_tier,samples_json,niche_spread,niches_json,computed_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`;
   const tx = db.transaction(() => {
-    for (const e of kept) db.run(ins, [titleCase(e.topic), e.niche, e.region, e.channel_count_now, e.channel_count_prior, e.video_count, e.avg_views, e.accel_pct, e.signal_score, e.signal_tier, JSON.stringify(e.samples), e.niche_spread, JSON.stringify(e.niches)]);
+    for (const e of kept3) db.run(ins, [titleCase(e.topic), e.niche, e.region, e.channel_count_now, e.channel_count_prior, e.video_count, e.avg_views, e.accel_pct, e.signal_score, e.signal_tier, JSON.stringify(e.samples), e.niche_spread, JSON.stringify(e.niches)]);
   });
   tx();
   db.run(`DELETE FROM video_trend_signals WHERE computed_at < ?`, [runStart]);
@@ -429,8 +574,8 @@ async function runVideoTrendJob(opts = {}) {
   try { flagNewTrendsForOutcomeTracking(db); } catch (e) { console.warn('[videoTrend] outcome-flagging error:', e.message); }
 
   const secs = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[videoTrend] Wrote ${kept.length} topics (LLM-merged ${canon.merged || 0}, niche-relabeled ${np.relabeled || 0}) in ${secs}s`);
-  return { topics: kept.length, llm_merged: canon.merged || 0, niche_relabeled: np.relabeled || 0, duration_s: parseFloat(secs) };
+  console.log(`[videoTrend] Wrote ${kept3.length} topics (entity-merged ${entityMerged}, LLM-merged ${canon.merged || 0}, niche-relabeled ${np.relabeled || 0}) in ${secs}s`);
+  return { topics: kept3.length, entity_merged: entityMerged, llm_merged: canon.merged || 0, niche_relabeled: np.relabeled || 0, duration_s: parseFloat(secs) };
 }
 
 module.exports = { runVideoTrendJob, canonicalizeTopTrends, nicheGeneralTopics, flagNewTrendsForOutcomeTracking };
