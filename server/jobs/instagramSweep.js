@@ -47,26 +47,31 @@ async function runInstagramSweep(opts = {}) {
     (media_id, username, caption, hashtags_json, play_count, like_count, comment_count, taken_at, niche, region, source_hashtag, fetched_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`;
 
-  let fetched = 0, tags = 0, errors = 0;
-  for (const [niche, hashtags] of Object.entries(seeds)) {
-    for (const tag of hashtags) {
-      tags++;
-      let media = [];
-      try { media = await provider.recentByHashtag(tag, { limit, sinceDays }); }
-      catch (e) { errors++; console.warn(`[igSweep] ${tag}: ${e.message}`); continue; }
-      const tx = db.transaction(() => {
-        for (const m of media) {
-          db.run(ins, [m.media_id, m.username, m.caption || '', JSON.stringify(m.hashtags || []),
-            m.play_count | 0, m.like_count | 0, m.comment_count | 0, m.taken_at, niche, region, tag]);
-        }
-      });
-      tx();
-      fetched += media.length;
+  // seed hashtag → niche, so a single batched multi-hashtag run can attribute each post's niche by
+  // matching the searched hashtag inside the post's own hashtags (the searched tag is always present).
+  const tagNiche = new Map();
+  for (const [niche, hashtags] of Object.entries(seeds)) for (const t of hashtags) tagNiche.set(t.toLowerCase(), niche);
+  const allTags = [...tagNiche.keys()];
+
+  let media = [], errors = 0;
+  try { media = await provider.recentByHashtags(allTags, { limit, sinceDays }); }
+  catch (e) { errors = 1; console.warn(`[igSweep] batch failed: ${e.message}`); }
+
+  const tx = db.transaction(() => {
+    for (const m of media) {
+      const postTags = (m.hashtags || []).map(h => String(h).toLowerCase());
+      // _sourceTag is set by the sequential fallback; for a true batch run, find the seed tag in the post.
+      const srcTag = m._sourceTag || postTags.find(h => tagNiche.has(h)) || null;
+      const niche = (srcTag && tagNiche.get(srcTag)) || 'general';
+      db.run(ins, [m.media_id, m.username, m.caption || '', JSON.stringify(m.hashtags || []),
+        m.play_count | 0, m.like_count | 0, m.comment_count | 0, m.taken_at, niche, region, srcTag || '']);
     }
-  }
+  });
+  tx();
+
   const secs = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[igSweep] fetched ${fetched} media across ${tags} hashtags (${errors} errors) in ${secs}s`);
-  return { fetched, hashtags: tags, errors, duration_s: parseFloat(secs) };
+  console.log(`[igSweep] fetched ${media.length} media across ${allTags.length} hashtags in 1 batched run (${errors} errors) in ${secs}s`);
+  return { fetched: media.length, hashtags: allTags.length, errors, duration_s: parseFloat(secs) };
 }
 
 module.exports = { runInstagramSweep, SEED_HASHTAGS, ensureSchema };

@@ -19,6 +19,18 @@
 
 class BaseProvider {
   async recentByHashtag() { throw new Error('recentByHashtag not implemented'); }
+  // Batch entry point: one call for many hashtags. Providers that support a single multi-hashtag run
+  // override this to avoid per-hashtag run overhead (fewer runs = lower cost + faster). Default =
+  // sequential per-tag, tagging each result with the hashtag it came from (so the sweep can attribute
+  // niche). The mock inherits this; Apify overrides with a true single run.
+  async recentByHashtags(tags, opts = {}) {
+    const all = [];
+    for (const t of tags) {
+      const media = await this.recentByHashtag(t, opts);
+      for (const m of media) { m._sourceTag = t; all.push(m); }
+    }
+    return all;
+  }
 }
 
 // ── Real providers: stubbed until a key is supplied (scaffold). Each TODO is the single method to fill.
@@ -29,11 +41,11 @@ class ApifyProvider extends BaseProvider {
     // actor id is overridable in case you switch to a different Instagram scraper actor.
     this.actor = process.env.INSTAGRAM_APIFY_ACTOR || 'apify~instagram-hashtag-scraper';
   }
-  async recentByHashtag(tag, opts = {}) {
+  // One synchronous actor run for N hashtags → dataset items. resultsLimit is PER hashtag, so batching
+  // many hashtags into a single run keeps the same per-hashtag depth while paying run overhead ONCE
+  // (18 runs → 1). Sync runs are capped at 300s by Apify.
+  async _run(hashtags, opts = {}) {
     if (!this.token) throw new Error('APIFY_TOKEN not set — add it to server/.env, or run INSTAGRAM_PROVIDER=mock to stay keyless.');
-    const limit = opts.limit ?? 50;
-    // Run the actor synchronously and get its dataset items back in one call. resultsLimit caps results
-    // (= cost) per hashtag. Sync runs are capped at 300s by Apify, plenty for a small resultsLimit.
     const url = `https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?token=${encodeURIComponent(this.token)}`;
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 300000);
@@ -42,7 +54,7 @@ class ApifyProvider extends BaseProvider {
       resp = await fetch(url, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ hashtags: [tag], resultsLimit: limit }),
+        body: JSON.stringify({ hashtags, resultsLimit: opts.limit ?? 50 }),
         signal: ctrl.signal,
       });
     } finally { clearTimeout(timer); }
@@ -62,6 +74,8 @@ class ApifyProvider extends BaseProvider {
       taken_at: it.timestamp || it.takenAt || new Date().toISOString(),
     })).filter(m => m.media_id);
   }
+  async recentByHashtag(tag, opts = {}) { return this._run([tag], opts); }
+  async recentByHashtags(tags, opts = {}) { return this._run(tags, opts); } // one run for all hashtags
 }
 
 class HikerProvider extends BaseProvider {
