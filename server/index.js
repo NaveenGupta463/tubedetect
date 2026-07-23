@@ -97,12 +97,16 @@ try {
   const sessionRoute                  = require('./routes/session');
   const app = express();
   const { attachAdmin, requireAdmin, securityHeaders, buildCorsOptions, makeRateLimiter } = require('./middleware/security');
+  const { attachUser, requireAuth } = require('./middleware/auth');
+  const authRoute = require('./routes/auth');
+  require('./services/auth').ensureAuthSchema(getDb());
 
   app.set('trust proxy', 1); // behind a proxy/CDN in prod — required for correct client IPs
   app.use(cors(buildCorsOptions()));
   app.use(securityHeaders);
   app.use(express.json({ limit: process.env.JSON_LIMIT || '1mb' }));
-  app.use(attachAdmin); // sets req.isAdmin — every limiter/gate below exempts the owner
+  app.use(attachAdmin); // sets req.isAdmin from the admin token
+  app.use(attachUser);  // sets req.user from the session cookie; elevates req.isAdmin for admin role
 
   // Global throttle (per IP; admin exempt) + a much stricter one on the money routes (Claude/OpenAI/
   // Tavily/YouTube-quota) so an anonymous script can't drain the API budgets.
@@ -139,6 +143,9 @@ try {
 
   getDb();
 
+  // ── Auth (public) — sign in / out / session ────────────────────────────────
+  app.use('/api', authRoute);
+
   // ── Public routes (no auth) — must come BEFORE adminRoute ──────────────────
   app.use('/api', claudeRoute);
   app.use('/api', analyzeRoute);
@@ -153,11 +160,12 @@ try {
   app.use('/api', outcomesRoute);
   app.use('/api', learningRoute);
   app.use('/api', experimentsRoute);
-  app.use('/api/intel', creatorIntelRoute);
-  app.use('/api/intel', onboardingRoute);
-  app.use('/api/copilot', copilotRoute);
-  app.use('/api', creditsRoute);
-  app.use('/api', draftsRoute);
+  // Product routes — gated by requireAuth (a no-op until AUTH_ENFORCED=1, so nothing breaks pre-launch).
+  app.use('/api/intel', requireAuth, creatorIntelRoute);
+  app.use('/api/intel', requireAuth, onboardingRoute);
+  app.use('/api/copilot', requireAuth, copilotRoute);
+  app.use('/api', requireAuth, creditsRoute);
+  app.use('/api', requireAuth, draftsRoute);
   app.use('/api', channelSignalsRoute);
   app.use('/api', intelligenceRoute);
   app.use('/api', semanticRoute);
