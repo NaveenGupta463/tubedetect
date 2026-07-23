@@ -920,186 +920,6 @@ async function trendingTopicsHandler(req, res) {
   }
 }
 
-// ── GET /lifecycle-health ─────────────────────────────────────────────────────
-
-function lifecycleHealthHandler(req, res) {
-  try {
-    const db = getDb();
-
-    // ── Task 1: core metrics ───────────────────────────────────────────────
-    const totalChannels = db.get(
-      `SELECT COUNT(*) AS n FROM ingested_channels WHERE ingest_enabled = 1`,
-    ).n;
-
-    const corpus = db.get(`
-      SELECT
-        COUNT(*)                                               AS total_records,
-        COUNT(DISTINCT channel_id)                            AS channels_with_lifecycle,
-        SUM(CASE WHEN stage='regular'   THEN 1 ELSE 0 END)   AS regular_count,
-        SUM(CASE WHEN stage='saturated' THEN 1 ELSE 0 END)   AS saturated_count,
-        SUM(CASE WHEN stage='seed'      THEN 1 ELSE 0 END)   AS seed_count,
-        SUM(CASE WHEN stage='early'     THEN 1 ELSE 0 END)   AS early_count,
-        SUM(CASE WHEN stage='pre_topic' THEN 1 ELSE 0 END)   AS pre_topic_count,
-        SUM(CASE WHEN stage='exiting'   THEN 1 ELSE 0 END)   AS exiting_count
-      FROM creator_topic_lifecycle
-    `);
-
-    const brand = db.get(`
-      SELECT
-        AVG(COALESCE(brand_contamination_pct, 0))                                              AS avg_brand_pct,
-        SUM(CASE WHEN content_phrases IS NOT NULL AND content_phrases != '' THEN 1 ELSE 0 END) AS content_match_count,
-        COUNT(*)                                                                                AS total_identity
-      FROM channel_identity
-    `);
-
-    const channelsWithSuppression = db.get(`
-      SELECT COUNT(DISTINCT channel_id) AS n
-      FROM creator_topic_lifecycle
-      WHERE stage IN ('regular', 'saturated')
-    `).n;
-
-    const total = corpus.total_records || 1;
-    const cwl   = corpus.channels_with_lifecycle || 1;
-
-    // ── by_niche breakdown ─────────────────────────────────────────────────
-    const nicheRows = db.all(`
-      SELECT
-        COALESCE(ic.primary_niche, ic.niche)                    AS niche,
-        COUNT(DISTINCT ctl.channel_id)                          AS channels_with_lifecycle,
-        COUNT(*)                                                AS total_records,
-        SUM(CASE WHEN ctl.stage='regular'   THEN 1 ELSE 0 END) AS regular_count,
-        SUM(CASE WHEN ctl.stage='saturated' THEN 1 ELSE 0 END) AS saturated_count,
-        SUM(CASE WHEN ctl.stage='seed'      THEN 1 ELSE 0 END) AS seed_count
-      FROM creator_topic_lifecycle ctl
-      JOIN ingested_channels ic ON ic.channel_id = ctl.channel_id
-      WHERE ic.ingest_enabled = 1
-      GROUP BY 1
-      ORDER BY channels_with_lifecycle DESC
-      LIMIT 25
-    `);
-
-    const byNiche = {};
-    for (const r of nicheRows) {
-      if (!r.niche) continue;
-      const t = r.total_records || 1;
-      byNiche[r.niche] = {
-        channels_with_lifecycle: r.channels_with_lifecycle,
-        total_records:           r.total_records,
-        regular_pct:             parseFloat(((r.regular_count   / t) * 100).toFixed(1)),
-        saturated_pct:           parseFloat(((r.saturated_count / t) * 100).toFixed(1)),
-        seed_pct:                parseFloat(((r.seed_count      / t) * 100).toFixed(1)),
-      };
-    }
-
-    // ── Task 3: top tables ─────────────────────────────────────────────────
-    const topSaturated = db.all(`
-      SELECT ctl.channel_id, ic.channel_name,
-             COALESCE(ic.primary_niche, ic.niche) AS niche,
-             COUNT(*) AS saturated_count
-      FROM creator_topic_lifecycle ctl
-      JOIN ingested_channels ic ON ic.channel_id = ctl.channel_id
-      WHERE ctl.stage = 'saturated' AND ic.ingest_enabled = 1
-      GROUP BY ctl.channel_id
-      ORDER BY saturated_count DESC
-      LIMIT 10
-    `);
-
-    const topEvolved = db.all(`
-      SELECT ctl.channel_id, ic.channel_name,
-             COALESCE(ic.primary_niche, ic.niche) AS niche,
-             SUM(CASE WHEN ctl.stage='regular'  THEN 1 ELSE 0 END) AS regular_count,
-             SUM(CASE WHEN ctl.stage='early'    THEN 1 ELSE 0 END) AS early_count,
-             COUNT(*) AS total_phrases
-      FROM creator_topic_lifecycle ctl
-      JOIN ingested_channels ic ON ic.channel_id = ctl.channel_id
-      WHERE ic.ingest_enabled = 1
-      GROUP BY ctl.channel_id
-      HAVING regular_count >= 2
-      ORDER BY regular_count DESC, early_count DESC
-      LIMIT 10
-    `);
-
-    const weakQuality = db.all(`
-      SELECT ic.channel_id, ic.channel_name,
-             COALESCE(ic.primary_niche, ic.niche) AS niche,
-             ci.brand_contamination_pct,
-             ci.content_phrase_count,
-             ci.confidence_tier
-      FROM ingested_channels ic
-      JOIN channel_identity ci ON ci.channel_id = ic.channel_id
-      WHERE ic.ingest_enabled = 1
-        AND (ci.content_phrase_count < 2 OR ci.brand_contamination_pct > 0.80)
-      ORDER BY ci.brand_contamination_pct DESC, ci.content_phrase_count ASC
-      LIMIT 10
-    `);
-
-    // ── Task 4: warnings ───────────────────────────────────────────────────
-    const brandWarnCount = db.get(
-      `SELECT COUNT(*) AS n FROM channel_identity WHERE brand_contamination_pct > 0.70`,
-    ).n;
-
-    const lowContentCount = db.get(
-      `SELECT COUNT(*) AS n FROM channel_identity WHERE content_phrase_count < 2`,
-    ).n;
-
-    const noRegularCount = db.get(`
-      SELECT COUNT(*) AS n FROM ingested_channels ic
-      JOIN channel_identity ci ON ci.channel_id = ic.channel_id
-      WHERE ic.ingest_enabled = 1
-        AND ic.added_at < datetime('now', '-60 days')
-        AND EXISTS (
-          SELECT 1 FROM creator_topic_lifecycle ctl
-          WHERE ctl.channel_id = ic.channel_id
-        )
-        AND NOT EXISTS (
-          SELECT 1 FROM creator_topic_lifecycle ctl2
-          WHERE ctl2.channel_id = ic.channel_id
-            AND ctl2.stage IN ('regular', 'saturated')
-        )
-    `).n;
-
-    // ── Task 2: trend history (last 14 daily snapshots) ────────────────────
-    const trend = db.all(`
-      SELECT snapshot_date, channels_with_lifecycle, total_records,
-             regular_count, saturated_count, seed_count,
-             brand_contamination_pct, content_match_pct
-      FROM lifecycle_daily_snapshots
-      ORDER BY snapshot_date DESC
-      LIMIT 14
-    `).reverse();
-
-    res.json({
-      ok: true,
-      channels_total:           totalChannels,
-      channels_with_lifecycle:  corpus.channels_with_lifecycle,
-      lifecycle_coverage_pct:   parseFloat(((corpus.channels_with_lifecycle / totalChannels) * 100).toFixed(1)),
-      total_records:            corpus.total_records,
-      regular_pct:              parseFloat(((corpus.regular_count   / total) * 100).toFixed(1)),
-      saturated_pct:            parseFloat(((corpus.saturated_count / total) * 100).toFixed(1)),
-      seed_pct:                 parseFloat(((corpus.seed_count      / total) * 100).toFixed(1)),
-      early_pct:                parseFloat(((corpus.early_count     / total) * 100).toFixed(1)),
-      pre_topic_pct:            parseFloat(((corpus.pre_topic_count / total) * 100).toFixed(1)),
-      brand_pct:                parseFloat(((brand.avg_brand_pct || 0) * 100).toFixed(1)),
-      content_match_pct:        brand.total_identity > 0
-        ? parseFloat(((brand.content_match_count / brand.total_identity) * 100).toFixed(1))
-        : 0,
-      suppression_rate:         parseFloat(((channelsWithSuppression / cwl) * 100).toFixed(1)),
-      by_niche:                 byNiche,
-      top_saturated:            topSaturated,
-      top_evolved:              topEvolved,
-      weak_quality:             weakQuality,
-      warnings: {
-        brand_contamination: { count: brandWarnCount,  threshold_pct: 70 },
-        low_content_phrases: { count: lowContentCount, min_phrases:    2 },
-        no_regular_topics:   { count: noRegularCount,  after_days:    60 },
-      },
-      trend,
-    });
-  } catch (e) {
-    res.status(500).json({ error: e.message });
-  }
-}
-
 // ── GET /debug-country ────────────────────────────────────────────────────────
 
 async function debugCountryHandler(req, res) {
@@ -1442,7 +1262,7 @@ async function forYouTrendsHandler(req, res) {
     if (!channel_id) return res.status(400).json({ ok: false, error: 'channel_id required' });
     const { getPersonalizedTrends } = require('../services/personalizedTrends');
     const r = await getPersonalizedTrends(db, channel_id, {});
-    res.json({ ok: true, direct: r.direct || [], crossover: r.crossover || [], computed_at: r.computed_at || null });
+    res.json({ ok: true, direct: r.direct || [], crossover: r.crossover || [], headstart: r.headstart || [], computed_at: r.computed_at || null });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
   }
@@ -1584,6 +1404,12 @@ async function whatToPostHandler(req, res) {
           if (_gen && _gen.length) {
             if (result.original_bets && !Array.isArray(result.original_bets)) result.original_bets = { ...result.original_bets, ideas: _gen, status: 'ready', source: 'ai_generated' };
             else result.original_bets = _gen;
+          } else if (_betScaffold.length) {
+            // AI generation failed, timed out, or every candidate got filtered (e.g. the news_bulletin
+            // crime/victim safety gate) — fall back to the deterministic scaffold rather than leaving
+            // the section permanently blank/pending. It's already staleness-filtered (originalBets.js).
+            if (result.original_bets && !Array.isArray(result.original_bets)) result.original_bets = { ...result.original_bets, ideas: _betScaffold, status: 'ready', source: 'creator_dna_scaffold' };
+            else result.original_bets = _betScaffold;
           }
         } catch (_) { /* leave bets blank (no mad-libs) on any failure */ }
       })();
@@ -1895,7 +1721,6 @@ module.exports = {
   adjacentIdeasHandler,
   foreignSignalHandler,
   trendingTopicsHandler,
-  lifecycleHealthHandler,
   debugCountryHandler,
   competitorTopVideosHandler,
   competitorVelocityHandler,

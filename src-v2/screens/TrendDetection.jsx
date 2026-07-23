@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { T, ease } from '../tokens';
+import LoadingShowcase from '../components/LoadingShowcase';
 
 const API = 'http://localhost:3002';
 
@@ -333,10 +334,76 @@ function SignalCard({ signal, index, activeNiche, channel }) {
   );
 }
 
+// ── Breaking Right Now — same-day dominant stories, independent of the tier tabs below ──────────
+// video_trend_signals (the tabs below) needs weeks of accumulated corpus coverage before a topic
+// registers — the wrong tool for "this broke this morning". This pulls the live current-events
+// feed instead (multi-outlet corroboration, ≤12-day window), which already exists for news
+// creators and is now shown to every creator — in-beat stories framed as "your beat", everything
+// else framed as a clearly-labelled cross-over so it never reads as a core recommendation.
+function buildBreakingEventPrompt(ev, inBeat) {
+  const sample = ev.sample_titles?.[0]?.title;
+  return `"${ev.topic}" is dominating the news right now — ${ev.channel_count} channels are covering it` +
+    (sample ? ` (e.g. "${sample}")` : '') + `.` +
+    (inBeat
+      ? ` Give me 3 different video angle ideas for how I could cover this on my channel, tailored to my niche and content style.`
+      : ` It's outside my usual niche, but give me 2-3 honest ideas for whether and how I could angle this into something that fits my channel — or tell me if it genuinely doesn't fit.`);
+}
+
+function BreakingRightNowSection({ data, loading, channel }) {
+  const events = data?.events || [];
+  if (!loading && !events.length) return null;
+  const inBeat = data?.in_beat !== false;
+  const accent = inBeat ? '#ef4444' : '#38bdf8';
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.28, ease }}
+      style={{
+        marginBottom: 18, borderRadius: 12, padding: '14px 16px',
+        background: `${accent}0d`, border: `1px solid ${accent}38`,
+      }}
+    >
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4 }}>
+        <span style={{ fontSize: '0.95rem' }}>{inBeat ? '📰' : '🔥'}</span>
+        <h3 style={{ margin: 0, fontSize: '0.88rem', fontWeight: 800, color: T.text }}>
+          {inBeat ? 'Breaking On Your Beat' : 'Dominating The News Today'}
+        </h3>
+        {loading && (
+          <motion.span animate={{ opacity: [0.4, 1, 0.4] }} transition={{ duration: 1.4, repeat: Infinity }} style={{ fontSize: '0.62rem', color: T.muted }}>
+            loading…
+          </motion.span>
+        )}
+      </div>
+      <p style={{ margin: '0 0 12px', fontSize: '0.7rem', color: T.muted, lineHeight: 1.4 }}>
+        {inBeat
+          ? "What's actually breaking right now, not what's been slowly building for weeks — video_trend_signals below needs time to accumulate, this doesn't."
+          : "Outside your niche, but this is what's dominating every platform right now — worth knowing even if you don't cover it."}
+      </p>
+      {events.slice(0, 5).map(ev => (
+        <div key={ev.topic} style={{
+          display: 'flex', alignItems: 'center', gap: 10,
+          padding: '7px 10px', borderRadius: 8, marginBottom: 5,
+          background: 'rgba(255,255,255,0.03)',
+        }}>
+          <span style={{ fontSize: '0.78rem', fontWeight: 600, color: T.text, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {ev.topic}
+          </span>
+          <span style={{ fontSize: '0.62rem', color: accent, fontWeight: 700, flexShrink: 0 }}>
+            {ev.channel_count} channels
+          </span>
+          <ActOnItButton prompt={buildBreakingEventPrompt(ev, inBeat)} channel={channel} />
+        </div>
+      ))}
+    </motion.div>
+  );
+}
+
 export default function TrendDetection({ channel }) {
   const [signals,   setSignals]   = useState([]);
   const [coming,    setComing]    = useState([]);
-  const [forYou,    setForYou]    = useState({ direct: [], crossover: [] });
+  const [forYou,    setForYou]    = useState({ direct: [], crossover: [], headstart: [] });
   const [tierCounts, setTierCounts] = useState({});
   const [loading,   setLoading]   = useState(false);
   const [error,     setError]     = useState(null);
@@ -344,6 +411,18 @@ export default function TrendDetection({ channel }) {
   const [niche,     setNiche]     = useState('all');
   const [activeTier, setActiveTier] = useState('rising');
   const [sort,      setSort]      = useState('score');
+  const [breaking,        setBreaking]        = useState(null);
+  const [loadingBreaking, setLoadingBreaking]  = useState(false);
+
+  // Independent of the tier tabs — same-day breaking stories, not month-over-month corpus growth.
+  useEffect(() => {
+    if (!channel?.channel_id) { setBreaking(null); return; }
+    setLoadingBreaking(true);
+    fetch(`${API}/api/intel/current-events?channel_id=${encodeURIComponent(channel.channel_id)}`)
+      .then(r => r.json())
+      .then(d => { setBreaking(d.ok ? d : null); setLoadingBreaking(false); })
+      .catch(() => setLoadingBreaking(false));
+  }, [channel?.channel_id]);
 
   useEffect(() => {
     if (channel?.niche && niche === 'all') {
@@ -359,13 +438,13 @@ export default function TrendDetection({ channel }) {
     setError(null);
     setSignals([]);
     setComing([]);
-    setForYou({ direct: [], crossover: [] });
+    setForYou({ direct: [], crossover: [], headstart: [] });
     // "For You" — personalized: DIRECT trends in the channel's niche + CROSS-OVER trends angled in.
     if (activeTier === 'foryou') {
       if (!channel?.channel_id) { setError('Open a channel to see personalized trends'); setLoading(false); return; }
       fetch(`${API}/api/intel/trends/for-you?channel_id=${encodeURIComponent(channel.channel_id)}`)
         .then(r => r.json())
-        .then(d => { setForYou({ direct: d.direct || [], crossover: d.crossover || [] }); setLoading(false); })
+        .then(d => { setForYou({ direct: d.direct || [], crossover: d.crossover || [], headstart: d.headstart || [] }); setLoading(false); })
         .catch(e => { setError(e.message); setLoading(false); });
       return;
     }
@@ -424,6 +503,8 @@ export default function TrendDetection({ channel }) {
           Topics gaining momentum in your community — scored from view outperformance, creator adoption, and VPH trajectory.
         </p>
       </div>
+
+      <BreakingRightNowSection data={breaking} loading={loadingBreaking} channel={channel} />
 
       {/* tier tabs */}
       <div style={{ display: 'flex', gap: 4, marginBottom: 16, background: 'rgba(255,255,255,0.04)', borderRadius: 10, padding: 4, border: `1px solid ${T.border}` }}>
@@ -486,9 +567,7 @@ export default function TrendDetection({ channel }) {
 
       {/* content */}
       {loading && (
-        <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
-          Loading signals…
-        </div>
+        <LoadingShowcase exclude={['trends']} />
       )}
 
       {error && (
@@ -507,29 +586,41 @@ export default function TrendDetection({ channel }) {
 
       {/* For You — personalized: direct (in-niche) + cross-over (angled) trend ideas */}
       {!loading && !error && activeTier === 'foryou' && (() => {
-        const both = [...forYou.direct.map(x => ({ ...x, mode: 'direct' })), ...forYou.crossover.map(x => ({ ...x, mode: 'crossover' }))];
+        // Head-start FIRST (highest upside: hot on TikTok/Instagram, not on YouTube yet), then in-niche, then cross-over.
+        const both = [
+          ...forYou.headstart.map(x => ({ ...x, mode: 'headstart' })),
+          ...forYou.direct.map(x => ({ ...x, mode: 'direct' })),
+          ...forYou.crossover.map(x => ({ ...x, mode: 'crossover' })),
+        ];
         if (both.length === 0) return (
           <div style={{ textAlign: 'center', color: T.muted, padding: 60, fontSize: '0.85rem' }}>
             No personalized trend ideas yet — run the pipeline to refresh, or the channel may have no matching live trends.
           </div>
         );
+        const srcLabel = it => it.status === 'coming_from_tiktok' ? 'US/UK TikTok' : it.status === 'coming_from_tiktok_and_ig' ? 'TikTok + Instagram' : 'Instagram';
         return (
           <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
             <div style={{ fontSize: '0.68rem', color: T.subtle, marginBottom: 4 }}>
-              Trending right now that YOU should make — {forYou.direct.length} in your niche, {forYou.crossover.length} cross-over angles.
+              Trending right now that YOU should make — {forYou.headstart.length ? `${forYou.headstart.length} early (before YouTube), ` : ''}{forYou.direct.length} in your niche, {forYou.crossover.length} cross-over angles.
             </div>
             {both.map((it, i) => {
+              const isHead = it.mode === 'headstart';
+              const accent = isHead ? '#34d399' : it.mode === 'crossover' ? '#38bdf8' : T.accent;
+              const border = isHead ? 'rgba(52,211,153,0.3)' : it.mode === 'crossover' ? 'rgba(56,189,248,0.25)' : 'rgba(157,111,255,0.25)';
               const actPrompt = `I want to build on this idea: "${it.title}" (riding the "${it.trend}" trend` +
-                (it.mode === 'crossover' && it.trend_niche ? `, a cross-over from ${it.trend_niche}` : '') + `).` +
+                (isHead ? `, which is trending on ${srcLabel(it)} but not yet on YouTube — a first-mover play` :
+                 it.mode === 'crossover' && it.trend_niche ? `, a cross-over from ${it.trend_niche}` : '') + `).` +
                 (it.why ? ` ${it.why}` : '') +
                 ` Give me a few different ways I could angle or open this video, tailored to my channel.`;
               return (
-                <div key={i} style={{ ...T.glassCard, borderRadius: 12, padding: '12px 14px', border: `1px solid ${it.mode === 'crossover' ? 'rgba(56,189,248,0.25)' : 'rgba(157,111,255,0.25)'}` }}>
+                <div key={i} style={{ ...T.glassCard, borderRadius: 12, padding: '12px 14px', border: `1px solid ${border}` }}>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
-                    <span style={{ fontSize: '0.6rem', fontWeight: 700, color: it.mode === 'crossover' ? '#38bdf8' : T.accent }}>
-                      {it.mode === 'crossover' ? '🔀 CROSS-OVER' : '🎯 IN YOUR NICHE'}
+                    <span style={{ fontSize: '0.6rem', fontWeight: 700, color: accent }}>
+                      {isHead ? '🚀 EARLY · BEFORE YOUTUBE' : it.mode === 'crossover' ? '🔀 CROSS-OVER' : '🎯 IN YOUR NICHE'}
                     </span>
-                    <span style={{ fontSize: '0.6rem', color: T.subtle }}>riding: {it.trend}{it.mode === 'crossover' && it.trend_niche ? ` · trending in ${it.trend_niche}` : ''}</span>
+                    <span style={{ fontSize: '0.6rem', color: T.subtle }}>
+                      {isHead ? `trending on ${srcLabel(it)} · ${it.trend}` : `riding: ${it.trend}${it.mode === 'crossover' && it.trend_niche ? ` · trending in ${it.trend_niche}` : ''}`}
+                    </span>
                   </div>
                   <div style={{ fontSize: '0.85rem', fontWeight: 600, color: T.text, lineHeight: 1.35 }}>{it.title}</div>
                   {it.why && <div style={{ fontSize: '0.7rem', color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{it.why}</div>}
