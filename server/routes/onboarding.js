@@ -410,9 +410,13 @@ async function onboardChannel(db, channel_id, apiKey, res) {
   });
 }
 
+const { isChannelId } = require('../utils/validators');
+
 router.post('/onboard-channel', async (req, res) => {
   const { channel_id } = req.body;
-  if (!channel_id) return res.status(400).json({ error: 'channel_id required' });
+  // Validate BEFORE the id is interpolated into the YouTube API URL (H5): reject anything that isn't a
+  // well-formed channel id so no extra query params / junk can be smuggled into the upstream call.
+  if (!isChannelId(channel_id)) return res.status(400).json({ error: 'invalid channel_id' });
   // Use the 'ingest' quota lane (falls back to primary key if the pool is unavailable).
   const apiKey = getApiKey('ingest') || process.env.YT_API_KEY || process.env.YOUTUBE_API_KEY;
   if (!apiKey) return res.status(503).json({ error: 'YouTube API key not configured' });
