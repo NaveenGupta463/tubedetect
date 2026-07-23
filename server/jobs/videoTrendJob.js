@@ -578,4 +578,8 @@ async function runVideoTrendJob(opts = {}) {
   return { topics: kept3.length, entity_merged: entityMerged, llm_merged: canon.merged || 0, niche_relabeled: np.relabeled || 0, duration_s: parseFloat(secs) };
 }
 
-module.exports = { runVideoTrendJob, canonicalizeTopTrends, nicheGeneralTopics, flagNewTrendsForOutcomeTracking };
+module.exports = {
+  runVideoTrendJob, canonicalizeTopTrends, nicheGeneralTopics, flagNewTrendsForOutcomeTracking,
+  // exposed so the Instagram trend job reuses the EXACT same phrase extraction + scoring (no drift):
+  tokenize, phrasesOf, scoreTopic, confidentNiche, resolveNiche, titleCase,
+};
