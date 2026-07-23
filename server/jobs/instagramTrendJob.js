@@ -21,10 +21,20 @@ function ensureSchema(db) {
   )`);
 }
 
+// IG-specific CTA/engagement cruft on TOP of the shared PHRASE_STOP (which already drops subscribe/
+// link/bio/reels/trending). Reels captions are dense with "save this post", "follow for more", "dm to
+// buy", "turn on notifications" — none of which name a topic. Filtered after the shared tokenizer.
+const IG_STOP = new Set([
+  'save', 'post', 'posts', 'follow', 'follows', 'follower', 'followers', 'following', 'unfollow',
+  'notification', 'notifications', 'bell', 'turn', 'repost', 'reshare', 'collab', 'collaboration',
+  'giveaway', 'contest', 'win', 'winner', 'join', 'sign', 'app', 'download', 'install', 'click', 'tap',
+  'below', 'caption', 'captions', 'hashtag', 'hashtags', 'insta', 'instagram', 'reelitfeelit', 'trending',
+  'account', 'profile', 'page', 'story', 'stories', 'highlight', 'highlights', 'dm', 'inbox', 'message',
+]);
 // hashtags become tokens too (split camel/hashtag words already handled by tokenize's non-letter split).
 function tokensFor(row) {
   const tags = (() => { try { return JSON.parse(row.hashtags_json || '[]'); } catch { return []; } })();
-  return tokenize(`${row.caption || ''} ${tags.join(' ')}`);
+  return tokenize(`${row.caption || ''} ${tags.join(' ')}`).filter(t => !IG_STOP.has(t));
 }
 
 async function runInstagramTrendJob(opts = {}) {
@@ -56,9 +66,10 @@ async function runInstagramTrendJob(opts = {}) {
     for (const p of phrasesOf(tokensFor(m))) {
       if (seen.has(p)) continue; seen.add(p);
       let e = idx.get(p);
-      if (!e) { e = { accts: new Set(), media: [], nCount: {}, rCount: {}, firstSeen: m.taken_at }; idx.set(p, e); }
+      if (!e) { e = { accts: new Set(), media: [], mediaIds: new Set(), nCount: {}, rCount: {}, firstSeen: m.taken_at }; idx.set(p, e); }
       e.accts.add(m.username);
       if (e.media.length < 40) e.media.push(m);
+      if (e.mediaIds.size < 200) e.mediaIds.add(m.id);
       e.nCount[m.niche] = (e.nCount[m.niche] || 0) + 1;
       e.rCount[m.region] = (e.rCount[m.region] || 0) + 1;
       if (m.taken_at < e.firstSeen) e.firstSeen = m.taken_at;
@@ -87,22 +98,48 @@ async function runInstagramTrendJob(opts = {}) {
     const region = Object.entries(e.rCount).sort((a, b) => b[1] - a[1])[0]?.[0] || 'IN';
     const samples = e.media.sort((a, b) => b.play_count - a.play_count).slice(0, 6)
       .map(m => ({ caption: (m.caption || '').slice(0, 120), plays: m.play_count, username: m.username, media_id: m.id }));
-    return { topic, niche, region, nNow, nPrior, media_count: e.media.length, avgPlays,
-      accel_pct: Math.round(accel * 100), score, tier, samples, firstSeen: e.firstSeen };
+    return { topic, words: topic.split(' '), mediaIds: e.mediaIds, niche, region, nNow, nPrior,
+      media_count: e.media.length, avgPlays, accel_pct: Math.round(accel * 100), score, tier, samples, firstSeen: e.firstSeen };
   }).filter(r => r.tier !== 'noise').sort((a, b) => b.score - a.score || b.nNow - a.nNow);
+
+  // Same-event merge (ported from the YouTube engine): collapse fragments of ONE topic — "current
+  // affairs" / "daily current" / "daily current affairs" — into the single strongest phrase, so a
+  // topic isn't shattered across near-duplicate rows. A stemmed token index means each phrase is
+  // compared only against already-kept phrases that SHARE A WORD; two merge when one is a token-subset
+  // of the other OR they were extracted from the SAME posts (media-id overlap), which keeps genuinely
+  // distinct same-word topics apart.
+  const stem = w => (w.length > 3 && w.endsWith('s')) ? w.slice(0, -1) : w;
+  const kept = [];
+  const tokenIdx = new Map();
+  for (const e of rows) {
+    const eStems = [...new Set(e.words.map(stem))];
+    const cand = new Set();
+    for (const s of eStems) { const arr = tokenIdx.get(s); if (arr) for (const k of arr) cand.add(k); }
+    let merged = false;
+    for (const k of cand) {
+      const kStems = new Set(k.words.map(stem));
+      const small = eStems.length <= kStems.size ? eStems : [...kStems];
+      const big = eStems.length <= kStems.size ? kStems : new Set(eStems);
+      let n = 0; for (const w of small) if (big.has(w)) n++;
+      if (n === small.length) { merged = true; break; }
+      let shared = 0; for (const id of e.mediaIds) if (k.mediaIds.has(id)) shared++;
+      if (shared >= 2 && shared / Math.min(e.mediaIds.size, k.mediaIds.size) >= 0.3) { merged = true; break; }
+    }
+    if (!merged) { kept.push(e); for (const s of eStems) { let arr = tokenIdx.get(s); if (!arr) { arr = []; tokenIdx.set(s, arr); } arr.push(e); } }
+  }
 
   const ins = `INSERT OR REPLACE INTO instagram_trend_signals
     (topic, niche, region, account_count_now, account_count_prior, media_count, avg_plays, accel_pct, signal_score, signal_tier, samples_json, first_seen, computed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`;
   const tx = db.transaction(() => {
-    for (const r of rows) db.run(ins, [titleCase(r.topic), r.niche, r.region, r.nNow, r.nPrior, r.media_count, r.avgPlays, r.accel_pct, r.score, r.tier, JSON.stringify(r.samples), r.firstSeen]);
+    for (const r of kept) db.run(ins, [titleCase(r.topic), r.niche, r.region, r.nNow, r.nPrior, r.media_count, r.avgPlays, r.accel_pct, r.score, r.tier, JSON.stringify(r.samples), r.firstSeen]);
   });
   tx();
   db.run(`DELETE FROM instagram_trend_signals WHERE computed_at < ?`, [runStart]);
 
   const secs = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[igTrend] Wrote ${rows.length} topics in ${secs}s`);
-  return { topics: rows.length, duration_s: parseFloat(secs) };
+  console.log(`[igTrend] Wrote ${kept.length} topics (merged ${rows.length - kept.length} fragments) in ${secs}s`);
+  return { topics: kept.length, merged: rows.length - kept.length, duration_s: parseFloat(secs) };
 }
 
 module.exports = { runInstagramTrendJob, ensureSchema };
