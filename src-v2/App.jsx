@@ -562,7 +562,7 @@ export default function App() {
 
     if (selected.source === 'youtube' && selected.channel_id) {
       setCmdLoading(true);
-      setCmdSearchNote('Preparing channel intelligence...');
+      setCmdSearchNote('Preparing channel intelligence — first-time channels can take a few minutes...');
       try {
         const resp = await fetch(`${API}/api/intel/onboard-channel`, {
           method: 'POST',
@@ -580,6 +580,10 @@ export default function App() {
           selected.source       = data.already_existed ? 'ingested' : 'youtube_onboarded';
           selected.onboarded    = true;
           selected.videos_stored = data.videos_stored || 0;
+          // freshly onboarded (not previously in our corpus) + a full-catalog backfill is running in the
+          // background → drives the "new channel, recommendations sharpening" notice on the WTP screen.
+          selected.fresh_onboard   = !data.already_existed;
+          selected.backfill_queued = !!data.backfill_queued;
         } else {
           selected.onboard_error = data.error || 'Could not prepare channel intelligence';
         }

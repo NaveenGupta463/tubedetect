@@ -286,6 +286,9 @@ async function onboardChannel(db, channel_id, apiKey, res) {
   // 8. Infer community_id
   const communityId = inferCommunityId(db, niche, subs);
 
+  // Was this channel already in our corpus before this onboard? (drives the "new channel" UI message)
+  const alreadyExisted = !!db.get('SELECT 1 AS x FROM ingested_channels WHERE channel_id = ?', [channel_id]);
+
   // 9. Persist ingested profile + niche/community_id.
   upsertIngestedChannel(db, {
     channel_id,
@@ -366,11 +369,13 @@ async function onboardChannel(db, channel_id, apiKey, res) {
   // forever. fullIngestRefreshJob drains the queue off-request. Guard on a low video count so a channel
   // that was already fully ingested (100s of videos) isn't needlessly re-fetched; the enqueue itself is
   // idempotent per (job_type, channel_id) while pending.
+  let backfillQueued = false;
   try {
     const vcount = db.get('SELECT COUNT(*) AS c FROM ingested_videos WHERE channel_id = ?', [channel_id])?.c || 0;
     if (vcount < 100) {
       const { enqueueRefreshJob } = require('../services/refreshQueue');
       enqueueRefreshJob(db, { job_type: 'full_ingest', channel_id, priority: 50, reason: 'onboarding_backfill' });
+      backfillQueued = true;
     }
   } catch (_) {}
 
@@ -400,6 +405,8 @@ async function onboardChannel(db, channel_id, apiKey, res) {
       sample_count: creatorDna.sample_count,
     } : null,
     identity_source: identity ? 'openai' : (niche !== 'other' ? 'keyword' : 'fallback'),
+    already_existed: alreadyExisted,   // was in our corpus before this onboard
+    backfill_queued: backfillQueued,   // a full-catalog ingest is running in the background
   });
 }
 

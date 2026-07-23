@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, forwardRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { T, spring, ease } from '../tokens';
+import LoadingShowcase from '../components/LoadingShowcase';
 
 const SCORING_URL = 'http://localhost:3002';
 
@@ -156,18 +157,6 @@ function ScoreArc({ score, size = 58 }) {
   );
 }
 
-// ── Skeleton card ─────────────────────────────────────────────────────────────
-
-function SkeletonCard() {
-  return (
-    <motion.div
-      animate={{ opacity: [0.4, 0.65, 0.4] }}
-      transition={{ duration: 1.4, repeat: Infinity, ease: 'easeInOut' }}
-      style={{ ...T.glassCard, borderRadius: 16, padding: '22px', height: 240 }}
-    />
-  );
-}
-
 // ── Trend badge ───────────────────────────────────────────────────────────────
 
 function TrendBadge({ status }) {
@@ -307,6 +296,24 @@ function openInCopilot(idea) {
   }));
 }
 
+function openForYouTrendInCopilot(item) {
+  const prompt = `I want to build on this idea: "${item.title}" (riding the "${item.trend}" trend` +
+    (item.mode === 'crossover' && item.trend_niche ? `, a cross-over from ${item.trend_niche}` : '') + `).` +
+    (item.why ? ` ${item.why}` : '') +
+    ` Give me a few different ways I could angle or open this video, tailored to my channel.`;
+  window.dispatchEvent(new CustomEvent('copilot:open', { detail: { prompt } }));
+}
+
+function openCurrentEventInCopilot(ev, inBeat) {
+  const sample = ev.sample_titles?.[0]?.title;
+  const prompt = `"${ev.topic}" is dominating the news right now — ${ev.channel_count} channels are covering it` +
+    (sample ? ` (e.g. "${sample}")` : '') + `.` +
+    (inBeat
+      ? ` Give me 3 different video angle ideas for how I could cover this on my channel, tailored to my niche and content style.`
+      : ` It's outside my usual niche, but give me 2-3 honest ideas for whether and how I could angle this into something that fits my channel — or tell me if it genuinely doesn't fit.`);
+  window.dispatchEvent(new CustomEvent('copilot:open', { detail: { prompt } }));
+}
+
 function openPodcastThemeInCopilot(theme) {
   const title = theme.angle_title || theme.theme || 'this podcast theme';
   const evidence = theme.theme && theme.angle_title ? theme.theme : '';
@@ -321,6 +328,7 @@ function openPodcastThemeInCopilot(theme) {
         angle: theme.episode_prompt || '',
         peer_count: theme.peer_count || 0,
         avg_views: theme.avg_views || 0,
+        country: theme.content_country || null,
       },
     },
   }));
@@ -349,12 +357,13 @@ function openCommunityHotInCopilot(item) {
   openInCopilot(communityHotToIdea(item));
 }
 
-function IdeaCard({ idea, index, saved, onSave, highlighted, communitySize, onValidate, onDismiss }) {
+const IdeaCard = forwardRef(function IdeaCard({ idea, index, saved, onSave, highlighted, communitySize, onValidate, onDismiss }, ref) {
   const [expanded, setExpanded] = useState(false);
   const velCfg = idea.velocity ? (VEL[idea.velocity.status] || VEL.peaked) : null;
 
   return (
     <motion.div
+      ref={ref}
       layout
       id={`idea-${idea.topic.replace(/\s+/g, '-')}`}
       initial={{ opacity: 0, y: 18 }}
@@ -607,7 +616,7 @@ function IdeaCard({ idea, index, saved, onSave, highlighted, communitySize, onVa
       </div>
     </motion.div>
   );
-}
+});
 
 // ── Source section header ─────────────────────────────────────────────────────
 
@@ -1001,6 +1010,23 @@ function ForYouTrendsSection({ data, loading }) {
           </div>
           <div style={{ fontSize: '0.85rem', fontWeight: 700, color: T.text, lineHeight: 1.35 }}>{it.title}</div>
           {it.why && <div style={{ fontSize: '0.7rem', color: T.muted, marginTop: 4, lineHeight: 1.4 }}>{it.why}</div>}
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+            <motion.button
+              onClick={() => openForYouTrendInCopilot(it)}
+              whileTap={{ scale: 0.95 }}
+              whileHover={{ background: 'rgba(157,111,255,0.16)' }}
+              style={{
+                padding: '5px 12px', borderRadius: 8, cursor: 'pointer',
+                fontSize: '0.7rem', fontWeight: 700,
+                background: 'rgba(157,111,255,0.10)',
+                color: T.accent,
+                border: `1px solid ${T.accentBorder}`,
+                transition: 'all 0.15s',
+              }}
+            >
+              ✦ Act on this
+            </motion.button>
+          </div>
         </motion.div>
       ))}
     </motion.div>
@@ -1012,6 +1038,7 @@ function ForYouTrendsSection({ data, loading }) {
 function CurrentEventsSection({ data, loading }) {
   const events = data?.events || [];
   if (!loading && !events.length) return null;
+  const inBeat = data?.in_beat !== false;
 
   return (
     <motion.div
@@ -1021,9 +1048,9 @@ function CurrentEventsSection({ data, loading }) {
       style={{ marginTop: 48 }}
     >
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 }}>
-        <span style={{ fontSize: '1rem' }}>📰</span>
+        <span style={{ fontSize: '1rem' }}>{inBeat ? '📰' : '🔥'}</span>
         <h3 style={{ margin: 0, fontSize: '0.95rem', fontWeight: 800, color: T.text, letterSpacing: '-0.02em' }}>
-          Breaking On Your Beat
+          {inBeat ? 'Breaking On Your Beat' : 'Dominating The News Today'}
         </h3>
         {loading && (
           <motion.span
@@ -1035,8 +1062,9 @@ function CurrentEventsSection({ data, loading }) {
         )}
       </div>
       <p style={{ margin: '0 0 18px', fontSize: '0.75rem', color: T.muted, lineHeight: 1.5 }}>
-        Current stories your fellow news channels are covering right now that you haven't made yet
-        {data?.window_days ? ` — last ${data.window_days} days` : ''}
+        {inBeat
+          ? `Current stories your fellow news channels are covering right now that you haven't made yet${data?.window_days ? ` — last ${data.window_days} days` : ''}`
+          : `Outside your niche, but this is what's dominating every platform right now — worth knowing even if you don't cover it${data?.window_days ? ` — last ${data.window_days} days` : ''}`}
       </p>
 
       {loading && !events.length && (
@@ -1048,7 +1076,9 @@ function CurrentEventsSection({ data, loading }) {
         </div>
       )}
 
-      {events.map((ev, i) => (
+      {events.map((ev, i) => {
+        const accent = inBeat ? '#ef4444' : '#38bdf8';
+        return (
         <motion.div
           key={ev.topic}
           initial={{ opacity: 0, x: -8 }}
@@ -1056,13 +1086,13 @@ function CurrentEventsSection({ data, loading }) {
           transition={{ duration: 0.22, delay: i * 0.04 }}
           style={{
             ...T.glassCard, borderRadius: 12,
-            border: `1px solid rgba(239,68,68,0.22)`,
+            border: `1px solid ${accent}38`,
             padding: '12px 14px', marginBottom: 8,
           }}
         >
           <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8, gap: 8 }}>
             <span style={{ fontSize: '0.85rem', fontWeight: 700, color: T.text }}>{ev.topic}</span>
-            <span style={{ fontSize: '0.65rem', color: '#ef4444', fontWeight: 700, flexShrink: 0 }}>
+            <span style={{ fontSize: '0.65rem', color: accent, fontWeight: 700, flexShrink: 0 }}>
               {ev.channel_count} channels covering
             </span>
           </div>
@@ -1070,14 +1100,32 @@ function CurrentEventsSection({ data, loading }) {
             <div key={j} style={{
               display: 'flex', alignItems: 'center', justifyContent: 'space-between',
               gap: 8, padding: '5px 8px', borderRadius: 7,
-              background: 'rgba(239,68,68,0.05)', marginBottom: j < ev.sample_titles.length - 1 ? 4 : 0,
+              background: `${accent}0d`, marginBottom: j < ev.sample_titles.length - 1 ? 4 : 0,
             }}>
               <span style={{ fontSize: '0.7rem', color: T.muted, flex: 1, lineHeight: 1.4 }}>{t.title}</span>
               {t.views != null && <span style={{ fontSize: '0.7rem', fontWeight: 700, color: T.text, flexShrink: 0 }}>{fmtV(t.views)}</span>}
             </div>
           ))}
+          <div style={{ marginTop: 8, display: 'flex', justifyContent: 'flex-end' }}>
+            <motion.button
+              onClick={() => openCurrentEventInCopilot(ev, inBeat)}
+              whileTap={{ scale: 0.95 }}
+              whileHover={{ background: 'rgba(157,111,255,0.16)' }}
+              style={{
+                padding: '5px 12px', borderRadius: 8, cursor: 'pointer',
+                fontSize: '0.7rem', fontWeight: 700,
+                background: 'rgba(157,111,255,0.10)',
+                color: T.accent,
+                border: `1px solid ${T.accentBorder}`,
+                transition: 'all 0.15s',
+              }}
+            >
+              ✦ Act on this
+            </motion.button>
+          </div>
         </motion.div>
-      ))}
+        );
+      })}
     </motion.div>
   );
 }
@@ -1215,6 +1263,11 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
   const [noActiveNarratives, setNoActiveNarratives]= useState(false);
   const [loading,       setLoading]      = useState(false);
   const [error,         setError]        = useState(null);
+  // True from the moment a channel load starts until loadSupportingData() actually kicks off
+  // (up to 250ms after the main fetch resolves) — closes the gap where the individual
+  // loadingAdj/loadingFor/etc. flags haven't been set true yet, which would otherwise let the
+  // full-page loading gate flash open for a moment before support panels start.
+  const [awaitingSupportPanels, setAwaitingSupportPanels] = useState(false);
 
   const [adjacent,      setAdjacent]     = useState(null);
   const [loadingAdj,    setLoadingAdj]   = useState(false);
@@ -1276,6 +1329,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
     sessionIdRef.current = (crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`);
 
     setLoading(true);
+    setAwaitingSupportPanels(true);
     setError(null);
     setIdeas([]);
     setMeta(null);
@@ -1356,7 +1410,12 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
     // with the full AI output, which we swap in seamlessly.
     const AI_PENDING_POLL_DELAYS = [4000, 6000, 9000];
     function scheduleAiPendingPoll(queryString, attempt) {
-      if (attempt >= AI_PENDING_POLL_DELAYS.length) return;
+      if (attempt >= AI_PENDING_POLL_DELAYS.length) {
+        // Give up waiting after ~19s — reveal whatever DNA bets already arrived rather than
+        // hiding them behind "still generating" indefinitely.
+        setAiPending(false);
+        return;
+      }
       const timer = setTimeout(() => {
         if (!isCurrentLoad()) return;
         fetch(`${SCORING_URL}/api/intel/what-to-post?${queryString}`)
@@ -1397,6 +1456,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
 
     const loadSupportingData = () => {
       if (!isCurrentLoad()) return;
+      setAwaitingSupportPanels(false);
 
       setLoadingAdj(true);
       fetchJsonWithTimeout(`${SCORING_URL}/api/intel/adjacent-ideas?${qs}`)
@@ -1483,6 +1543,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
         if (!isCurrentLoad()) return;
         setLoading(false);
         if (!skipSupportPanels) setTimeout(loadSupportingData, 250);
+        else setAwaitingSupportPanels(false);
       });
 
     // Community hot — what peers are getting views on right now (last 60 days)
@@ -1675,8 +1736,48 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
   const currentCacheBadge = cacheBadge(cacheMeta, cacheRefreshing);
   const cacheTime = formatCacheTime(cacheMeta?.computed_at);
 
+  // Every section used to reveal itself the moment ITS OWN fetch finished, so support panels
+  // (adjacent/global/trends/community-hot/etc.) routinely appeared 10-15s before DNA Original
+  // Bets was done generating — a page that looked half-built for most of the wait. Instead,
+  // hold the whole page behind one gate and reveal everything at once.
+  const pageStillLoading = !error && (
+    loading
+    || awaitingSupportPanels
+    || aiPending
+    || loadingAdj
+    || loadingFor
+    || loadingTrends
+    || loadingWorld
+    || loadingCommunity
+    || loadingEvents
+    || loadingForYou
+  );
+  // First-time channel notice: onboarding did a LIGHT ingest (recent uploads) and queued a full-catalog
+  // backfill in the background, so ideas from niche peers show now and the channel's own signals sharpen
+  // over the next few minutes. Shown while loading AND on the loaded screen (backfill outlives the load).
+  const freshChannelNotice = (channel?.fresh_onboard || channel?.backfill_queued) ? (
+    <div style={{
+      ...T.glassSurface, borderRadius: 10, padding: '11px 15px', marginBottom: 16,
+      border: '1px solid rgba(52,211,153,0.3)', fontSize: '0.76rem', color: T.text, lineHeight: 1.5,
+    }}>
+      🆕 <strong>{channel.name || 'This channel'}</strong> isn’t in our database yet — we’re analyzing its
+      full history in the background. Ideas from similar channels show now; recommendations tuned to this
+      channel will sharpen over the next few minutes.
+    </div>
+  ) : null;
+
+  if (pageStillLoading) {
+    return (
+      <div style={{ padding: '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
+        {freshChannelNotice}
+        <LoadingShowcase exclude={['post']} />
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: '28px 32px', maxWidth: 1100, margin: '0 auto' }}>
+      {freshChannelNotice}
 
       {/* ── Header ── */}
       <motion.div
@@ -1984,11 +2085,9 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
         })}
       </div>}
 
-      {/* ── Loading skeletons ── */}
+      {/* ── Loading showcase ── */}
       {loading && (
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(340px, 1fr))', gap: 14 }}>
-          {Array.from({ length: 6 }).map((_, i) => <SkeletonCard key={i} />)}
-        </div>
+        <LoadingShowcase exclude={['post']} />
       )}
 
       {/* ── Error ── */}
@@ -2045,8 +2144,21 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
         </motion.div>
       )}
 
+      {/* ── DNA bets still generating — hold the partial result back so the user doesn't mistake
+           the first idea to arrive for the whole list and bounce before the rest lands. ── */}
+      {!loading && !error && aiPending && originalBetPool.length > 0 && (
+        <div style={{ marginTop: 40 }}>
+          <SectionHeader
+            src="original"
+            subtitle="Still generating the full set from this creator's upload DNA — hang tight…"
+            count={null}
+          />
+          <LoadingShowcase variant="compact" exclude={['post']} minHeight={200} />
+        </div>
+      )}
+
       {/* ── Ideas grid — hidden for guest-intel-active channels; podcast sections replace it ── */}
-      {!loading && !error && originalBetPool.length > 0 && (
+      {!loading && !error && !aiPending && originalBetPool.length > 0 && (
         <div style={{ marginTop: 40 }}>
           <SectionHeader
             src="original"
@@ -2312,7 +2424,7 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
 
           {/* ── Foreign signal ── */}
           {loadingFor && (
-            <SourceSection src="global" subtitle="Trending in US/UK channels of this niche — not yet in India" loading ideas={null} saved={saved} onSave={toggleSave} />
+            <SourceSection src="global" subtitle={`Topics trending in US/UK ${channel.niche || ''} channels — not in your community yet`} loading ideas={null} saved={saved} onSave={toggleSave} />
           )}
           {!loadingFor && foreignIdeas.length > 0 && (
             <SourceSection
@@ -2338,8 +2450,6 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
             />
           )}
 
-          {/* ── Community Hot ── */}
-          <CommunityHotSection data={communityHot} loading={loadingCommunity} />
         </>
       )}
 
@@ -2347,6 +2457,9 @@ export default function WhatToPost({ channel, onSearch, onValidate }) {
       <ForYouTrendsSection data={forYouTrends} loading={loadingForYou} />
 
       <CurrentEventsSection data={currentEvents} loading={loadingEvents} />
+
+      {/* ── Community Hot ── */}
+      {!hasPodcastContent && <CommunityHotSection data={communityHot} loading={loadingCommunity} />}
 
       {/* ── World Signals (hidden for exam_demand / when podcast panels have content) ── */}
       {!hasPodcastContent && !isExamDemand && <WorldSignalsSection data={worldSignals} loading={loadingWorld} />}
