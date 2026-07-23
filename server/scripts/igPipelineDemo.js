@@ -4,6 +4,8 @@
 // INSTAGRAM_PROVIDER=apify (+ APIFY_TOKEN in .env) to run against real Reels.
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 process.env.INSTAGRAM_PROVIDER = process.env.INSTAGRAM_PROVIDER || 'mock';
+process.env.TIKTOK_PROVIDER = process.env.TIKTOK_PROVIDER || 'mock';
+const { runTikTokSweep } = require('../jobs/tiktokSweep');
 const { runInstagramSweep } = require('../jobs/instagramSweep');
 const { runInstagramTrendJob } = require('../jobs/instagramTrendJob');
 const { runCrossPlatformLead } = require('../jobs/crossPlatformLeadJob');
@@ -18,17 +20,22 @@ const sweepOpts = isApify ? {
 
 (async () => {
   console.log('provider =', process.env.INSTAGRAM_PROVIDER, isApify ? `(limit ${sweepOpts.limit}/hashtag${process.env.IG_SMOKE ? ', SMOKE' : ''})` : '', '\n');
-  console.log('1) sweep  :', JSON.stringify(await runInstagramSweep(sweepOpts)));
-  console.log('2) trend  :', JSON.stringify(await runInstagramTrendJob()));
+  console.log('1) ig sweep :', JSON.stringify(await runInstagramSweep(sweepOpts)));
+  console.log('2) ig trend :', JSON.stringify(await runInstagramTrendJob()));
+  console.log('3) tt sweep :', JSON.stringify(await runTikTokSweep()));
   const lead = runCrossPlatformLead();
-  console.log('3) lead   :', JSON.stringify({ early_on_instagram: lead.early_on_instagram, both: lead.both }), '\n');
+  console.log('4) lead     :', JSON.stringify({ early_on_instagram: lead.early_on_instagram, both: lead.both, coming_from_tiktok: lead.coming_from_tiktok }), '\n');
 
-  console.log('=== 🚀 Early on Instagram (hot on IG, NOT yet in the YouTube corpus = head start) ===');
-  lead.rows.filter(r => r.status === 'early_on_instagram').sort((a, b) => b.ig - a.ig)
-    .forEach(r => console.log(`   • ${r.topic}  [${r.niche}] — ${r.ig} IG accounts, absent on YouTube`));
+  console.log('=== 🌍 Coming from TikTok (hot on US/UK TikTok, NOT yet on India YouTube = biggest head start) ===');
+  lead.rows.filter(r => r.source === 'tiktok').sort((a, b) => b.strength - a.strength)
+    .forEach(r => console.log(`   • ${r.topic}  [${r.niche}] — ${r.status}${r.region ? ' (' + r.region + ')' : ''}, ${r.strength} posts`));
 
-  console.log('\n=== 🔁 On both platforms (IG lead time, +ve = IG was ahead) ===');
+  console.log('\n=== 🚀 Early on Instagram (hot on IG India, NOT yet on YouTube) ===');
+  lead.rows.filter(r => r.status === 'early_on_instagram').sort((a, b) => b.strength - a.strength)
+    .forEach(r => console.log(`   • ${r.topic}  [${r.niche}] — ${r.strength} IG accounts`));
+
+  console.log('\n=== 🔁 On both platforms (IG lead time) ===');
   lead.rows.filter(r => r.status === 'both').sort((a, b) => (b.leadDays || 0) - (a.leadDays || 0))
-    .forEach(r => console.log(`   • ${r.topic}  [${r.niche}] — ${r.ig} IG accts vs ${r.ytCh} YT channels, lead ${r.leadDays == null ? 'n/a' : r.leadDays + 'd'}`));
+    .forEach(r => console.log(`   • ${r.topic}  [${r.niche}] — ${r.strength} IG vs ${r.ytCh} YT, lead ${r.leadDays == null ? 'n/a' : r.leadDays + 'd'}`));
   process.exit(0);
 })().catch(e => { console.error(e); process.exit(1); });
