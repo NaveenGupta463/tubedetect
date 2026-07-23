@@ -31,7 +31,12 @@ async function runInstagramTrendJob(opts = {}) {
   const db = getDb();
   const start = Date.now();
   const runStart = db.get("SELECT datetime('now') AS t").t;
-  const MINPLAYS = opts.minPlays ?? 15000;
+  // Hashtag-level scraping returns captions/authors/timestamps but usually NOT view or like counts
+  // (Instagram hides those outside per-post fetches), so a play-count threshold would drop everything.
+  // The IG trend signal is therefore ADOPTION-driven: a topic = many DISTINCT accounts posting the same
+  // phrase in the window. minPlays defaults to 0 (include all) and only bites if a richer actor later
+  // supplies real metrics; momentum then uses whatever plays exist (0 → contributes nothing, harmless).
+  const MINPLAYS = opts.minPlays ?? 0;
   const MINACCT = opts.minAccounts ?? 4;
   ensureSchema(db);
 
@@ -39,10 +44,10 @@ async function runInstagramTrendJob(opts = {}) {
   const nowDays = opts.nowDays ?? 14, priorDays = opts.priorDays ?? 28;
   const now = db.all(
     `SELECT media_id id, username, caption, hashtags_json, play_count, niche, region, taken_at
-       FROM instagram_media WHERE taken_at > datetime('now','-${nowDays} days') AND play_count > ?`, [MINPLAYS]);
+       FROM instagram_media WHERE taken_at > datetime('now','-${nowDays} days') AND play_count >= ?`, [MINPLAYS]);
   const prior = db.all(
     `SELECT username, caption, hashtags_json FROM instagram_media
-       WHERE taken_at BETWEEN datetime('now','-${priorDays} days') AND datetime('now','-${nowDays} days') AND play_count > ?`, [MINPLAYS]);
+       WHERE taken_at BETWEEN datetime('now','-${priorDays} days') AND datetime('now','-${nowDays} days') AND play_count >= ?`, [MINPLAYS]);
   console.log(`[igTrend] now-window media: ${now.length}, prior: ${prior.length}`);
 
   const idx = new Map(); // phrase -> { accts:Set, media:[], nCount:{}, rCount:{}, firstSeen }
