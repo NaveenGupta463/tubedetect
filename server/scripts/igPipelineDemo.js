@@ -8,16 +8,16 @@ const { runInstagramSweep } = require('../jobs/instagramSweep');
 const { runInstagramTrendJob } = require('../jobs/instagramTrendJob');
 const { runCrossPlatformLead } = require('../jobs/crossPlatformLeadJob');
 
-// First live Apify run stays tiny to protect the free $5 credit: 3 hashtags × IG_LIMIT results.
-// Widen later by editing SEED_HASHTAGS / IG_LIMIT once signal quality is confirmed.
+// Apify run uses the full SEED_HASHTAGS at IG_LIMIT results each. Set IG_SMOKE=1 for a tiny 3-hashtag
+// probe (protects credit while testing). IG_LIMIT tunes results-per-hashtag (= cost).
 const isApify = process.env.INSTAGRAM_PROVIDER === 'apify';
 const sweepOpts = isApify ? {
-  limit: parseInt(process.env.IG_LIMIT || '30', 10),
-  seedHashtags: { education: ['upsc'], food: ['streetfood'], fitness: ['cortisoldetox'] },
+  limit: parseInt(process.env.IG_LIMIT || '60', 10),
+  ...(process.env.IG_SMOKE ? { seedHashtags: { education: ['upsc'], food: ['streetfood'], fitness: ['cortisoldetox'] } } : {}),
 } : {};
 
 (async () => {
-  console.log('provider =', process.env.INSTAGRAM_PROVIDER, isApify ? `(smoke: 3 hashtags × ${sweepOpts.limit})` : '', '\n');
+  console.log('provider =', process.env.INSTAGRAM_PROVIDER, isApify ? `(limit ${sweepOpts.limit}/hashtag${process.env.IG_SMOKE ? ', SMOKE' : ''})` : '', '\n');
   console.log('1) sweep  :', JSON.stringify(await runInstagramSweep(sweepOpts)));
   console.log('2) trend  :', JSON.stringify(await runInstagramTrendJob()));
   const lead = runCrossPlatformLead();

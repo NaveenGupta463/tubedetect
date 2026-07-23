@@ -13,13 +13,14 @@ const { getProvider } = require('../services/instagram/provider');
 // niche → seed hashtags. Starter set; intended to grow (and eventually be derived from the same niche
 // taxonomy the YouTube engine uses). Keep lists tight — every hashtag is a paid request per sweep.
 const SEED_HASHTAGS = {
-  education:     ['upsc', 'neet', 'studytips'],
-  food:          ['streetfood', 'foodie'],
-  fitness:       ['deficitdiet', 'homeworkout'],
-  technology:    ['desksetup', 'gadgets'],
-  entertainment: ['sludgecontent', 'reelsindia'],
-  sports:        ['cricket'],
-  health:        ['guthealth'],
+  education:     ['upsc', 'neet', 'jee'],
+  food:          ['streetfood', 'indianstreetfood', 'foodie'],
+  fitness:       ['fitnessmotivation', 'homeworkout'],
+  technology:    ['techreels', 'smartphone'],
+  entertainment: ['reelsindia', 'comedyreels'],
+  sports:        ['cricket', 'ipl'],
+  finance:       ['stockmarket', 'sharemarket'],
+  health:        ['guthealth', 'wellness'],
 };
 
 function ensureSchema(db) {

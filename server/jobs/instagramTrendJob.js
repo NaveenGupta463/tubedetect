@@ -30,12 +30,27 @@ const IG_STOP = new Set([
   'giveaway', 'contest', 'win', 'winner', 'join', 'sign', 'app', 'download', 'install', 'click', 'tap',
   'below', 'caption', 'captions', 'hashtag', 'hashtags', 'insta', 'instagram', 'reelitfeelit', 'trending',
   'account', 'profile', 'page', 'story', 'stories', 'highlight', 'highlights', 'dm', 'inbox', 'message',
+  // URL / link cruft that survives tokenization
+  'https', 'http', 'www', 'com', 'link', 'url',
+  // finance/medical DISCLAIMER boilerplate reused verbatim across accounts (names no topic)
+  'disclaimer', 'purposes', 'educational', 'consult', 'registered', 'advisor', 'advice', 'sebi',
+  'informational', 'professional', 'liable', 'guarantee', 'guaranteed', 'subject', 'risks',
 ]);
-// hashtags become tokens too (split camel/hashtag words already handled by tokenize's non-letter split).
+// Reel captions are long paragraphs (hook + description + disclaimer + hashtag wall), so ONE caption
+// can explode into hundreds of phrases. Cap to the first CAP_WORDS meaningful caption tokens (the hook,
+// where the topic lives), then append hashtag tokens (always cheap topic labels). Kills the boilerplate
+// tail that fragments into 5-account bigrams.
+const CAP_WORDS = 14;
 function tokensFor(row) {
   const tags = (() => { try { return JSON.parse(row.hashtags_json || '[]'); } catch { return []; } })();
-  return tokenize(`${row.caption || ''} ${tags.join(' ')}`).filter(t => !IG_STOP.has(t));
+  const capWords = tokenize(row.caption || '').slice(0, CAP_WORDS);
+  const tagWords = tokenize(tags.join(' '));
+  return [...capWords, ...tagWords].filter(t => !IG_STOP.has(t));
 }
+// Copy-pasted/AI-templated captions reused across accounts fake "adoption" (the RCB/IPL block, finance
+// disclaimers). Not organic distribution → count each distinct caption once. Normalized to first 150
+// alphanumerics so near-identical leads collapse.
+function captionKey(caption) { return String(caption || '').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 150); }
 
 async function runInstagramTrendJob(opts = {}) {
   const db = getDb();
@@ -61,7 +76,11 @@ async function runInstagramTrendJob(opts = {}) {
   console.log(`[igTrend] now-window media: ${now.length}, prior: ${prior.length}`);
 
   const idx = new Map(); // phrase -> { accts:Set, media:[], nCount:{}, rCount:{}, firstSeen }
+  const seenCaptionsNow = new Set();
   for (const m of now) {
+    const ck = captionKey(m.caption);
+    if (ck && seenCaptionsNow.has(ck)) continue; // drop copy-pasted/templated captions
+    if (ck) seenCaptionsNow.add(ck);
     const seen = new Set();
     for (const p of phrasesOf(tokensFor(m))) {
       if (seen.has(p)) continue; seen.add(p);
@@ -78,7 +97,11 @@ async function runInstagramTrendJob(opts = {}) {
   for (const [p, e] of idx) if (e.accts.size < MINACCT) idx.delete(p);
 
   const priorAcct = new Map();
+  const seenCaptionsPrior = new Set();
   for (const m of prior) {
+    const ck = captionKey(m.caption);
+    if (ck && seenCaptionsPrior.has(ck)) continue;
+    if (ck) seenCaptionsPrior.add(ck);
     const seen = new Set();
     for (const p of phrasesOf(tokensFor(m))) {
       if (seen.has(p) || !idx.has(p)) continue; seen.add(p);
@@ -128,18 +151,38 @@ async function runInstagramTrendJob(opts = {}) {
     if (!merged) { kept.push(e); for (const s of eStems) { let arr = tokenIdx.get(s); if (!arr) { arr = []; tokenIdx.set(s, arr); } arr.push(e); } }
   }
 
+  // Media-cooccurrence merge: a long descriptive caption echoed across the SAME accounts fragments into
+  // phrases with NO shared word ("royal challengers" / "balanced squad" / "confidence finally") that the
+  // token-subset merge can't join. But they come from the same posts, so collapse phrases whose backing
+  // media overlap heavily (≥50% of the smaller). Strongest phrase (kept is score-sorted) is the survivor.
+  const mediaIdx = new Map(); // media-id -> kept-indexes containing it
+  kept.forEach((e, i) => { for (const id of e.mediaIds) { let a = mediaIdx.get(id); if (!a) { a = []; mediaIdx.set(id, a); } a.push(i); } });
+  const absorbed = new Array(kept.length).fill(false);
+  for (let i = 0; i < kept.length; i++) {
+    if (absorbed[i]) continue;
+    const e = kept[i];
+    const cand = new Set();
+    for (const id of e.mediaIds) { const a = mediaIdx.get(id); if (a) for (const j of a) if (j > i && !absorbed[j]) cand.add(j); }
+    for (const j of cand) {
+      const k = kept[j];
+      let shared = 0; for (const id of k.mediaIds) if (e.mediaIds.has(id)) shared++;
+      if (shared / Math.min(k.mediaIds.size, e.mediaIds.size) >= 0.5) { absorbed[j] = true; k.mediaIds.forEach(id => e.mediaIds.add(id)); }
+    }
+  }
+  const final = kept.filter((_, i) => !absorbed[i]);
+
   const ins = `INSERT OR REPLACE INTO instagram_trend_signals
     (topic, niche, region, account_count_now, account_count_prior, media_count, avg_plays, accel_pct, signal_score, signal_tier, samples_json, first_seen, computed_at)
     VALUES (?,?,?,?,?,?,?,?,?,?,?,?, datetime('now'))`;
   const tx = db.transaction(() => {
-    for (const r of kept) db.run(ins, [titleCase(r.topic), r.niche, r.region, r.nNow, r.nPrior, r.media_count, r.avgPlays, r.accel_pct, r.score, r.tier, JSON.stringify(r.samples), r.firstSeen]);
+    for (const r of final) db.run(ins, [titleCase(r.topic), r.niche, r.region, r.nNow, r.nPrior, r.media_count, r.avgPlays, r.accel_pct, r.score, r.tier, JSON.stringify(r.samples), r.firstSeen]);
   });
   tx();
   db.run(`DELETE FROM instagram_trend_signals WHERE computed_at < ?`, [runStart]);
 
   const secs = ((Date.now() - start) / 1000).toFixed(1);
-  console.log(`[igTrend] Wrote ${kept.length} topics (merged ${rows.length - kept.length} fragments) in ${secs}s`);
-  return { topics: kept.length, merged: rows.length - kept.length, duration_s: parseFloat(secs) };
+  console.log(`[igTrend] Wrote ${final.length} topics (merged ${rows.length - final.length} fragments) in ${secs}s`);
+  return { topics: final.length, merged: rows.length - final.length, duration_s: parseFloat(secs) };
 }
 
 module.exports = { runInstagramTrendJob, ensureSchema };
