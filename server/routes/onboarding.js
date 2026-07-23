@@ -361,6 +361,19 @@ async function onboardChannel(db, channel_id, apiKey, res) {
     }
   }
 
+  // Queue a FULL catalog + snapshot backfill. This light onboard only stored recent uploads and stamped
+  // last_ingested_at, so the historical-ingest cron (last_ingested_at IS NULL) would skip this channel
+  // forever. fullIngestRefreshJob drains the queue off-request. Guard on a low video count so a channel
+  // that was already fully ingested (100s of videos) isn't needlessly re-fetched; the enqueue itself is
+  // idempotent per (job_type, channel_id) while pending.
+  try {
+    const vcount = db.get('SELECT COUNT(*) AS c FROM ingested_videos WHERE channel_id = ?', [channel_id])?.c || 0;
+    if (vcount < 100) {
+      const { enqueueRefreshJob } = require('../services/refreshQueue');
+      enqueueRefreshJob(db, { job_type: 'full_ingest', channel_id, priority: 50, reason: 'onboarding_backfill' });
+    }
+  } catch (_) {}
+
   // 10. Background: country detection only — full video ingest runs via daily pipeline
   // (ingestChannel is NOT called here — it does 500+ synchronous DB writes that block
   //  the event loop and freeze all HTTP requests while it runs)

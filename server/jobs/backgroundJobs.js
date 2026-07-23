@@ -11,12 +11,19 @@ const { startIntelligenceAggregatorCron } = require('./intelligenceAggregatorJob
 const { startNarrativeLifecycleCron } = require('./narrativeLifecycleJob');
 const { startCreatorIdeaDnaCron } = require('./creatorIdeaDnaJob');
 const { startWtpCacheRefreshCron } = require('./wtpCacheRefreshJob');
+const { startFullIngestRefreshCron } = require('./fullIngestRefreshJob');
 const { startWtpAttributionCron } = require('./wtpAttributionJob');
+const { startOutcomeRefreshJob } = require('./outcomeRefreshJob');
+const { startSyntheticCalibrationCron } = require('./syntheticCalibration');
+const { startLearningSnapshotCron } = require('./learningSnapshotCron');
 
 // Removed from cron schedule — files retained for admin CLI and route imports:
-//   feedbackCron, youtubeIngest, refreshCron, outcomeRefreshJob, syntheticCalibration,
-//   learningSnapshotCron, learningConfidenceCron, learningCohortCron,
+//   feedbackCron, youtubeIngest, refreshCron, learningConfidenceCron, learningCohortCron,
 //   embeddingIngestJob, semanticClusteringJob, primaryLanguageJob
+// outcomeRefreshJob / syntheticCalibration / learningSnapshotCron were dropped from this list
+// in the 2026-07-13 refactor as incidental collateral (that commit never mentions calibration)
+// — re-added below to restore the prediction-outcome self-calibration loop. auto-calibrate
+// itself stays manual-only (admin route) pending a review of niche_reliability output.
 
 const BACKGROUND_JOBS = [
   ['historical_ingest', startHistoricalIngestCron],
@@ -32,7 +39,11 @@ const BACKGROUND_JOBS = [
   ['narrative_lifecycle', startNarrativeLifecycleCron],
   ['creator_idea_dna', startCreatorIdeaDnaCron],
   ['wtp_cache_refresh', startWtpCacheRefreshCron],
+  ['full_ingest_refresh', startFullIngestRefreshCron],
   ['wtp_attribution', startWtpAttributionCron],
+  ['outcome_refresh', startOutcomeRefreshJob],
+  ['synthetic_calibration', startSyntheticCalibrationCron],
+  ['learning_snapshot', startLearningSnapshotCron],
 ];
 
 function startBackgroundJobs({ logger = require('../utils/logger'), source = 'worker' } = {}) {
