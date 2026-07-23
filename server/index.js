@@ -55,10 +55,12 @@ try {
     logger.warn('STARTUP', 'Feedback cron and YouTube ingestion will not run');
 
   const path          = require('path');
+  const crypto        = require('crypto');
   const { getDb }     = require('./db/init');
   logger.info('STARTUP', `__dirname : ${__dirname}`);
   logger.info('STARTUP', `cwd       : ${process.cwd()}`);
   logger.info('STARTUP', `DB_PATH   : ${path.resolve(__dirname, 'data/scoring.db')}`);
+  const claudeRoute   = require('./routes/claude');
   const analyzeRoute  = require('./routes/analyze');
   const resultsRoute  = require('./routes/results');
   const feedbackRoute = require('./routes/feedback');
@@ -92,10 +94,21 @@ try {
   const prepublishIntelligenceRoute   = require('./routes/prepublishIntelligence');
   const wtpOutcomesRoute              = require('./routes/wtpOutcomes');
   const wtpAttributionRoute           = require('./routes/wtpAttribution');
+  const sessionRoute                  = require('./routes/session');
   const app = express();
+  const { attachAdmin, requireAdmin, securityHeaders, buildCorsOptions, makeRateLimiter } = require('./middleware/security');
 
-  app.use(cors());
-  app.use(express.json());
+  app.set('trust proxy', 1); // behind a proxy/CDN in prod — required for correct client IPs
+  app.use(cors(buildCorsOptions()));
+  app.use(securityHeaders);
+  app.use(express.json({ limit: process.env.JSON_LIMIT || '1mb' }));
+  app.use(attachAdmin); // sets req.isAdmin — every limiter/gate below exempts the owner
+
+  // Global throttle (per IP; admin exempt) + a much stricter one on the money routes (Claude/OpenAI/
+  // Tavily/YouTube-quota) so an anonymous script can't drain the API budgets.
+  app.use(makeRateLimiter({ windowMs: 60000, max: parseInt(process.env.RATE_MAX_GLOBAL || '600', 10), name: 'global' }));
+  const costLimiter = makeRateLimiter({ windowMs: 60000, max: parseInt(process.env.RATE_MAX_COST || '20', 10), name: 'cost' });
+  app.use(['/api/copilot', '/api/intel/onboard-channel', '/api/intel/what-to-post'], costLimiter);
 
   app.use((req, res, next) => {
     const started = Date.now();
@@ -127,6 +140,7 @@ try {
   getDb();
 
   // ── Public routes (no auth) — must come BEFORE adminRoute ──────────────────
+  app.use('/api', claudeRoute);
   app.use('/api', analyzeRoute);
   app.use('/api', resultsRoute);
   app.use('/api', feedbackRoute);
@@ -156,18 +170,23 @@ try {
   app.use('/api/intel', prepublishIntelligenceRoute);
   app.use('/api/intel', wtpOutcomesRoute);
   app.use('/api/intel', wtpAttributionRoute);
+  app.use('/api', sessionRoute);
 
-  // ── Admin routes (token-protected) ───────────────────────────────────────────
-  app.use('/api', adminRoute);
-  app.use('/api', adminIntelligenceRoute);
-  app.use('/api', adminEvolutionRoute);
-  app.use('/api', discoveryRoute);
+  // ── Admin routes (require a valid admin token — fail CLOSED) ─────────────────
+  app.use('/api', requireAdmin, adminRoute);
+  app.use('/api', requireAdmin, adminIntelligenceRoute);
+  app.use('/api', requireAdmin, adminEvolutionRoute);
+  app.use('/api', requireAdmin, discoveryRoute);
 
   app.get('/health', (_req, res) => res.json({ status: 'ok', uptime: process.uptime() }));
 
   app.use((err, _req, res, _next) => {
-    console.error('[Server Error]', err.stack || err.message);
-    res.status(500).json({ error: err.message || 'Internal server error' });
+    // Log full detail server-side with a correlation id; return only the id to the client so internal
+    // paths / query shapes / stack traces are never disclosed.
+    const errorId = crypto.randomBytes(6).toString('hex');
+    console.error(`[Server Error ${errorId}]`, err.stack || err.message);
+    if (res.headersSent) return;
+    res.status(err.status || 500).json({ error: 'Internal server error', error_id: errorId });
   });
 
   const BASE_PORT = parseInt(process.env.PORT || '3002', 10);

@@ -40,12 +40,12 @@ const AUTO_CALIBRATE_SAMPLE_MIN      = 20;
 const AUTO_CALIBRATE_CONFIDENCE_MIN  = 0.7;
 const AUTO_CALIBRATE_ADJUSTMENT_MAX  = 10;
 
+// Defense-in-depth: the index-level requireAdmin already gates these mounts (fail-closed, header-only,
+// constant-time). This delegates to that same req.isAdmin signal instead of the old fail-OPEN check
+// that returned next() whenever ADMIN_TOKEN was unset and accepted the token via query string.
 function adminAuth(req, res, next) {
-  const token = process.env.ADMIN_TOKEN;
-  if (!token) return next();
-  const provided = req.headers['x-admin-token'] ?? req.query.admin_token;
-  if (provided !== token) return res.status(401).json({ error: 'unauthorized' });
-  next();
+  if (req.isAdmin) return next();
+  return res.status(403).json({ error: 'forbidden' });
 }
 
 router.use(adminAuth);
