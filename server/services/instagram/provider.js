@@ -23,14 +23,44 @@ class BaseProvider {
 
 // ── Real providers: stubbed until a key is supplied (scaffold). Each TODO is the single method to fill.
 class ApifyProvider extends BaseProvider {
-  constructor() { super(); this.token = process.env.APIFY_TOKEN; }
+  constructor() {
+    super();
+    this.token = process.env.APIFY_TOKEN;
+    // actor id is overridable in case you switch to a different Instagram scraper actor.
+    this.actor = process.env.INSTAGRAM_APIFY_ACTOR || 'apify~instagram-hashtag-scraper';
+  }
   async recentByHashtag(tag, opts = {}) {
-    if (!this.token) throw new Error('APIFY_TOKEN not set — run with INSTAGRAM_PROVIDER=mock to stay keyless.');
-    // TODO: POST https://api.apify.com/v2/acts/apify~instagram-hashtag-scraper/run-sync-get-dataset-items?token=<APIFY_TOKEN>
-    //   body: { hashtags:[tag], resultsType:'posts', resultsLimit: opts.limit ?? 50 }
-    //   then map each item → the Media contract (item.id, item.ownerUsername, item.caption,
-    //   item.hashtags, item.videoPlayCount, item.likesCount, item.commentsCount, item.timestamp).
-    throw new Error('ApifyProvider.recentByHashtag not implemented yet (scaffold).');
+    if (!this.token) throw new Error('APIFY_TOKEN not set — add it to server/.env, or run INSTAGRAM_PROVIDER=mock to stay keyless.');
+    const limit = opts.limit ?? 50;
+    // Run the actor synchronously and get its dataset items back in one call. resultsLimit caps results
+    // (= cost) per hashtag. Sync runs are capped at 300s by Apify, plenty for a small resultsLimit.
+    const url = `https://api.apify.com/v2/acts/${this.actor}/run-sync-get-dataset-items?token=${encodeURIComponent(this.token)}`;
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), opts.timeoutMs ?? 300000);
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ hashtags: [tag], resultsLimit: limit }),
+        signal: ctrl.signal,
+      });
+    } finally { clearTimeout(timer); }
+    if (!resp.ok) throw new Error(`Apify ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    const items = await resp.json();
+    if (!Array.isArray(items)) throw new Error('Apify returned non-array dataset');
+    // Map the actor's post schema → the Media contract. Field names guarded with fallbacks because the
+    // actor's output has drifted across versions (videoPlayCount vs videoViewCount, etc.).
+    return items.map(it => ({
+      media_id: it.id || it.shortCode || it.url,
+      username: it.ownerUsername || it.ownerId || 'unknown',
+      caption: it.caption || '',
+      hashtags: Array.isArray(it.hashtags) ? it.hashtags : [],
+      play_count: it.videoPlayCount ?? it.videoViewCount ?? it.playCount ?? 0,
+      like_count: it.likesCount ?? it.likeCount ?? 0,
+      comment_count: it.commentsCount ?? it.commentCount ?? 0,
+      taken_at: it.timestamp || it.takenAt || new Date().toISOString(),
+    })).filter(m => m.media_id);
   }
 }
 

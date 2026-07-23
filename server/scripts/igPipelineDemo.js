@@ -1,14 +1,24 @@
-// End-to-end demo of the Instagram lead pipeline on the KEYLESS mock provider:
+// End-to-end run of the Instagram lead pipeline:
 //   sweep (hashtags → instagram_media) → trend (→ instagram_trend_signals) → cross-platform lead.
-// Proves the "🚀 Early on Instagram" head-start signal with zero spend / zero network.
+// Surfaces the "🚀 Early on Instagram" head-start signal. Default provider is the keyless mock; set
+// INSTAGRAM_PROVIDER=apify (+ APIFY_TOKEN in .env) to run against real Reels.
+require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 process.env.INSTAGRAM_PROVIDER = process.env.INSTAGRAM_PROVIDER || 'mock';
 const { runInstagramSweep } = require('../jobs/instagramSweep');
 const { runInstagramTrendJob } = require('../jobs/instagramTrendJob');
 const { runCrossPlatformLead } = require('../jobs/crossPlatformLeadJob');
 
+// First live Apify run stays tiny to protect the free $5 credit: 3 hashtags × IG_LIMIT results.
+// Widen later by editing SEED_HASHTAGS / IG_LIMIT once signal quality is confirmed.
+const isApify = process.env.INSTAGRAM_PROVIDER === 'apify';
+const sweepOpts = isApify ? {
+  limit: parseInt(process.env.IG_LIMIT || '30', 10),
+  seedHashtags: { education: ['upsc'], food: ['streetfood'], fitness: ['cortisoldetox'] },
+} : {};
+
 (async () => {
-  console.log('provider =', process.env.INSTAGRAM_PROVIDER, '\n');
-  console.log('1) sweep  :', JSON.stringify(await runInstagramSweep()));
+  console.log('provider =', process.env.INSTAGRAM_PROVIDER, isApify ? `(smoke: 3 hashtags × ${sweepOpts.limit})` : '', '\n');
+  console.log('1) sweep  :', JSON.stringify(await runInstagramSweep(sweepOpts)));
   console.log('2) trend  :', JSON.stringify(await runInstagramTrendJob()));
   const lead = runCrossPlatformLead();
   console.log('3) lead   :', JSON.stringify({ early_on_instagram: lead.early_on_instagram, both: lead.both }), '\n');
