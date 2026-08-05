@@ -2,6 +2,7 @@
 
 const { computeTargetLanes, detectItemLane } = require('./podcastLanes');
 const { extractGuestCandidates, isPersonLikeName, looksLikePersonName } = require('./podcastGuestExtract');
+const { brandStrings, isCreatorEcho } = require('./podcastBrand');
 
 // ── Podcast guest graph ───────────────────────────────────────────────────────
 function computePodcastIntel(db, channelId, communityIds, nowMs, debugMode = false) {
@@ -19,6 +20,10 @@ function computePodcastIntel(db, channelId, communityIds, nowMs, debugMode = fal
     const r = extractGuestCandidates(title);
     for (const g of [...r.marker, ...r.fullScan]) ownGuests.add(g.toLowerCase());
   }
+  // Brand strings for skipping the creator's own episodes re-posted by clip channels (which sit in the
+  // peer pool under different channel_ids) — otherwise the guest they just interviewed is re-surfaced.
+  const _selfName = db.get('SELECT channel_name FROM ingested_channels WHERE channel_id = ?', [channelId])?.channel_name;
+  const brands = brandStrings(_selfName);
   const targetLanes = computeTargetLanes(_ownTitleStrings);
 
   if (!peerIds.length) return { guests: [], target_lanes: targetLanes };
@@ -56,6 +61,7 @@ function computePodcastIntel(db, channelId, communityIds, nowMs, debugMode = fal
   };
 
   for (const { channel_id, title, views, published_at } of peerVideos) {
+    if (isCreatorEcho(title, brands)) continue; // clip/re-upload of the creator's own episode
     const ts     = published_at ? new Date(published_at).getTime() : 0;
     const result = extractGuestCandidates(title, debugInfo);
     if (debugMode) {
@@ -271,9 +277,12 @@ const ENTERTAINMENT_SPORTS_NICHES = new Set([
 
 function computePodcastModePeers(db, channelId, { userRegion, limit = 150 } = {}) {
   const ch = db.get(
-    `SELECT podcast_fingerprint, primary_niche, niche, primary_language FROM ingested_channels WHERE channel_id = ?`,
+    `SELECT channel_name, podcast_fingerprint, primary_niche, niche, primary_language FROM ingested_channels WHERE channel_id = ?`,
     [channelId],
   );
+  // The creator's own satellite/clip channels have DIFFERENT channel_ids, so `channel_id != own` misses
+  // them. Exclude any candidate whose name carries the creator's brand — it's their own mirror.
+  const brands = brandStrings(ch?.channel_name);
   const fingerprint    = ch?.podcast_fingerprint || null;
   const targetNiche    = ch?.primary_niche || null;
   const targetRawNiche = ch?.niche || null;
@@ -283,9 +292,9 @@ function computePodcastModePeers(db, channelId, { userRegion, limit = 150 } = {}
 
   if (!fingerprint) {
     const ids = db.all(
-      `SELECT channel_id FROM ingested_channels WHERE creator_mode = 'podcast' AND format_type IN ('podcast','interview') AND channel_id != ? ${regionSql} ORDER BY channel_subscribers DESC LIMIT ?`,
-      [channelId, ...regionArgs, limit],
-    ).map(r => r.channel_id);
+      `SELECT channel_id, channel_name FROM ingested_channels WHERE creator_mode = 'podcast' AND format_type IN ('podcast','interview') AND channel_id != ? ${regionSql} ORDER BY channel_subscribers DESC LIMIT ?`,
+      [channelId, ...regionArgs, limit + 20],
+    ).filter(r => !isCreatorEcho(r.channel_name, brands)).slice(0, limit).map(r => r.channel_id);
     return {
       ids,
       fingerprint_used: false,
@@ -305,12 +314,13 @@ function computePodcastModePeers(db, channelId, { userRegion, limit = 150 } = {}
 
   // Hard-filter: creator_mode=podcast AND format confirmed podcast/interview AND has fingerprint
   const candidates = db.all(
-    `SELECT channel_id, podcast_fingerprint, primary_niche, primary_language FROM ingested_channels WHERE creator_mode = 'podcast' AND format_type IN ('podcast','interview') AND channel_id != ? ${regionSql} AND podcast_fingerprint IS NOT NULL`,
+    `SELECT channel_id, channel_name, podcast_fingerprint, primary_niche, primary_language FROM ingested_channels WHERE creator_mode = 'podcast' AND format_type IN ('podcast','interview') AND channel_id != ? ${regionSql} AND podcast_fingerprint IS NOT NULL`,
     [channelId, ...regionArgs],
   );
 
   const scored = [];
   for (const c of candidates) {
+    if (isCreatorEcho(c.channel_name, brands)) continue; // creator's own satellite/clip channel
     const cPhrases   = c.podcast_fingerprint.split('|').filter(Boolean);
     const cPhraseSet = new Set(cPhrases);
 

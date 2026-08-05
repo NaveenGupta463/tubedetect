@@ -2,6 +2,8 @@
 
 const { detectItemLane } = require('./podcastLanes');
 const { extractGuestCandidates } = require('./podcastGuestExtract');
+const { resolveContentCountry } = require('./countryContext');
+const { brandStrings, isCreatorEcho } = require('./podcastBrand');
 
 // Bare base-form verbs that, as the last word of a 2-word theme, signal a verb-fragment
 // rather than a real topic (e.g. "advice save", "money make", "startup fail").
@@ -51,6 +53,38 @@ const PODCAST_THEME_VAGUE_WORDS = new Set([
   'way', 'ways', 'life', 'covered',
 ]);
 
+// Pure adjectives that, as the last word of a 2-word theme, mean the noun they modify got
+// cut off at the n-gram extraction boundary (e.g. "Gurgaon Real" is a fragment of "Gurgaon
+// Real Estate" — extractPhrases() emits both the bigram and the trigram as separate,
+// independently-scored candidates, so the meaningless prefix can survive on its own).
+// Unlike PODCAST_THEME_VAGUE_WORDS, these can never be a phrase's head noun themselves —
+// deliberately excludes noun-like vague words ("life", "story", "problem") which can
+// legitimately close out a real 2-word topic (e.g. "married life").
+const PODCAST_THEME_WEAK_TRAILING_ADJ = new Set([
+  'real', 'big', 'small', 'worst', 'main', 'simple', 'hidden', 'dark', 'easy', 'hard', 'true', 'fake',
+]);
+
+// Quantifiers/determiners that, as the first word of a 2-word theme, signal a truncated
+// sentence fragment rather than a topic — they need a noun after them that got cut off
+// (e.g. "every young [Indian]", "most [people]").
+const PODCAST_THEME_QUANTIFIER_FIRST = new Set([
+  'every', 'each', 'all', 'some', 'many', 'most', 'few', 'several', 'another', 'other', 'no',
+]);
+
+// Indefinite pronouns that, as the first word of a 2-word theme, signal a truncated
+// clickbait sentence rather than a topic (e.g. "nobody talks [about this]", "everyone knows").
+const PODCAST_THEME_PRONOUN_FIRST = new Set([
+  'nobody', 'everybody', 'everyone', 'someone', 'anybody', 'anyone', 'somebody',
+  'nothing', 'everything', 'something',
+]);
+
+// Currency-unit words that, alone or paired with a bare number, aren't a topic — just a
+// figure mentioned in a title (e.g. "₹60 crore", "₹1000+ crore").
+const PODCAST_CURRENCY_UNIT_WORDS = new Set([
+  'crore', 'crores', 'lakh', 'lakhs', 'million', 'billion', 'thousand', 'cr', 'bn',
+]);
+const PODCAST_NUMERIC_TOKEN_RE = /^[₹$]?[\d,.]+\+?$/;
+
 function isWeakPodcastThemePhrase(phrase) {
   const p = String(phrase || '').toLowerCase().trim();
   const words = p.split(/\s+/).filter(Boolean);
@@ -64,6 +98,15 @@ function isWeakPodcastThemePhrase(phrase) {
   if (/\b(explained|looking|decoded|revealed|exposed|reaction|review)$/i.test(p)) return true;
   // Greeting / call-to-action / garbled-title fragments: "Welcome Jungle", "Watch Now".
   if (/^(welcome|watch|subscribe|thanks?|hello|hi|please)\b/i.test(p)) return true;
+  // Quantifier/determiner fragment: "Every Young", "Most Indians" — missing the noun.
+  if (words.length === 2 && PODCAST_THEME_QUANTIFIER_FIRST.has(words[0])) return true;
+  // Pronoun-subject fragment: "Nobody Talks", "Everyone Knows" — a clipped sentence, not a topic.
+  if (words.length === 2 && PODCAST_THEME_PRONOUN_FIRST.has(words[0])) return true;
+  // Bare figure, not a topic: "₹60 Crore", "₹1000+ Crore" — every word is just a number or unit.
+  if (words.every(w => PODCAST_NUMERIC_TOKEN_RE.test(w) || PODCAST_CURRENCY_UNIT_WORDS.has(w))) return true;
+  // Adjective-trailing fragment: "Gurgaon Real" — the noun it modifies (e.g. "estate") got
+  // cut off at the n-gram boundary; the complete phrase survives as its own candidate.
+  if (words.length === 2 && PODCAST_THEME_WEAK_TRAILING_ADJ.has(words[words.length - 1])) return true;
   return false;
 }
 
@@ -82,47 +125,62 @@ function titleCasePhrase(phrase) {
   return String(phrase || '').replace(/\b\w/g, c => c.toUpperCase());
 }
 
-function packagePodcastTheme(phrase) {
+function packagePodcastTheme(phrase, country) {
   const p = String(phrase || '').toLowerCase();
   const topic = titleCasePhrase(p);
+  const isIN  = country === 'IN';
 
-  if (/\breal estate|property|rent|housing|home loan|flat\b/.test(p)) {
+  if (/\b(real estate|property|rent|housing|home loan|flat)\b/.test(p)) {
     return {
       guest_archetype: 'real-estate operator or property investor',
-      angle_title: 'Invite a real-estate operator to explain rent vs buy for India\'s middle class',
-      episode_prompt: 'Frame it around the practical decision: when property builds wealth, when it traps cash, and what young Indians should check before buying.',
+      angle_title: isIN
+        ? 'Invite a real-estate operator to explain rent vs buy for India\'s middle class'
+        : 'Invite a real-estate operator to break down the real math on renting vs buying right now',
+      episode_prompt: isIN
+        ? 'Frame it around the practical decision: when property builds wealth, when it traps cash, and what young Indians should check before buying.'
+        : 'Frame it around the practical decision: when property builds wealth, when it traps cash, and what buyers should check before committing.',
     };
   }
-  if (/\bmoney mindset|wealth|rich|personal finance|side income|income\b/.test(p)) {
+  if (/\b(money mindset|wealth|rich|personal finance|side income|income)\b/.test(p)) {
     return {
       guest_archetype: 'personal finance creator or wealth coach',
-      angle_title: 'Talk to a finance creator about why young Indians struggle to build wealth',
+      angle_title: isIN
+        ? 'Talk to a finance creator about why young Indians struggle to build wealth'
+        : 'Talk to a finance creator about why so many people struggle to build real wealth',
       episode_prompt: 'Make the episode about behavior, status pressure, saving discipline, and the gap between earning more and actually becoming wealthy.',
     };
   }
-  if (/\bmiddle class|salary|job|career|income tax|cost of living\b/.test(p)) {
+  if (/\b(middle class|salary|job|career|income tax|cost of living)\b/.test(p)) {
     return {
       guest_archetype: 'economist, career operator, or personal finance expert',
-      angle_title: 'Decode what is changing for India\'s middle class',
+      angle_title: isIN
+        ? 'Decode what is changing for India\'s middle class'
+        : 'Decode what is changing for the middle class right now',
       episode_prompt: 'Center the conversation on household pressure, career risk, lifestyle inflation, and practical choices viewers can relate to.',
     };
   }
-  if (/\bstartup|founder|entrepreneur|india startup|business\b/.test(p)) {
-    if (/\bindia startup|indian startup|startups?\b/.test(p)) {
+  if (/\b(startups?|founders?|entrepreneurs?|india startups?|indian startups?|business)\b/.test(p)) {
+    if (/\b(india startups?|indian startups?|startups?)\b/.test(p)) {
       return {
         guest_archetype: 'startup founder or operator',
-        angle_title: 'Invite a founder to explain what is changing for Indian startups',
-        episode_prompt: 'Push beyond motivation: ask what has become harder, what still works, and what first-time founders misunderstand about India.',
+        angle_title: isIN
+          ? 'Invite a founder to explain what is changing for Indian startups'
+          : 'Invite a founder to explain what is changing in the startup world right now',
+        episode_prompt: isIN
+          ? 'Push beyond motivation: ask what has become harder, what still works, and what first-time founders misunderstand about India.'
+          : 'Push beyond motivation: ask what has become harder, what still works, and what first-time founders misunderstand about building a company.',
       };
     }
     return {
       guest_archetype: 'startup founder or operator',
-      angle_title: `Invite a founder to explain what ${topic} means for building in India`,
+      angle_title: isIN
+        ? `Invite a founder to explain what ${topic} means for building in India`
+        : `Invite a founder to explain what ${topic} means for founders building right now`,
       episode_prompt: 'Push beyond inspiration: ask what is hard, what incentives are broken, and what operators should do differently.',
     };
   }
-  if (/\bstrait hormuz|oil|petrol|diesel|energy|crude\b/.test(p)) {
-    if (/\bpetrol|diesel\b/.test(p)) {
+  if (/\b(strait hormuz|oil|petrol|diesel|energy|crude)\b/.test(p)) {
+    if (/\b(petrol|diesel)\b/.test(p)) {
       return {
         guest_archetype: 'energy analyst or economist',
         angle_title: 'Decode why petrol and diesel prices matter beyond your monthly fuel bill',
@@ -131,46 +189,56 @@ function packagePodcastTheme(phrase) {
     }
     return {
       guest_archetype: 'energy analyst or geopolitics expert',
-      angle_title: 'Bring an energy expert to decode how oil shocks affect Indian households and startups',
+      angle_title: isIN
+        ? 'Bring an energy expert to decode how oil shocks affect Indian households and startups'
+        : 'Bring an energy expert to decode how oil shocks affect households and businesses',
       episode_prompt: 'Translate the global event into local consequences: fuel prices, inflation, business costs, and founder decisions.',
     };
   }
-  if (/\bstock market|market|gold|mutual fund|investing|portfolio\b/.test(p)) {
+  if (/\b(stock market|market|gold|mutual fund|investing|portfolio)\b/.test(p)) {
     if (/\bgold\b/.test(p)) {
       return {
         guest_archetype: 'investor educator or macro analyst',
-        angle_title: 'Ask an investor why Indians run to gold during uncertainty',
+        angle_title: isIN
+          ? 'Ask an investor why Indians run to gold during uncertainty'
+          : 'Ask an investor why people rush to gold during uncertainty',
         episode_prompt: 'Make it practical: gold vs equities, fear psychology, family behavior, and what retail investors should avoid doing blindly.',
       };
     }
     return {
       guest_archetype: 'market analyst or investor educator',
-      angle_title: `Ask an investor to explain what ${topic} means for ordinary Indians`,
+      angle_title: isIN
+        ? `Ask an investor to explain what ${topic} means for ordinary Indians`
+        : `Ask an investor to explain what ${topic} means for ordinary investors`,
       episode_prompt: 'Keep it decision-led: what to ignore, what to watch, and how retail investors should avoid panic behavior.',
     };
   }
-  if (/\beconomy|crisis|inflation|recession|growth\b/.test(p)) {
+  if (/\b(economy|crisis|inflation|recession|growth)\b/.test(p)) {
     return {
       guest_archetype: 'economist or business journalist',
       angle_title: `Bring an economist to explain the real-world impact of ${topic}`,
-      episode_prompt: 'Turn the macro topic into everyday outcomes: jobs, prices, businesses, and the next 12 months for Indian viewers.',
+      episode_prompt: isIN
+        ? 'Turn the macro topic into everyday outcomes: jobs, prices, businesses, and the next 12 months for Indian viewers.'
+        : 'Turn the macro topic into everyday outcomes: jobs, prices, businesses, and the next 12 months for viewers.',
     };
   }
-  if (/\bdating|relationship|marriage|breakup|love|romance|situationship\b/.test(p)) {
+  if (/\b(dating|relationship|marriage|breakup|love|romance|situationship)\b/.test(p)) {
     return {
       guest_archetype: 'relationship therapist, dating coach, or candid celebrity guest',
       angle_title: `Unpack what ${topic} really looks like for this generation`,
-      episode_prompt: 'Go past hot takes: real stories, what has changed for young Indians, the patterns that break relationships, and what actually works.',
+      episode_prompt: isIN
+        ? 'Go past hot takes: real stories, what has changed for young Indians, the patterns that break relationships, and what actually works.'
+        : 'Go past hot takes: real stories, what has changed for this generation, the patterns that break relationships, and what actually works.',
     };
   }
-  if (/\bfat loss|weight loss|diet|nutrition|gut health|longevity|fitness|workout|sleep|dna test|biohack|immunity|hormone|fasting\b/.test(p)) {
+  if (/\b(fat loss|weight loss|diet|nutrition|gut health|longevity|fitness|workout|sleep|dna test|biohack|immunity|hormone|fasting)\b/.test(p)) {
     return {
       guest_archetype: 'doctor, nutritionist, or longevity expert',
       angle_title: `Get a doctor to give the real, evidence-based take on ${topic}`,
       episode_prompt: 'Cut through the fads: what the science actually says, what to ignore, and a simple protocol viewers can start this week.',
     };
   }
-  if (/\bworld cup|cricket|football|olympics?|tournament|champions?|ipl|match|sport\b/.test(p)) {
+  if (/\b(world cup|cricket|football|olympics?|tournament|champions?|ipl|match|sport)\b/.test(p)) {
     return {
       guest_archetype: 'athlete, coach, or sports analyst',
       angle_title: `Break down ${topic} with someone who has lived it`,
@@ -217,7 +285,8 @@ function isPersonNamePhrase(phrase, examples) {
 
 // extractPhrases and PODCAST_META_TOKENS live in creatorIntel.js and are injected here
 // to avoid circular deps while keeping this module self-contained.
-function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, nowMs, debugMode = false, targetLanes = [], extractPhrases, PODCAST_META_TOKENS) {
+function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, nowMs, debugMode = false, targetLanes = [], extractPhrases, PODCAST_META_TOKENS, channelRegion = null) {
+  const contentCountry = resolveContentCountry(channelRegion);
   const RECENCY_MS = 180 * 24 * 60 * 60 * 1000;
   const cutoffDate = new Date(nowMs - RECENCY_MS).toISOString().split('T')[0];
   const peerSample = peerIds.slice(0, 100);
@@ -258,6 +327,10 @@ function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, n
     }
   }
   const allStop = new Set([...PODCAST_META_TOKENS, ...THEME_SOCIAL_STOP]);
+  // Distinctive brand strings → skip clip/re-upload videos of the creator's OWN show so his just-done
+  // topics aren't counted as peer demand and recommended back (the brandTokens word-filter below only
+  // drops individual brand WORDS from a phrase; the whole echoed video must be skipped).
+  const brands = brandStrings(channelName);
 
   const phraseMap      = new Map();
   let totalExtracted   = 0;
@@ -270,6 +343,7 @@ function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, n
   const peerGuestNamesLower = new Set();
 
   for (const { channel_id, title, views, published_at } of peerVideos) {
+    if (isCreatorEcho(title, brands)) continue; // clip/re-upload of the creator's own episode
     const gCands = extractGuestCandidates(title);
     for (const g of [...gCands.marker, ...gCands.fullScan]) peerGuestNamesLower.add(g.toLowerCase());
 
@@ -368,7 +442,7 @@ function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, n
     const alreadyCovered = ownPhraseSet.has(phrase.toLowerCase());
     if (alreadyCovered) ownCoverageCount++;
     if (alreadyCovered && e.channels.size < 4) continue;
-    const packaged = packagePodcastTheme(phrase);
+    const packaged = packagePodcastTheme(phrase, contentCountry);
 
     scored.push({
       theme:           phrase,
@@ -382,6 +456,7 @@ function computePodcastThemes(db, channelId, peerIds, guestNames, channelName, n
       examples:        e.examples.slice(0, 3),
       already_covered: alreadyCovered,
       matched_lane:    matchedLane,
+      content_country: contentCountry,
     });
   }
 
