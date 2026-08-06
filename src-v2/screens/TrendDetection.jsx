@@ -458,7 +458,7 @@ export default function TrendDetection({ channel }) {
         .catch(e => { setError(e.message); setLoading(false); });
       return;
     }
-    const p = new URLSearchParams({ tier: activeTier, sort, limit: '80' });
+    const p = new URLSearchParams({ tier: activeTier, sort, limit: '150' });
     if (niche !== 'all') p.set('niche', niche);
     // Video-grounded trends (specific title-phrases; examples always match). Replaces the old
     // channel-topic /signals feed whose example videos didn't match the topic.

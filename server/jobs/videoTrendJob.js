@@ -273,8 +273,12 @@ async function runVideoTrendJob(opts = {}) {
   const db = getDb();
   const start = Date.now();
   const runStart = db.get("SELECT datetime('now') AS t").t;
-  const MINVIEWS = opts.minViews ?? 15000;   // only videos with real traction
-  const MINCH    = opts.minChannels ?? 4;     // a trend = many distinct channels, not one
+  // Lowered from 15000/4 → 8000/3 to widen the suggestion pool, especially in under-served niches:
+  // the 15k+4-channel gate collapsed ~350k recent videos to only ~749 consensus topics, so niche+tier
+  // filtering left a handful. 8k views still means real traction; 3 distinct channels still means a
+  // shared signal, not one uploader. Guards + entity/LLM merges keep the extra long-tail clean.
+  const MINVIEWS = opts.minViews ?? 8000;    // only videos with real traction
+  const MINCH    = opts.minChannels ?? 3;     // a trend = several distinct channels, not one
   console.log(`[videoTrend] Starting (minViews=${MINVIEWS}, minChannels=${MINCH})...`);
 
   db.exec(`CREATE TABLE IF NOT EXISTS video_trend_signals (
